@@ -313,6 +313,10 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     }
 
                     while (kotlin.coroutines.coroutineContext.isActive) {
+                        // Kích hoạt dọn dẹp bộ nhớ an toàn (Aggressive GC) mỗi vòng lặp
+                        System.gc()
+                        Runtime.getRuntime().gc()
+
                         val framesToRead = if (isFirstChunk) CHUNK_FRAMES else stepSize
                         val bytesToRead = framesToRead * BYTES_PER_FRAME
                         
@@ -655,8 +659,8 @@ class AudioSeparator(private val context: Context, private val modelFile: File) 
                     otherOut?.close()
                 }
 
-            } catch (e: Exception) {
-                logError("Lỗi khi tách: ${e.message}", e)
+            } catch (e: Throwable) {
+                logError("Lỗi nghiêm trọng (OOM hoặc Crash) khi tách: ${e.message}", e)
                 throw Exception("Lỗi khi xử lý mô hình AI: ${e.message}", e)
             } finally {
                 session.close()

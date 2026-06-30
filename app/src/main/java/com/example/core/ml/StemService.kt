@@ -83,8 +83,8 @@ class StemService : Service() {
                                 stopSelf()
                             }
                         }
-                    } catch (e: Exception) {
-                        _errorMsg.value = e.message ?: "Unknown error"
+                    } catch (e: Throwable) {
+                        _errorMsg.value = e.message ?: "Lỗi nghiêm trọng (OOM)"
                         _isProcessing.value = false
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()

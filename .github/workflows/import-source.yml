@@ -78,7 +78,7 @@ jobs:
           smoke = Path('/tmp/mediatool-source/scripts/test_wrapper_bootstrap.py')
           smoke_text = smoke.read_text(encoding='utf-8')
           old = '''        with zipfile.ZipFile(distribution, "w", zipfile.ZIP_DEFLATED) as archive:\n            archive.writestr(info, script)\n'''
-          new = '''        with zipfile.ZipFile(distribution, "w", zipfile.ZIP_DEFLATED) as archive:\n            for directory in ("gradle-smoke/", "gradle-smoke/bin/"):\n                directory_info = zipfile.ZipInfo(directory)\n                directory_info.external_attr = (stat.S_IFDIR | 0o755) << 16\n                archive.writestr(directory_info, "")\n            archive.writestr(info, script)\n'''
+          new = '''        with zipfile.ZipFile(distribution, "w", zipfile.ZIP_DEFLATED) as archive:\n            for directory in ("gradle-smoke/", "gradle-smoke/bin/", "gradle-smoke/lib/"):\n                directory_info = zipfile.ZipInfo(directory)\n                directory_info.external_attr = (stat.S_IFDIR | 0o755) << 16\n                archive.writestr(directory_info, "")\n            launcher = zipfile.ZipInfo("gradle-smoke/lib/gradle-launcher-8.13.jar")\n            launcher.external_attr = (stat.S_IFREG | 0o644) << 16\n            archive.writestr(launcher, b"")\n            archive.writestr(info, script)\n'''
           if old not in smoke_text:
               raise SystemExit('Không tìm thấy đoạn tạo ZIP cần vá trong wrapper smoke test')
           smoke.write_text(smoke_text.replace(old, new), encoding='utf-8', newline='\n')

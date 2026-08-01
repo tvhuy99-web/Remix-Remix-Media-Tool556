@@ -34,26 +34,48 @@ jobs:
           mkdir -p /tmp/wrapper-project
           printf 'tasks.register("noop")\n' > /tmp/wrapper-project/build.gradle
           gradle -p /tmp/wrapper-project wrapper --gradle-version 8.13 --distribution-type bin
+
           cp /tmp/wrapper-project/gradlew /tmp/mediatool-source/gradlew
           cp /tmp/wrapper-project/gradlew.bat /tmp/mediatool-source/gradlew.bat
           mkdir -p /tmp/mediatool-source/gradle/wrapper
           cp /tmp/wrapper-project/gradle/wrapper/gradle-wrapper.jar /tmp/mediatool-source/gradle/wrapper/gradle-wrapper.jar
           cp /tmp/wrapper-project/gradle/wrapper/gradle-wrapper.properties /tmp/mediatool-source/gradle/wrapper/gradle-wrapper.properties
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('/tmp/mediatool-source/gradle/wrapper/gradle-wrapper.properties')
+          checksum = '20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78'
+          lines = [
+              line for line in path.read_text(encoding='utf-8').splitlines()
+              if not line.startswith('distributionSha256Sum=')
+          ]
+          insert_at = next(
+              (index + 1 for index, line in enumerate(lines) if line.startswith('distributionUrl=')),
+              len(lines),
+          )
+          lines.insert(insert_at, f'distributionSha256Sum={checksum}')
+          path.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
+          PY
+
           chmod +x /tmp/mediatool-source/gradlew
+          find /tmp/mediatool-source/scripts -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} +
 
       - name: Patch CI workflow
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
           path = Path('/tmp/mediatool-source/.github/workflows/build-apk.yml')
           text = path.read_text(encoding='utf-8')
           text = text.replace(
               '      - name: Build instrumentation APK\n        run: ./gradlew assembleDebugAndroidTest --stacktrace\n',
               '      - name: Build instrumentation APK\n        run: |\n          chmod +x gradlew\n          ./gradlew assembleDebugAndroidTest --stacktrace\n',
           )
-          text = text.replace('          validate-wrappers: false\n', '')
+          text = text.replace('validate-wrappers: false', 'validate-wrappers: true')
           path.write_text(text, encoding='utf-8', newline='\n')
           PY
+
           cat > /tmp/mediatool-source/.gitattributes <<'EOF'
           * text=auto
           gradlew text eol=lf
@@ -73,10 +95,9 @@ jobs:
 
       - name: Replace repository contents
         run: |
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a /tmp/mediatool-source/. .
-          rm -rf .git
-          git checkout -- .git 2>/dev/null || true
+          rsync -a --delete --exclude='.git/' /tmp/mediatool-source/ ./
+          chmod +x gradlew
+          find scripts -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} +
 
       - name: Verify imported source
         run: |

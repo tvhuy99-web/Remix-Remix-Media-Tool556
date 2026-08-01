@@ -1,0 +1,46 @@
+MediaTool 1.3.1 - Verification report
+Date: 2026-08-01
+
+PASSED IN THIS ENVIRONMENT
+- python3 scripts/verify_project.py
+  - Manifest/XML/TOML/YAML parsing
+  - required source/docs/assets
+  - version/build type/release signing/ABI checks
+  - no empty files, local AAR, sample package or dangerous storage permission
+  - Kotlin delimiter/string/comment scan
+  - Mel-Band model pin/contract, resume and cancellation tokens
+  - MediaProjection callback and AI cancellation checks
+  - 13 unit-test files and 1 instrumentation-test file present
+- ./scripts/run_core_smoke.sh
+  - compiled and executed pure Kotlin tests for subtitles, WAV header,
+    slideshow timeline, overlap window, ONNX threading, TTS queue, audio math,
+    timeline parsing, Content-Range, model registry/contract, diagnostic redaction and AI preflight
+- Selective Kotlin compilation with local Android/ONNX/FFmpeg stubs
+  - AudioSeparator including provider fallback, tensor/chunk logs and cleanup
+  - DiagnosticRedactor, DiagnosticLogger and DiagnosticReportManager
+  - ModelDownloader and MediaEngine cancellation/diagnostic paths
+  - RecordingManager, WavRecorder, TaskStateStore and Application crash handler
+- python3 scripts/test_wrapper_bootstrap.py
+  - downloaded a fake Gradle distribution over localhost
+  - verified SHA-256, extraction and argument forwarding
+- FFmpeg smoke test cho filter slideshow theo mốc tuyệt đối và loudnorm EBU R128
+- bash syntax check for gradlew and run_core_smoke.sh
+- Python bytecode compilation for all scripts
+- Gradle bootstrap class file is Java 8 compatible (major version 52)
+- Checkpoint endpoint range request
+  - revision header: 60cb6b4b97e41b42f7ff16c2e386f47a8cc7e50a
+  - linked size/content range: 953292899 bytes
+  - linked SHA-256: 64a4f3bee48fbe7d971b23875adc924ed004c3533f49672592641dddc0f6f561
+
+NOT AVAILABLE IN THIS ENVIRONMENT
+- Android SDK/AGP build: lintDebug, testDebugUnitTest, assembleDebug, assembleInternal
+- Instrumentation tests trên thiết bị arm64
+- Signed release build
+- Physical-device validation of MediaProjection, TTS, FFmpeg codecs and ONNX Runtime
+- Runtime validation of the selected libc++_shared.so with both native dependencies
+- Full Mel-Band checkpoint inference/parity, peak-RSS and thermal benchmarks on 8/12 GB arm64 devices
+- Runtime export/privacy test of the diagnostic ZIP and ApplicationExitInfo on a physical device
+
+The GitHub Actions workflow contains the Android build, ARM64 APK inspection and
+instrumentation-APK build stages. Run tests on a physical/device-farm ARM64 target
+before public release.

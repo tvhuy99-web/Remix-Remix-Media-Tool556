@@ -1,18 +1,28 @@
+# Gradle and Kotlin
+.gradle/
+.kotlin/
+**/build/
+
+# Android Studio
+.idea/
 *.iml
-.gradle
-.kotlin
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
 local.properties
-.env
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing and local secrets
+keystore.properties
+*.jks
+*.keystore
 debug.keystore
+.env
+.env.*
+!.env.example
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# Local verification output
+verification-report.txt

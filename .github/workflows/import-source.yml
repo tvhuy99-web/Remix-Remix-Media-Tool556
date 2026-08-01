@@ -74,15 +74,72 @@ jobs:
           )
           text = text.replace('validate-wrappers: false', 'validate-wrappers: true')
           workflow.write_text(text, encoding='utf-8', newline='\n')
-
-          smoke = Path('/tmp/mediatool-source/scripts/test_wrapper_bootstrap.py')
-          smoke_text = smoke.read_text(encoding='utf-8')
-          old = '''        with zipfile.ZipFile(distribution, "w", zipfile.ZIP_DEFLATED) as archive:\n            archive.writestr(info, script)\n'''
-          new = '''        with zipfile.ZipFile(distribution, "w", zipfile.ZIP_DEFLATED) as archive:\n            for directory in ("gradle-smoke/", "gradle-smoke/bin/", "gradle-smoke/lib/"):\n                directory_info = zipfile.ZipInfo(directory)\n                directory_info.external_attr = (stat.S_IFDIR | 0o755) << 16\n                archive.writestr(directory_info, "")\n            launcher = zipfile.ZipInfo("gradle-smoke/lib/gradle-launcher-8.13.jar")\n            launcher.external_attr = (stat.S_IFREG | 0o644) << 16\n            archive.writestr(launcher, b"")\n            archive.writestr(info, script)\n'''
-          if old not in smoke_text:
-              raise SystemExit('Không tìm thấy đoạn tạo ZIP cần vá trong wrapper smoke test')
-          smoke.write_text(smoke_text.replace(old, new), encoding='utf-8', newline='\n')
           PY
+
+          cat > /tmp/mediatool-source/scripts/test_wrapper_bootstrap.py <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import os
+          import shutil
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          ROOT = Path(__file__).resolve().parents[1]
+
+
+          def main() -> None:
+              with tempfile.TemporaryDirectory(prefix="mediatool-wrapper-") as raw:
+                  temp = Path(raw)
+                  project = temp / "project"
+                  gradle_home = temp / "gradle-home"
+                  (project / "gradle/wrapper").mkdir(parents=True)
+
+                  for relative in (
+                      "gradlew",
+                      "gradle/wrapper/gradle-wrapper.jar",
+                      "gradle/wrapper/gradle-wrapper.properties",
+                  ):
+                      source = ROOT / relative
+                      destination = project / relative
+                      destination.parent.mkdir(parents=True, exist_ok=True)
+                      shutil.copy2(source, destination)
+
+                  (project / "gradlew").chmod(0o755)
+                  (project / "settings.gradle.kts").write_text(
+                      'rootProject.name = "wrapper-smoke"\n',
+                      encoding="utf-8",
+                  )
+
+                  env = os.environ.copy()
+                  env["GRADLE_USER_HOME"] = str(gradle_home)
+                  result = subprocess.run(
+                      [str(project / "gradlew"), "--version"],
+                      cwd=project,
+                      env=env,
+                      text=True,
+                      capture_output=True,
+                      timeout=300,
+                  )
+                  output = result.stdout + "\n" + result.stderr
+                  if result.returncode != 0:
+                      raise SystemExit(
+                          "WRAPPER TEST FAILED\n"
+                          f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+                      )
+                  if "Gradle 8.13" not in output:
+                      raise SystemExit(
+                          "WRAPPER TEST FAILED: expected Gradle 8.13\n"
+                          f"OUTPUT:\n{output}"
+                      )
+                  print("WRAPPER BOOTSTRAP OK")
+
+
+          if __name__ == "__main__":
+              main()
+          PY
+          chmod +x /tmp/mediatool-source/scripts/test_wrapper_bootstrap.py
 
           cat > /tmp/mediatool-source/.gitattributes <<'EOF'
           * text=auto
@@ -112,7 +169,6 @@ jobs:
           python3 scripts/verify_project.py
           ./scripts/run_core_smoke.sh
           python3 scripts/test_wrapper_bootstrap.py
-          ./gradlew --version
 
       - name: Commit replacement
         run: |

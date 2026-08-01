@@ -61,19 +61,27 @@ jobs:
           chmod +x /tmp/mediatool-source/gradlew
           find /tmp/mediatool-source/scripts -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} +
 
-      - name: Patch CI workflow
+      - name: Patch imported project
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('/tmp/mediatool-source/.github/workflows/build-apk.yml')
-          text = path.read_text(encoding='utf-8')
+          workflow = Path('/tmp/mediatool-source/.github/workflows/build-apk.yml')
+          text = workflow.read_text(encoding='utf-8')
           text = text.replace(
               '      - name: Build instrumentation APK\n        run: ./gradlew assembleDebugAndroidTest --stacktrace\n',
               '      - name: Build instrumentation APK\n        run: |\n          chmod +x gradlew\n          ./gradlew assembleDebugAndroidTest --stacktrace\n',
           )
           text = text.replace('validate-wrappers: false', 'validate-wrappers: true')
-          path.write_text(text, encoding='utf-8', newline='\n')
+          workflow.write_text(text, encoding='utf-8', newline='\n')
+
+          smoke = Path('/tmp/mediatool-source/scripts/test_wrapper_bootstrap.py')
+          smoke_text = smoke.read_text(encoding='utf-8')
+          old = '''        with zipfile.ZipFile(distribution, "w", zipfile.ZIP_DEFLATED) as archive:\n            archive.writestr(info, script)\n'''
+          new = '''        with zipfile.ZipFile(distribution, "w", zipfile.ZIP_DEFLATED) as archive:\n            for directory in ("gradle-smoke/", "gradle-smoke/bin/"):\n                directory_info = zipfile.ZipInfo(directory)\n                directory_info.external_attr = (stat.S_IFDIR | 0o755) << 16\n                archive.writestr(directory_info, "")\n            archive.writestr(info, script)\n'''
+          if old not in smoke_text:
+              raise SystemExit('Không tìm thấy đoạn tạo ZIP cần vá trong wrapper smoke test')
+          smoke.write_text(smoke_text.replace(old, new), encoding='utf-8', newline='\n')
           PY
 
           cat > /tmp/mediatool-source/.gitattributes <<'EOF'

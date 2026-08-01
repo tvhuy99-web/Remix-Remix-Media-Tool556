@@ -1,57 +1,99 @@
-name: Build Android APK
+name: Build and test Android
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [main, master]
   pull_request:
-    branches: [ "main", "master" ]
-  workflow_dispatch: # Cho phép bạn tự kích hoạt (build thủ công) trên GitHub
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 50
 
     steps:
-      - name: Checkout Code
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-          # Removed `cache: gradle` here, as setup-gradle below already handles everything properly!
+          distribution: temurin
+          java-version: "17"
 
-      - name: Cache downloaded AAR
-        uses: actions/cache@v4
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
         with:
-          path: app/libs/ffmpeg-kit-full-6.0-2.LTS.aar
-          key: ${{ runner.os }}-ffmpeg-aar-v1
+          validate-wrappers: true
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - name: Verify project handoff
+        run: python3 scripts/verify_project.py
 
-      - name: Generate Wrapper (if missing)
+      - name: Build, lint and unit test
         run: |
-          if [ ! -f "gradlew" ]; then
-            gradle wrapper
-          fi
           chmod +x gradlew
+          ./gradlew --version
+          ./gradlew clean lintDebug testDebugUnitTest assembleDebug assembleInternal --stacktrace
 
-      - name: Decode Debug Keystore
-        run: |
-          if [ -f "debug.keystore.base64" ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
-          elif [ ! -f "debug.keystore" ]; then
-            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
+      - name: Inspect APK contents
+        run: python3 scripts/inspect_apks.py $(find app/build/outputs/apk -name '*.apk' -type f)
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
-
-      - name: Upload APK Artifact
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 7
+          name: mediatool-apks
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/internal/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload lint and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mediatool-reports
+          path: |
+            app/build/reports/lint-results-*.html
+            app/build/reports/tests/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  instrumentation-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+
+      - name: Build instrumentation APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebugAndroidTest --stacktrace
+
+      - name: Upload instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mediatool-instrumentation-reports
+          path: |
+            app/build/outputs/apk/androidTest/**
+            app/build/reports/androidTests/**
+          if-no-files-found: ignore
+          retention-days: 14

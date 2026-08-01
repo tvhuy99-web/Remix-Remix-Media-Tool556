@@ -21,8 +21,19 @@ for apk in paths:
         names = archive.namelist()
         if "AndroidManifest.xml" not in names:
             raise SystemExit(f"{apk.name}: thiếu AndroidManifest.xml")
-        if not any(name.startswith("classes") and name.endswith(".dex") for name in names):
+        dex_names = [name for name in names if name.startswith("classes") and name.endswith(".dex")]
+        if not dex_names:
             raise SystemExit(f"{apk.name}: thiếu classes*.dex")
+        dex_bytes = b"".join(archive.read(name) for name in dex_names)
+        required_classes = (
+            b"Lcom/arthenica/smartexception/java/Exceptions;",
+            b"Lcom/arthenica/ffmpegkit/FFmpegKit;",
+        )
+        missing_classes = [
+            descriptor.decode("ascii") for descriptor in required_classes if descriptor not in dex_bytes
+        ]
+        if missing_classes:
+            raise SystemExit(f"{apk.name}: thiếu lớp runtime bắt buộc: {missing_classes}")
         native = [name for name in names if name.startswith("lib/") and name.endswith(".so")]
         if not native:
             raise SystemExit(f"{apk.name}: không có thư viện native")

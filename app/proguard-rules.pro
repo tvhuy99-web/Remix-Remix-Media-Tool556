@@ -8,6 +8,8 @@
 # FFmpegKit JNI bindings and callback classes.
 -keep class com.arthenica.ffmpegkit.** { *; }
 -dontwarn com.arthenica.ffmpegkit.**
+-keep class com.arthenica.smartexception.** { *; }
+-dontwarn com.arthenica.smartexception.**
 
 # OkHttp/Okio optional platform integrations.
 -dontwarn okhttp3.internal.platform.**

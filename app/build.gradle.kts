@@ -21,8 +21,8 @@ android {
         applicationId = "com.aistudio.mediatool"
         minSdk = 24
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.3.1"
+        versionCode = 7
+        versionName = "1.3.2"
 
         // FFmpegKit maintained chỉ phát hành binary Maven cho arm64-v8a.
         // Giới hạn cả APK và App Bundle để không tạo artifact cài được nhưng
@@ -148,6 +148,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.onnxruntime.android)
     implementation(libs.ffmpeg.kit.full)
+    // FFmpegKit 8.1.7 AAR currently does not reliably expose this runtime dependency.
+    implementation(libs.smart.exception.java)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

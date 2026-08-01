@@ -1,4 +1,4 @@
-# MediaTool 1.3.1
+# MediaTool 1.3.2
 
 MediaTool là ứng dụng Android xử lý âm thanh và video trực tiếp trên thiết bị. Dự án dùng Jetpack Compose, FFmpegKit maintained, ONNX Runtime và Storage Access Framework.
 
@@ -133,7 +133,7 @@ GitHub Actions còn chạy:
 ## Tài liệu
 
 - `PROJECT_STATUS.md`: trạng thái xác minh và giới hạn còn lại.
-- `CHANGELOG.md`: thay đổi của bản 1.3.1.
+- `CHANGELOG.md`: thay đổi của bản 1.3.2.
 - `docs/ARCHITECTURE.md`: kiến trúc và luồng dữ liệu.
 - `docs/ADDING_STEM_MODELS.md`: contract và quy trình thêm/nhập model.
 - `docs/MEL_BAND_ROFORMER_INTEGRATION.md`: artifact, nguồn tham chiếu và checklist benchmark.

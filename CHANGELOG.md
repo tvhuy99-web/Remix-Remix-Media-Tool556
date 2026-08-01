@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2 - 2026-08-02
+
+### Sửa lỗi FFmpegKit trên thiết bị
+
+- Thêm rõ dependency `com.arthenica:smart-exception-java:0.2.1`, sửa lỗi `Failed resolution of: Lcom/arthenica/smartexception/java/Exceptions;` khi bắt đầu tách stem hoặc chạy công cụ FFmpeg.
+- Giữ các lớp Smart Exception trong bản `internal`/`release` khi R8 tối ưu.
+- CI kiểm tra trực tiếp descriptor FFmpegKit và Smart Exception trong `classes*.dex` của từng APK để ngăn lỗi đóng gói tái diễn.
+
 ## 1.3.1 - 2026-08-01
 
 ### Nhật ký chẩn đoán và báo lỗi

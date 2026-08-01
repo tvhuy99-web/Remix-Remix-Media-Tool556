@@ -158,17 +158,21 @@ jobs:
           *.jpeg binary
           EOF
 
-      - name: Replace repository contents
-        run: |
-          rsync -a --delete --exclude='.git/' /tmp/mediatool-source/ ./
-          chmod +x gradlew
-          find scripts -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} +
-
       - name: Verify imported source
+        working-directory: /tmp/mediatool-source
         run: |
           python3 scripts/verify_project.py
           ./scripts/run_core_smoke.sh
           python3 scripts/test_wrapper_bootstrap.py
+
+      - name: Replace repository contents
+        run: |
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/workflows/' \
+            /tmp/mediatool-source/ ./
+          chmod +x gradlew
+          find scripts -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} +
 
       - name: Commit replacement
         run: |

@@ -106,6 +106,7 @@ try:
     versions = catalog.get("versions", {})
     check(versions.get("agp") == "8.13.2", "AGP không phải 8.13.2")
     check(versions.get("ffmpegKit") == "8.1.7", "FFmpegKit không phải 8.1.7")
+    check(versions.get("smartException") == "0.2.1", "Smart Exception không phải 0.2.1")
 except Exception as exc:
     ERRORS.append(f"Version catalog TOML lỗi: {exc}")
 
@@ -125,8 +126,8 @@ check('namespace = "com.aistudio.mediatool"' in build_gradle, "Namespace không 
 check('applicationId = "com.aistudio.mediatool"' in build_gradle, "Application ID không đúng")
 check("libs.ffmpeg.kit.full" in build_gradle, "Thiếu dependency FFmpegKit Maven")
 check("libs.onnxruntime.android" in build_gradle, "Thiếu dependency ONNX Runtime")
-check("versionCode = 6" in build_gradle, "versionCode không phải 6")
-check('versionName = "1.3.1"' in build_gradle, "versionName không phải 1.3.1")
+check("versionCode = 7" in build_gradle, "versionCode không phải 7")
+check('versionName = "1.3.2"' in build_gradle, "versionName không phải 1.3.2")
 check('create("internal")' in build_gradle, "Thiếu build type internal")
 check('initWith(getByName("release"))' in build_gradle, "Internal không kế thừa release")
 check("isMinifyEnabled = true" in build_gradle and "isShrinkResources = true" in build_gradle, "Release chưa bật tối ưu")

@@ -59,6 +59,12 @@ app/build/outputs/apk/internal/
 - `internal`: dùng cấu hình tối ưu gần release nhưng ký bằng debug key, phù hợp cài thử.
 - `release`: chỉ dành cho bản ký chính thức.
 
+### GitHub Actions
+
+Workflow `Build and test Android` tự chạy khi có commit mới trên `main` hoặc `master`, đồng thời hỗ trợ chạy thủ công bằng nút **Run workflow**.
+
+Khi workflow hoàn tất thành công, mở trang chi tiết của run và tải artifact `mediatool-apks` ở cuối trang. File ZIP chứa APK `debug` và `internal`. Artifact chỉ xuất hiện sau khi job build hoàn tất, không nằm ở trang Actions tổng hoặc mục Releases.
+
 ## Ký APK release
 
 Bản release **không tự động dùng debug key**.

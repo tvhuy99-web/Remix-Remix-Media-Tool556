@@ -72,6 +72,7 @@ internal class MdxOverlapAddWriter(
 
     fun finish() {
         if (finished) return
+        check(chunks > 0) { "MDX overlap-add received no chunks" }
         for (i in 0 until overlapFrames) {
             val denominator = pendingEnvelope[i]
             writeFrame(
@@ -86,8 +87,12 @@ internal class MdxOverlapAddWriter(
         finished = true
     }
 
+    /**
+     * Closing an interrupted writer must not synthesize a partial tail or mask the original error.
+     * Successful callers invoke [finish] explicitly before leaving their use block.
+     */
     override fun close() {
-        finish()
+        runCatching(::flushBuffer)
         output.close()
     }
 

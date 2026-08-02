@@ -1,22 +1,25 @@
 name: Apply QNN CPU fallback fix
 
 on:
-  push:
+  pull_request:
+    types: [edited]
     branches:
-      - agent/fix-qnn-cpu-fallback
-    paths:
-      - .github/workflows/apply-qnn-fallback-fix.yml
+      - agent/demucs-v4-qnn-gpu
 
 permissions:
   contents: write
 
 jobs:
   patch-and-verify:
+    if: >-
+      github.event.pull_request.number == 12 &&
+      github.event.pull_request.head.ref == 'agent/fix-qnn-cpu-fallback'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source
+      - name: Checkout fix branch
         uses: actions/checkout@v4
         with:
+          ref: agent/fix-qnn-cpu-fallback
           fetch-depth: 0
 
       - name: Set up JDK 17

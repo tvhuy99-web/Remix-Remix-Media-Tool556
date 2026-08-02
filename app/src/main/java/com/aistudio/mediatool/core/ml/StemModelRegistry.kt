@@ -1,10 +1,13 @@
 package com.aistudio.mediatool.core.ml
 
 /**
- * Catalog duy nhất cho UI, downloader, preflight và inference. Thêm một model waveform ONNX
- * mới không cần thêm nhánh theo tên model trong các lớp đó; chỉ cần descriptor đã kiểm chứng.
+ * Catalog duy nhất cho UI, downloader, preflight và inference.
+ *
+ * Waveform ONNX và MDX LiteRT dùng cùng descriptor/download path nhưng được định tuyến sang engine riêng
+ * bởi [StemEngineRouter]. Model URL luôn ghim vào revision và mọi byte đều được kiểm tra SHA-256.
  */
 object StemModelRegistry {
+    const val UVR_MDX_VOC_FT_LITERT_ID = "uvr-mdx-voc-ft-litert-fp16-v1"
     const val MEL_BAND_ROFORMER_ID = "melband-roformer-kj-vocals-v1"
     const val DEMUCS_2_STEM_LITE_ID = "demucs-ht-2stems-lite-v1"
     const val DEMUCS_4_STEM_ID = "demucs-ht-4stems-legacy-v1"
@@ -18,6 +21,61 @@ object StemModelRegistry {
         familyPrefix = "demucs-4stems-",
         expectedBytes = 304_330_587L,
         sha256 = "0cf9f378b3a736efacafe09b8c07aafbb3109568c274ffb7b963b540aa1978d2",
+    )
+
+    private val uvrMdxVocFtContract = MdxSpectrogramContract(
+        nFft = 6_144,
+        hopLength = 1_024,
+        frequencyBins = 3_072,
+        timeFrames = 256,
+        overlapRatio = 0.10f,
+        compensation = 1.0f,
+    )
+
+    val uvrMdxVocFtLiteRt = StemModelDescriptor(
+        id = UVR_MDX_VOC_FT_LITERT_ID,
+        displayName = "UVR MDX-Net Voc FT — LiteRT (thử nghiệm)",
+        description = "Model chuyên vocals; ưu tiên LiteRT GPU, tự chuyển CPU 4 luồng nếu GPU không dùng được.",
+        mode = StemMode.TWO_STEM,
+        modelSpec = ModelSpec(
+            url = "https://huggingface.co/gyoom-sa/UVR-MDX-LiteRT/resolve/2ea6124ae9a9e83e2c2bc432eb84533d76310a66/UVR-MDX-NET-Voc_FT.fp16acc.tflite?download=true",
+            fileName = "UVR-MDX-NET-Voc_FT-2ea6124-fp16acc.tflite",
+            familyPrefix = "UVR-MDX-NET-Voc_FT-",
+            expectedBytes = 66_848_828L,
+            sha256 = "5ef47e3b3bafa14357532c0a3f6c5f18444d94b6efe3fd62b3d13f80051f1e58",
+        ),
+        sampleRate = 44_100,
+        channels = 2,
+        // MDX engine uses mdx.strideFrames/window; this mirrors its native static tensor size for preflight/UI.
+        chunking = ChunkingSpec(
+            frames = uvrMdxVocFtContract.chunkFrames,
+            overlapFrames = uvrMdxVocFtContract.overlapFrames,
+            edgeFadeFrames = uvrMdxVocFtContract.trimFrames,
+            overlapProfile = OverlapProfile.REFERENCE_LINEAR_WINDOW,
+        ),
+        normalization = AudioNormalization.NONE,
+        // Placeholder logical contract for the common descriptor. Physical LiteRT I/O is defined by mdx.
+        tensor = TensorContract(
+            inputName = "serving_default_args_0:0",
+            outputName = "PartitionedCall:0",
+            inputLayout = TensorAudioLayout.BATCH_CHANNEL_FRAME,
+            outputLayout = TensorSourceLayout.BATCH_SOURCE_CHANNEL_FRAME,
+            sourceCount = 2,
+        ),
+        sources = StemSourceMap(
+            vocals = SourceMix(listOf(0)),
+            music = SourceMix(listOf(1)),
+        ),
+        allowedAccelerators = setOf(OnnxAcceleration.CPU),
+        deviceRequirements = DeviceRequirements(
+            minimumTotalRamBytes = 4L * GIB,
+            minimumAvailableRamBytes = 3L * GIB / 2L,
+            userFacingSummary = "Khuyến nghị RAM 6 GB và còn ít nhất 1,5 GB trống.",
+        ),
+        licenseName = "MIT (UVR MDX-Net và bản chuyển LiteRT)",
+        projectUrl = "https://huggingface.co/gyoom-sa/UVR-MDX-LiteRT",
+        backend = StemInferenceBackend.MDX_LITERT,
+        mdx = uvrMdxVocFtContract,
     )
 
     val melBandRoFormerTwoStem = StemModelDescriptor(
@@ -68,7 +126,7 @@ object StemModelRegistry {
     val demucsTwoStemLite = StemModelDescriptor(
         id = DEMUCS_2_STEM_LITE_ID,
         displayName = "Demucs nhẹ (2 stem)",
-        description = "Ít tốn RAM hơn Mel-Band; xuất lời và nhạc nền.",
+        description = "Baseline ổn định 1.3.3; xuất lời và nhạc nền bằng ONNX CPU/XNNPACK.",
         mode = StemMode.TWO_STEM,
         modelSpec = demucsModelSpec,
         sampleRate = 44_100,
@@ -141,6 +199,8 @@ object StemModelRegistry {
     )
 
     val all: List<StemModelDescriptor> = listOf(
+        // Experimental branch defaults new two-stem installs to UVR; persisted model IDs remain respected.
+        uvrMdxVocFtLiteRt,
         melBandRoFormerTwoStem,
         demucsFourStem,
         demucsTwoStemLite,

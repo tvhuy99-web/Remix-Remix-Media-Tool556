@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build-debug:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
 
     steps:
       - name: Checkout source
@@ -42,24 +42,10 @@ jobs:
         with:
           validate-wrappers: true
 
-      - name: Cache pinned Demucs source
-        uses: actions/cache@v4
-        with:
-          path: .deps/demucs.cpp
-          key: demucs-cpp-f1206e9-arm64
-
-      - name: Prepare pinned Demucs C++ source
-        run: bash scripts/prepare_demucs_cpp.sh
-
-      - name: Cache native CMake output
-        uses: actions/cache@v4
-        with:
-          path: app/.cxx
-          key: native-demucs-${{ runner.os }}-${{ hashFiles('app/src/main/cpp/**', 'scripts/prepare_demucs_cpp.sh') }}
-
       - name: Verify project
         run: python3 scripts/verify_project.py
 
+      # Slow legacy tasks intentionally excluded: assembleInternal, assembleDebugAndroidTest.
       - name: Build app-debug APK
         run: |
           chmod +x gradlew

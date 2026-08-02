@@ -2,7 +2,6 @@ package com.aistudio.mediatool.ui.screens
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -25,6 +24,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.MediaEngine
@@ -74,7 +74,7 @@ fun OtherScreen(navController: NavController) {
         }
     }
 
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val launcher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri ->
         if (uri != null) {
             DocumentUtils.persistReadPermission(context, uri)
             fileUriText = uri.toString()
@@ -284,14 +284,14 @@ fun OtherScreen(navController: NavController) {
                                     ?.sortedBy { it.name }
                                     .orEmpty()
                                 require(images.isNotEmpty()) {
-                                    "Không tạo được ảnh. Hãy kiểm tra các mốc thời gian có nằm trong video hay không"
+                                    "Mốc thời gian không hợp lệ"
                                 }
                                 val zip = FileExportManager.zipFiles(context, images, "anh_trich_xuat")
                                 imageDir.deleteRecursively()
                                 pendingDirectory = null
                                 withContext(Dispatchers.Main) {
                                     resultPath = zip.absolutePath
-                                    statusText = "Đã đóng gói ${images.size} ảnh thành ZIP. Chọn Lưu hoặc Chia sẻ bên dưới."
+                                    statusText = "Đã tạo ZIP ${images.size} ảnh"
                                     progress = 100f
                                     isProcessing = false
                                 }
@@ -654,9 +654,7 @@ fun OtherScreen(navController: NavController) {
             }
 
             if (isVideoMode && modeIndex == 3) {
-                Text("Nhập các mốc thời gian (giây) để cắt ảnh. Cách nhau bằng dấu phẩy.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedTextField(value = imgExtractTimes, onValueChange = { imgExtractTimes = it }, placeholder = { Text("Ví dụ: 1.5, 5, 12") }, label = { Text("Các mốc thời gian (giây)") }, modifier = Modifier.fillMaxWidth())
-                Text("Ảnh sẽ được đóng thành một tệp ZIP để bạn lưu hoặc chia sẻ.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             if (isVideoMode && modeIndex == 4) {
@@ -753,7 +751,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableNorm, onCheckedChange = { enableNorm = it }, text = "Bật chuẩn hóa loudness (EBU R128)")
+                        AccessibleCheckboxRow(checked = enableNorm, onCheckedChange = { enableNorm = it }, text = "Chuẩn hóa âm lượng")
                         if (enableNorm) {
                             Text(
                                 "Chuẩn hóa áp dụng cho toàn bộ tệp để đo loudness ổn định.",
@@ -772,7 +770,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableDenoise, onCheckedChange = { enableDenoise = it }, text = "Bật Lọc nhiễu (Denoise)")
+                        AccessibleCheckboxRow(checked = enableDenoise, onCheckedChange = { enableDenoise = it }, text = "Lọc nhiễu")
                         if (enableDenoise) {
                             TimeBlock(denoiseStartMs, { denoiseStartMs = it }, denoiseEndMs, { denoiseEndMs = it }, "Lọc nhiễu")
                             AccessibleSliderColumn(
@@ -787,7 +785,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableSilenceRemove, onCheckedChange = { enableSilenceRemove = it }, text = "Tự động cắt khoảng lặng (Silence Remove)")
+                        AccessibleCheckboxRow(checked = enableSilenceRemove, onCheckedChange = { enableSilenceRemove = it }, text = "Cắt khoảng lặng")
                         if (enableSilenceRemove) {
                             AccessibleSliderColumn(
                                 label = "Ngưỡng phát hiện: -${silenceThreshold.roundToInt()} dB",
@@ -801,7 +799,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableNg, onCheckedChange = { enableNg = it }, text = "Bật Noise Gate (Cổng triệt ồn)")
+                        AccessibleCheckboxRow(checked = enableNg, onCheckedChange = { enableNg = it }, text = "Noise Gate")
                         if (enableNg) {
                             TimeBlock(ngStartMs, { ngStartMs = it }, ngEndMs, { ngEndMs = it }, "Noise Gate")
                             ExposedDropdownMenuBox(
@@ -829,7 +827,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableSpeedPitch, onCheckedChange = { enableSpeedPitch = it }, text = "Bật Thay đổi Tốc độ & Độ cao")
+                        AccessibleCheckboxRow(checked = enableSpeedPitch, onCheckedChange = { enableSpeedPitch = it }, text = "Tốc độ và cao độ")
                         if (enableSpeedPitch) {
                             if (!isVideoMode) {
                                 AccessibleSliderColumn(
@@ -851,7 +849,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enablePan, onCheckedChange = { enablePan = it }, text = "Bật Pan tĩnh")
+                        AccessibleCheckboxRow(checked = enablePan, onCheckedChange = { enablePan = it }, text = "Pan")
                         if (enablePan) {
                             TimeBlock(panStartMs, { panStartMs = it }, panEndMs, { panEndMs = it }, "Pan trái phải")
                             AccessibleSliderColumn(
@@ -866,7 +864,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableAutoPan, onCheckedChange = { enableAutoPan = it }, text = "Bật Auto Pan (Hiệu ứng đảo tai)")
+                        AccessibleCheckboxRow(checked = enableAutoPan, onCheckedChange = { enableAutoPan = it }, text = "Auto Pan")
                         if (enableAutoPan) {
                             AccessibleSliderColumn(
                                 label = "Chu kỳ Auto Pan: ${autoPanCycle.roundToInt()} ms",
@@ -880,7 +878,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableEcho, onCheckedChange = { enableEcho = it }, text = "Bật tiếng vang (Echo)")
+                        AccessibleCheckboxRow(checked = enableEcho, onCheckedChange = { enableEcho = it }, text = "Echo")
                         if (enableEcho) {
                             AccessibleSliderColumn(
                                 label = "Độ trễ vang: ${echoDelayMs.roundToInt()} ms",
@@ -900,7 +898,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableReverb, onCheckedChange = { enableReverb = it }, text = "Bật Reverb (Vang phòng thu)")
+                        AccessibleCheckboxRow(checked = enableReverb, onCheckedChange = { enableReverb = it }, text = "Reverb")
                         if (enableReverb) {
                             AccessibleSliderColumn(
                                 label = "Kích thước phòng: ${(reverbRoomSize * 100).roundToInt()}%",
@@ -926,10 +924,10 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableComp, onCheckedChange = { enableComp = it }, text = "Bật Compressor (Nén âm lượng)")
+                        AccessibleCheckboxRow(checked = enableComp, onCheckedChange = { enableComp = it }, text = "Compressor")
                         if (enableComp) {
                             TimeBlock(compStartMs, { compStartMs = it }, compEndMs, { compEndMs = it }, "Nén âm lượng Compressor")
-                            AccessibleCheckboxRow(checked = compIsLimiter, onCheckedChange = { compIsLimiter = it }, text = "Chế độ Limiter (chặn cứng)")
+                            AccessibleCheckboxRow(checked = compIsLimiter, onCheckedChange = { compIsLimiter = it }, text = "Limiter")
                             AccessibleSliderColumn(
                                 label = "Ngưỡng (Threshold): ${compThresholdDb.roundToInt()} dB",
                                 value = compThresholdDb,
@@ -966,7 +964,7 @@ fun OtherScreen(navController: NavController) {
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        AccessibleCheckboxRow(checked = enableEq, onCheckedChange = { enableEq = it }, text = "Bật EQ (Equalizer 5 dải tần)")
+                        AccessibleCheckboxRow(checked = enableEq, onCheckedChange = { enableEq = it }, text = "EQ")
                         if (enableEq) {
                             TimeBlock(eqStartMs, { eqStartMs = it }, eqEndMs, { eqEndMs = it }, "Equalizer")
                             ExposedDropdownMenuBox(
@@ -1051,7 +1049,7 @@ fun OtherScreen(navController: NavController) {
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { if (!isProcessing) processFeature(true) }, modifier = Modifier.weight(1f)) {
-                    Text("✂️ Tạo mẫu 10s & Nghe thử", textAlign = TextAlign.Center)
+                    Text("Nghe thử 10 giây", textAlign = TextAlign.Center)
                 }
             }
 

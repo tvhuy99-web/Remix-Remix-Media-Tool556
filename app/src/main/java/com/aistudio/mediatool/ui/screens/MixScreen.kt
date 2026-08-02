@@ -6,7 +6,6 @@ import androidx.media3.common.MediaItem
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -35,6 +34,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.aistudio.mediatool.core.GetContentWithMimeTypes
+import com.aistudio.mediatool.core.GetMultipleContentsWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.FileExportManager
@@ -222,7 +223,7 @@ fun MixScreen(navController: NavController) {
         }
     }
 
-    val launcherBase = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val launcherBase = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri ->
         if (uri != null) {
             DocumentUtils.persistReadPermission(context, uri)
             baseUriText = uri.toString()
@@ -237,7 +238,7 @@ fun MixScreen(navController: NavController) {
         }
     }
 
-    val launcherBg = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+    val launcherBg = rememberLauncherForActivityResult(GetMultipleContentsWithMimeTypes()) { uris ->
         uris.forEach { uri ->
             DocumentUtils.persistReadPermission(context, uri)
             if (bgAudios.size < 5 && bgAudios.none { it.uri == uri }) {
@@ -961,14 +962,14 @@ fun AdvancedPanDialog(
                 AccessibleCheckboxRow(
                     checked = enabled,
                     onCheckedChange = { enabled = it },
-                    text = "Bật cân bằng kênh tĩnh cho từng đoạn"
+                    text = "Cân bằng kênh theo đoạn"
                 )
                 
                 Text("ĐOẠN GỐC", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
                 OutlinedTextField(
                     value = localBasePans,
                     onValueChange = { localBasePans = it },
-                    label = { Text("Cân bằng kênh đoạn gốc (các giá trị cách nhau bằng dấu phẩy)") },
+                    label = { Text("Cân bằng kênh gốc") },
                     modifier = Modifier.fillMaxWidth()
                 )
                 
@@ -1247,7 +1248,7 @@ fun MixerChannelStrip(
             }
             
             if (isMuted) {
-                Text("Kênh này đang bị khóa âm lượng do tắt tiếng ở màn hình ngoài.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                Text("Kênh đang tắt tiếng.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
             }
         }
     }

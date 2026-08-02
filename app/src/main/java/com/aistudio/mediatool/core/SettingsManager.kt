@@ -22,9 +22,11 @@ object SettingsManager {
     fun getHardwareAccelIndex(context: Context): Int = prefs(context).getInt(KEY_HW_ACCEL_INDEX, 0).coerceIn(0, 2)
     fun setHardwareAccelIndex(context: Context, value: Int) = prefs(context).edit().putInt(KEY_HW_ACCEL_INDEX, value.coerceIn(0, 2)).apply()
 
-    fun getNumThreadsIndex(context: Context): Int = prefs(context).getInt(KEY_NUM_THREADS_INDEX, 2).coerceIn(0, 3)
-    fun setNumThreadsIndex(context: Context, value: Int) = prefs(context).edit().putInt(KEY_NUM_THREADS_INDEX, value.coerceIn(0, 3)).apply()
-    fun getNumThreads(context: Context): Int = intArrayOf(1, 2, 4, 8)[getNumThreadsIndex(context)]
+    // Với Demucs native, giá trị này là số worker inference độc lập.
+    // Giá trị 8 cũ được tự động hạ về 4 khi đọc cài đặt.
+    fun getNumThreadsIndex(context: Context): Int = prefs(context).getInt(KEY_NUM_THREADS_INDEX, 2).coerceIn(0, 2)
+    fun setNumThreadsIndex(context: Context, value: Int) = prefs(context).edit().putInt(KEY_NUM_THREADS_INDEX, value.coerceIn(0, 2)).apply()
+    fun getNumThreads(context: Context): Int = intArrayOf(1, 2, 4)[getNumThreadsIndex(context)]
 
     fun getStemModeIndex(context: Context): Int = prefs(context).getInt(KEY_STEM_MODE_INDEX, 0).coerceIn(0, 1)
     fun setStemModeIndex(context: Context, value: Int) = prefs(context).edit().putInt(KEY_STEM_MODE_INDEX, value.coerceIn(0, 1)).apply()

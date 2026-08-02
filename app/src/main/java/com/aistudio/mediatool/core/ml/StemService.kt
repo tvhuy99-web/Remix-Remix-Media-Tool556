@@ -22,6 +22,8 @@ import com.aistudio.mediatool.core.TaskStateStore
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
 import com.aistudio.mediatool.core.diagnostics.ProcessExitDiagnostics
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,13 +34,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.io.File
-import java.util.UUID
 
 class StemService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var processingJob: Job? = null
-    private var separator: AudioSeparator? = null
+    private var separator: StemEngineRouter? = null
     private var currentTaskId: String? = null
     @Volatile private var stopping = false
 
@@ -107,6 +107,7 @@ class StemService : Service() {
             fields = mapOf(
                 "model_id" to modelDescriptor.id,
                 "mode" to modelDescriptor.mode,
+                "backend" to modelDescriptor.backend,
                 "source_id" to sourceId,
                 "model_bytes" to model.length(),
             ),
@@ -148,6 +149,7 @@ class StemService : Service() {
                     sessionId = taskId,
                     fields = mapOf(
                         "model_id" to modelDescriptor.id,
+                        "backend" to modelDescriptor.backend,
                         "elapsed_ms" to SystemClock.elapsedRealtime() - validationStartedAt,
                     ),
                 )
@@ -157,7 +159,7 @@ class StemService : Service() {
                     "Đang chuẩn bị ${modelDescriptor.displayName} (${preflight.stemCount} stem)",
                 )
 
-                val activeSeparator = AudioSeparator(this@StemService, model, modelDescriptor, taskId)
+                val activeSeparator = StemEngineRouter(this@StemService, model, modelDescriptor, taskId)
                 separator = activeSeparator
                 var lastProgressBucket = -1
                 activeSeparator.separate(uri).collect { state ->
@@ -197,6 +199,7 @@ class StemService : Service() {
                                 sessionId = taskId,
                                 fields = mapOf(
                                     "model_id" to modelDescriptor.id,
+                                    "backend" to modelDescriptor.backend,
                                     "output_count" to outputs.size,
                                     "output_bytes" to outputs.sumOf(File::length),
                                     "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
@@ -227,6 +230,7 @@ class StemService : Service() {
                     message = message,
                     fields = mapOf(
                         "model_id" to modelDescriptor.id,
+                        "backend" to modelDescriptor.backend,
                         "source_id" to sourceId,
                         "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
                         "out_of_memory" to (error is OutOfMemoryError),
@@ -266,6 +270,7 @@ class StemService : Service() {
             sessionId = currentTaskId,
             fields = mapOf(
                 "model_id" to model.id,
+                "backend" to model.backend,
                 "duration_ms" to durationMs,
                 "stem_count" to estimate.stemCount,
                 "required_storage_bytes" to estimate.recommendedFreeBytes,
@@ -319,9 +324,7 @@ class StemService : Service() {
     }
 
     private fun finishService() {
-        currentTaskId?.let { taskId ->
-            ProcessExitDiagnostics.finish(this, TASK_TYPE, taskId)
-        }
+        currentTaskId?.let { taskId -> ProcessExitDiagnostics.finish(this, TASK_TYPE, taskId) }
         _isProcessing.value = false
         processingJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -411,7 +414,6 @@ class StemService : Service() {
         )
     }
 
-
     override fun onDestroy() {
         DiagnosticLogger.info(
             component = "StemService",
@@ -460,12 +462,10 @@ class StemService : Service() {
             when (previous.status) {
                 PersistentTaskStatus.INTERRUPTED -> {
                     _isProcessing.value = false
-                    _errorMsg.value = previous.message
-                        ?: "Tác vụ tách nhạc trước đã bị hệ thống dừng"
+                    _errorMsg.value = previous.message ?: "Tác vụ tách nhạc trước đã bị hệ thống dừng"
                 }
                 PersistentTaskStatus.SUCCESS -> {
-                    val files = previous.outputPaths.map(::File)
-                        .filter { it.isFile && it.length() > 0L }
+                    val files = previous.outputPaths.map(::File).filter { it.isFile && it.length() > 0L }
                     if (files.size >= 2) {
                         _isProcessing.value = false
                         _errorMsg.value = null

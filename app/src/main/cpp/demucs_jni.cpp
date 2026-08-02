@@ -186,7 +186,7 @@ Java_com_aistudio_mediatool_core_ml_DemucsNativeBridge_separate(
         if (!demucscpp::load_demucs_model(model, &demucs_model)) {
             throw std::runtime_error("Cannot load verified Demucs model");
         }
-        if (!demucs_model.is_4sources && demucs_model.num_sources != 4) {
+        if (!demucs_model.is_4sources) {
             throw std::runtime_error("Model is not a four-source Demucs model");
         }
 

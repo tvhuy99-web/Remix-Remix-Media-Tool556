@@ -21,8 +21,8 @@ android {
         applicationId = "com.aistudio.mediatool"
         minSdk = 24
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.3.2"
+        versionCode = 8
+        versionName = "1.3.3"
 
         // FFmpegKit maintained chỉ phát hành binary Maven cho arm64-v8a.
         // Giới hạn cả APK và App Bundle để không tạo artifact cài được nhưng
@@ -43,13 +43,13 @@ android {
                 })
                 storePassword = requireNotNull(keystoreProperties.getProperty("storePassword")) {
                     "Thiếu storePassword trong keystore.properties"
-                }
+                })
                 keyAlias = requireNotNull(keystoreProperties.getProperty("keyAlias")) {
                     "Thiếu keyAlias trong keystore.properties"
-                }
+                })
                 keyPassword = requireNotNull(keystoreProperties.getProperty("keyPassword")) {
                     "Thiếu keyPassword trong keystore.properties"
-                }
+                })
             }
         }
     }

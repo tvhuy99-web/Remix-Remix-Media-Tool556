@@ -13,7 +13,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.aistudio.mediatool.core.SettingsManager
-import com.aistudio.mediatool.core.ml.OnnxAcceleration
 import com.aistudio.mediatool.core.ml.StemMode
 import com.aistudio.mediatool.core.ml.StemModelRegistry
 import com.aistudio.mediatool.ui.components.DiagnosticReportCard
@@ -162,23 +161,13 @@ fun SettingsScreen(navController: NavController) {
                     Text("Tối ưu Tốc độ Tách Audio (AI Model)", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
 
                     var expandedHw by remember { mutableStateOf(false) }
-                    val hwList = listOf(
-                        "CPU mặc định (Ổn định, khuyên dùng)",
-                        "NNAPI (Thử nghiệm, tùy thiết bị)",
-                        "XNNPACK (Thử nghiệm, tùy model)",
-                    )
+                    val hwList = listOf("CPU", "NNAPI", "XNNPACK")
                     ExposedDropdownMenuBox(expanded = expandedHw, onExpandedChange = { expandedHw = it }, modifier = Modifier.fillMaxWidth()) {
                         OutlinedTextField(
                             value = hwList.getOrNull(hwAccelIndex) ?: hwList[0],
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Bộ tăng tốc phần cứng (Hardware AI)", color = Color(0xFF673AB7), fontWeight = FontWeight.SemiBold) },
-                            supportingText = {
-                                val acceleration = OnnxAcceleration.fromSettingsIndex(hwAccelIndex)
-                                if (acceleration !in configuredStemModel.allowedAccelerators) {
-                                    Text("${configuredStemModel.displayName} sẽ tự dùng CPU với lựa chọn này.")
-                                }
-                            },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedHw) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
@@ -190,7 +179,7 @@ fun SettingsScreen(navController: NavController) {
                     }
 
                     var expandedThreads by remember { mutableStateOf(false) }
-                    val threadsList = listOf("1 Luồng (Chậm, Tiết kiệm Pin)", "2 Luồng (Cân bằng)", "4 Luồng (Mặc định - Nhanh, Đa luồng)", "8 Luồng (Siêu Tốc, Tốn RAM & Nóng máy)")
+                    val threadsList = listOf("1 luồng", "2 luồng", "4 luồng", "8 luồng")
                     ExposedDropdownMenuBox(expanded = expandedThreads, onExpandedChange = { expandedThreads = it }, modifier = Modifier.fillMaxWidth()) {
                         OutlinedTextField(
                             value = threadsList.getOrNull(numThreadsIndex) ?: threadsList[2],
@@ -253,7 +242,6 @@ fun SettingsScreen(navController: NavController) {
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Mô hình tách stem", fontWeight = FontWeight.SemiBold) },
-                            supportingText = { Text(selectedModel.description) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedStemModel) },
                             modifier = Modifier.menuAnchor().fillMaxWidth(),
                         )
@@ -270,30 +258,6 @@ fun SettingsScreen(navController: NavController) {
                                     },
                                 )
                             }
-                        }
-                    }
-
-                    Text(
-                        "${selectedModel.downloadSizeMiB} MiB tải một lần • ${selectedModel.deviceRequirements.userFacingSummary}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text("Lưu ý về mô hình AI", fontWeight = FontWeight.Bold)
-                            Text(
-                                "Mô hình tách nhạc được tải ở lần sử dụng đầu tiên, kiểm tra tính toàn vẹn rồi lưu trong vùng riêng của ứng dụng. " +
-                                    "Tệp kết quả chỉ được đưa ra ngoài khi bạn chọn Lưu hoặc Chia sẻ.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
                         }
                     }
 

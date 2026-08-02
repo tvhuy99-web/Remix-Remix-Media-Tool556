@@ -161,13 +161,18 @@ fun SettingsScreen(navController: NavController) {
                     Text("Tối ưu Tốc độ Tách Audio (AI Model)", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
 
                     var expandedHw by remember { mutableStateOf(false) }
-                    val hwList = listOf("CPU", "NNAPI", "XNNPACK")
+                    val hwList = listOf("CPU", "NNAPI", "XNNPACK", "QNN GPU (Snapdragon, thử nghiệm)")
                     ExposedDropdownMenuBox(expanded = expandedHw, onExpandedChange = { expandedHw = it }, modifier = Modifier.fillMaxWidth()) {
                         OutlinedTextField(
                             value = hwList.getOrNull(hwAccelIndex) ?: hwList[0],
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Bộ tăng tốc phần cứng (Hardware AI)", color = Color(0xFF673AB7), fontWeight = FontWeight.SemiBold) },
+                            supportingText = {
+                                if (hwAccelIndex == 3) {
+                                    Text("QNN GPU không fallback CPU: graph không tương thích sẽ báo lỗi thay vì chạy chậm âm thầm.")
+                                }
+                            },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedHw) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
@@ -186,6 +191,9 @@ fun SettingsScreen(navController: NavController) {
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Số luồng xử lý CPU", color = Color(0xFFFF5722), fontWeight = FontWeight.SemiBold) },
+                            supportingText = {
+                                if (hwAccelIndex == 3) Text("Không ảnh hưởng đến inference QNN GPU.")
+                            },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedThreads) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )

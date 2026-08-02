@@ -12,3 +12,14 @@ Dự án dùng các thành phần bên thứ ba được tải từ Maven hoặc
 - Bản chuyển đổi `smank/mel-band-roformer-vocals-onnx`, giấy phép MIT, được tải theo yêu cầu và không nằm trong APK/kho nguồn. Bản chuyển đổi dẫn xuất từ checkpoint vocals của KimberleyJensen (MIT), mã Mel-Band RoFormer của ZFTurbo/lucidrains (MIT) và STFT/iSTFT dạng convolution từ fork Demucs của Mixxx (MIT). Nguồn và attribution đầy đủ: https://huggingface.co/smank/mel-band-roformer-vocals-onnx
 
 Tệp này là bản tóm tắt kỹ thuật, không phải tư vấn pháp lý. Khi phân phối APK công khai, giữ notice bắt buộc, cung cấp giấy phép tương ứng và xác minh nghĩa vụ của toàn bộ codec native trong APK thực tế.
+
+HT-Demucs FT Vocals ONNX model
+- Source: https://huggingface.co/StemSplitio/htdemucs-ft-vocals-onnx
+- Pinned revision: 2ef0d757d3e226d0da85fb8c71514f464fcabdd0
+- File: htdemucs_ft_vocals_fp16weights.onnx
+- License: MIT
+
+ONNX Runtime QNN Execution Provider
+- Artifact: com.microsoft.onnxruntime:onnxruntime-android-qnn:1.27.0
+- License: MIT; bundled Qualcomm runtime components retain their accompanying notices.
+

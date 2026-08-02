@@ -38,6 +38,7 @@ enum class OnnxAcceleration(val settingsIndex: Int) {
     CPU(0),
     NNAPI(1),
     XNNPACK(2),
+    QNN_GPU(3),
     ;
 
     companion object {
@@ -116,6 +117,7 @@ data class StemModelDescriptor(
     val normalization: AudioNormalization,
     val tensor: TensorContract,
     val sources: StemSourceMap,
+    val musicFromMixMinusVocals: Boolean = false,
     val allowedAccelerators: Set<OnnxAcceleration>,
     val deviceRequirements: DeviceRequirements,
     val licenseName: String,

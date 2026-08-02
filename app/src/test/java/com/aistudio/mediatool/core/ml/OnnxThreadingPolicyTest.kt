@@ -11,6 +11,11 @@ class OnnxThreadingPolicyTest {
     }
 
     @Test
+    fun qnnGpuKeepsOrtSingleThreaded() {
+        assertEquals(OnnxThreadingConfig(1, null), OnnxThreadingPolicy.resolve(3, 8))
+    }
+
+    @Test
     fun cpuAndNnapiKeepOrtThreadSetting() {
         val cpu = OnnxThreadingPolicy.resolve(0, 4)
         assertEquals(4, cpu.ortIntraOpThreads)

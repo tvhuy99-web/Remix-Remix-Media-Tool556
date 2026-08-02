@@ -19,8 +19,8 @@ object SettingsManager {
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    fun getHardwareAccelIndex(context: Context): Int = prefs(context).getInt(KEY_HW_ACCEL_INDEX, 0).coerceIn(0, 2)
-    fun setHardwareAccelIndex(context: Context, value: Int) = prefs(context).edit().putInt(KEY_HW_ACCEL_INDEX, value.coerceIn(0, 2)).apply()
+    fun getHardwareAccelIndex(context: Context): Int = prefs(context).getInt(KEY_HW_ACCEL_INDEX, 3).coerceIn(0, 3)
+    fun setHardwareAccelIndex(context: Context, value: Int) = prefs(context).edit().putInt(KEY_HW_ACCEL_INDEX, value.coerceIn(0, 3)).apply()
 
     fun getNumThreadsIndex(context: Context): Int = prefs(context).getInt(KEY_NUM_THREADS_INDEX, 2).coerceIn(0, 3)
     fun setNumThreadsIndex(context: Context, value: Int) = prefs(context).edit().putInt(KEY_NUM_THREADS_INDEX, value.coerceIn(0, 3)).apply()

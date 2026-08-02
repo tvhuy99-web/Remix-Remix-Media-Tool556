@@ -5,6 +5,7 @@ package com.aistudio.mediatool.core.ml
  * mới không cần thêm nhánh theo tên model trong các lớp đó; chỉ cần descriptor đã kiểm chứng.
  */
 object StemModelRegistry {
+    const val HTDEMUCS_FT_VOCALS_QNN_ID = "htdemucs-ft-vocals-fp16-qnn-v1"
     const val MEL_BAND_ROFORMER_ID = "melband-roformer-kj-vocals-v1"
     const val DEMUCS_2_STEM_LITE_ID = "demucs-ht-2stems-lite-v1"
     const val DEMUCS_4_STEM_ID = "demucs-ht-4stems-legacy-v1"
@@ -18,6 +19,53 @@ object StemModelRegistry {
         familyPrefix = "demucs-4stems-",
         expectedBytes = 304_330_587L,
         sha256 = "0cf9f378b3a736efacafe09b8c07aafbb3109568c274ffb7b963b540aa1978d2",
+    )
+
+    val htDemucsFtVocalsQnn = StemModelDescriptor(
+        id = HTDEMUCS_FT_VOCALS_QNN_ID,
+        displayName = "HT-Demucs v4 FT Vocals (QNN GPU)",
+        description = "Model vocals fine-tuned, ưu tiên GPU Snapdragon; instrumental được lấy từ mix trừ vocals.",
+        mode = StemMode.TWO_STEM,
+        modelSpec = ModelSpec(
+            url = "https://huggingface.co/StemSplitio/htdemucs-ft-vocals-onnx/resolve/2ef0d757d3e226d0da85fb8c71514f464fcabdd0/htdemucs_ft_vocals_fp16weights.onnx?download=true",
+            fileName = "htdemucs-ft-vocals-fp16-2ef0d757.onnx",
+            familyPrefix = "htdemucs-ft-vocals-fp16-",
+            expectedBytes = 165_612_636L,
+            sha256 = "0cbe651f535415c9d26a7bb614f7d322dd5a080fa0298f2e50f478030a994dce",
+        ),
+        sampleRate = 44_100,
+        channels = 2,
+        chunking = ChunkingSpec(
+            frames = 343_980,
+            overlapFrames = 85_995,
+            edgeFadeFrames = 85_995,
+            overlapProfile = OverlapProfile.COMPLEMENTARY_SINE,
+        ),
+        normalization = AudioNormalization.GLOBAL_MONO_MEAN_STD,
+        tensor = TensorContract(
+            inputName = "mix",
+            outputName = "stems",
+            inputLayout = TensorAudioLayout.BATCH_CHANNEL_FRAME,
+            outputLayout = TensorSourceLayout.BATCH_SOURCE_CHANNEL_FRAME,
+            sourceCount = 4,
+        ),
+        sources = StemSourceMap(
+            vocals = SourceMix(listOf(3)),
+            music = SourceMix(listOf(0, 1, 2)),
+        ),
+        musicFromMixMinusVocals = true,
+        allowedAccelerators = setOf(
+            OnnxAcceleration.CPU,
+            OnnxAcceleration.XNNPACK,
+            OnnxAcceleration.QNN_GPU,
+        ),
+        deviceRequirements = DeviceRequirements(
+            minimumTotalRamBytes = 6L * GIB,
+            minimumAvailableRamBytes = 2L * GIB,
+            userFacingSummary = "Khuyến nghị Snapdragon và còn ít nhất 2 GB RAM trống.",
+        ),
+        licenseName = "MIT",
+        projectUrl = "https://huggingface.co/StemSplitio/htdemucs-ft-vocals-onnx",
     )
 
     val melBandRoFormerTwoStem = StemModelDescriptor(
@@ -141,6 +189,7 @@ object StemModelRegistry {
     )
 
     val all: List<StemModelDescriptor> = listOf(
+        htDemucsFtVocalsQnn,
         melBandRoFormerTwoStem,
         demucsFourStem,
         demucsTwoStemLite,

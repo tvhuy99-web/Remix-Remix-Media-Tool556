@@ -326,6 +326,21 @@ class AudioSeparator(
                         mapOf("provider" to OnnxAcceleration.XNNPACK, "threads" to xnnpackThreads),
                     )
                 }
+                3 -> {
+                    setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
+                    setInterOpNumThreads(1)
+                    addConfigEntry("session.intra_op.allow_spinning", "0")
+                    addConfigEntry("session.disable_cpu_ep_fallback", "1")
+                    addQnn(hashMapOf("backend_type" to "gpu"))
+                    logInfo(
+                        "onnx_provider_config",
+                        mapOf(
+                            "provider" to OnnxAcceleration.QNN_GPU,
+                            "backend_type" to "gpu",
+                            "cpu_fallback_disabled" to true,
+                        ),
+                    )
+                }
                 else -> logInfo("onnx_provider_config", mapOf("provider" to OnnxAcceleration.CPU))
             }
         }
@@ -363,6 +378,12 @@ class AudioSeparator(
         val primaryOptions = try {
             createSessionOptions(requestedHardware)
         } catch (error: Exception) {
+            if (requestedAcceleration == OnnxAcceleration.QNN_GPU) {
+                throw IllegalStateException(
+                    "Không khởi tạo được QNN GPU. Thiết bị cần Snapdragon tương thích và QNN phải chạy toàn bộ graph.",
+                    error,
+                )
+            }
             if (requestedHardware == 0) throw error
             logError("Không cấu hình được bộ tăng tốc; chuyển sang CPU", error)
             val cpuOptions = createSessionOptions(0)
@@ -385,6 +406,12 @@ class AudioSeparator(
             )
         } catch (error: Exception) {
             primaryOptions.close()
+            if (requestedAcceleration == OnnxAcceleration.QNN_GPU) {
+                throw IllegalStateException(
+                    "QNN GPU không thể nhận toàn bộ graph của ${model.displayName}; CPU fallback đã bị khóa để tránh chạy chậm âm thầm.",
+                    error,
+                )
+            }
             if (requestedHardware == 0) throw error
             logError("Bộ tăng tốc không tạo được session cho ${model.displayName}; chuyển sang CPU", error)
             val cpuOptions = createSessionOptions(0)
@@ -849,6 +876,15 @@ class AudioSeparator(
                             val denormalized = value * std + mean
                             return if (denormalized.isFinite()) denormalized else 0f
                         }
+
+                        fun musicValue(vocals: Float, channel: Int, frame: Int): Float {
+                            if (!model.musicFromMixMinusVocals) {
+                                return mixValue(model.sources.music, channel, frame)
+                            }
+                            val original = chunkBufferFloat[frame * channels + channel]
+                            val complement = original - vocals
+                            return if (complement.isFinite()) complement else 0f
+                        }
                         
                         vocalsMergedFloat.clear()
                         musicMergedFloat.clear()
@@ -859,7 +895,7 @@ class AudioSeparator(
                         for (f in 0 until framesToWrite) {
                             for (ch in 0 until channels) {
                                 var v_val = mixValue(model.sources.vocals, ch, f)
-                                var m_val = mixValue(model.sources.music, ch, f)
+                                var m_val = musicValue(v_val, ch, f)
                                 var d_val = model.sources.drums?.let { mixValue(it, ch, f) } ?: 0f
                                 var b_val = model.sources.bass?.let { mixValue(it, ch, f) } ?: 0f
                                 var o_val = model.sources.other?.let { mixValue(it, ch, f) } ?: 0f
@@ -912,7 +948,7 @@ class AudioSeparator(
                             for (f in framesToWrite until chunkFrames) {
                                 for (ch in 0 until channels) {
                                     val v_val = mixValue(model.sources.vocals, ch, f)
-                                    val m_val = mixValue(model.sources.music, ch, f)
+                                    val m_val = musicValue(v_val, ch, f)
                                     val d_val = model.sources.drums?.let { mixValue(it, ch, f) } ?: 0f
                                     val b_val = model.sources.bass?.let { mixValue(it, ch, f) } ?: 0f
                                     val o_val = model.sources.other?.let { mixValue(it, ch, f) } ?: 0f

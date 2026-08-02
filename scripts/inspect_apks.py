@@ -53,4 +53,12 @@ for apk in paths:
         missing_ffmpeg = [marker for marker in ffmpeg_markers if not any(name.endswith(f"/{marker}") for name in native)]
         if missing_ffmpeg:
             raise SystemExit(f"{apk.name}: thiếu thư viện FFmpeg bắt buộc: {missing_ffmpeg}")
-        print(f"[OK] {apk.name}: {len(native)} native libraries, ABI={packaged_abis}")
+        qnn_provider = [name for name in native if "onnxruntime_providers_qnn" in name]
+        qnn_gpu = [name for name in native if "QnnGpu" in name]
+        if not qnn_provider:
+            raise SystemExit(f"{apk.name}: thiếu ONNX Runtime QNN provider")
+        if not qnn_gpu:
+            raise SystemExit(f"{apk.name}: thiếu Qualcomm QNN GPU backend")
+        if any(name.endswith("/libmediatool_demucs.so") for name in native):
+            raise SystemExit(f"{apk.name}: không được đóng gói demucs.cpp CPU-only")
+        print(f"[OK] {apk.name}: {len(native)} native libraries, ABI={packaged_abis}, QNN_GPU=present")

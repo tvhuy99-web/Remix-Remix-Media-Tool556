@@ -6,11 +6,23 @@ import org.junit.Test
 
 class StemModelRegistryTest {
     @Test
-    fun twoStemDefaultsToMelBandRoFormer() {
+    fun twoStemDefaultsToHtDemucsFtVocals() {
         assertSame(
-            StemModelRegistry.melBandRoFormerTwoStem,
+            StemModelRegistry.htDemucsFtVocalsQnn,
             StemModelRegistry.resolve(StemMode.TWO_STEM, null),
         )
+    }
+
+    @Test
+    fun htDemucsFtVocalsContractIsPinnedAndUsesMixComplement() {
+        val model = StemModelRegistry.htDemucsFtVocalsQnn
+        assertEquals(165_612_636L, model.modelSpec.expectedBytes)
+        assertEquals("0cbe651f535415c9d26a7bb614f7d322dd5a080fa0298f2e50f478030a994dce", model.modelSpec.sha256)
+        assertEquals("mix", model.tensor.inputName)
+        assertEquals("stems", model.tensor.outputName)
+        assertEquals(listOf(3), model.sources.vocals.sourceIndices)
+        assertEquals(true, model.musicFromMixMinusVocals)
+        assertEquals(setOf(OnnxAcceleration.CPU, OnnxAcceleration.XNNPACK, OnnxAcceleration.QNN_GPU), model.allowedAccelerators)
     }
 
     @Test
@@ -42,7 +54,7 @@ class StemModelRegistryTest {
     @Test
     fun incompatibleStoredChoiceFallsBackWithinMode() {
         assertSame(
-            StemModelRegistry.melBandRoFormerTwoStem,
+            StemModelRegistry.htDemucsFtVocalsQnn,
             StemModelRegistry.resolve(StemMode.TWO_STEM, StemModelRegistry.DEMUCS_4_STEM_ID),
         )
     }

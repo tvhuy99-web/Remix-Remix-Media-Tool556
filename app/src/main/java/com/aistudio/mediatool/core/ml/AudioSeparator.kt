@@ -356,20 +356,32 @@ class AudioSeparator(
             SettingsManager.getHardwareAccelIndex(context),
         )
         val conservativeMemoryMode = model.id == StemModelRegistry.MEL_BAND_ROFORMER_ID
+        val modelForcedAcceleration = when (model.id) {
+            StemModelRegistry.HTDEMUCS_FT_VOCALS_QNN_ID -> OnnxAcceleration.QNN_GPU
+            else -> null
+        }
+        val effectiveAcceleration = modelForcedAcceleration ?: configuredAcceleration
         val requestedAcceleration = when {
             conservativeMemoryMode -> OnnxAcceleration.CPU
-            configuredAcceleration in model.allowedAccelerators -> configuredAcceleration
+            effectiveAcceleration in model.allowedAccelerators -> effectiveAcceleration
             else -> OnnxAcceleration.CPU
         }.also { selected ->
-            if (selected != configuredAcceleration) {
+            val changed = selected != configuredAcceleration
+            if (changed) {
+                val event = when {
+                    conservativeMemoryMode -> "provider_forced_for_memory"
+                    modelForcedAcceleration != null -> "provider_forced_by_model"
+                    else -> "provider_not_allowed"
+                }
                 DiagnosticLogger.warn(
                     component = TAG,
-                    event = if (conservativeMemoryMode) "provider_forced_for_memory" else "provider_not_allowed",
+                    event = event,
                     sessionId = taskId,
                     fields = mapOf(
                         "model_id" to model.id,
-                        "requested_provider" to configuredAcceleration,
-                        "fallback_provider" to selected,
+                        "configured_provider" to configuredAcceleration,
+                        "model_forced_provider" to modelForcedAcceleration,
+                        "effective_provider" to selected,
                     ),
                 )
             }

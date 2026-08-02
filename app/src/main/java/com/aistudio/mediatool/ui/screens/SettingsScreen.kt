@@ -28,7 +28,6 @@ fun SettingsScreen(navController: NavController) {
     var audIndex by rememberSaveable { mutableStateOf(com.aistudio.mediatool.core.SettingsManager.getAudBitrateIndex(context)) }
     var fmtIndex by rememberSaveable { mutableStateOf(com.aistudio.mediatool.core.SettingsManager.getAudFormatIndex(context)) }
     var fadeDuration by rememberSaveable { mutableStateOf(com.aistudio.mediatool.core.SettingsManager.getFadeDurationSec(context)) }
-    var hwAccelIndex by rememberSaveable { mutableStateOf(com.aistudio.mediatool.core.SettingsManager.getHardwareAccelIndex(context)) }
     var numThreadsIndex by rememberSaveable { mutableStateOf(com.aistudio.mediatool.core.SettingsManager.getNumThreadsIndex(context)) }
     var stemModeIndex by rememberSaveable { mutableStateOf(com.aistudio.mediatool.core.SettingsManager.getStemModeIndex(context)) }
     var stemModelId by rememberSaveable {
@@ -160,32 +159,30 @@ fun SettingsScreen(navController: NavController) {
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("Tối ưu Tốc độ Tách Audio (AI Model)", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
 
-                    var expandedHw by remember { mutableStateOf(false) }
-                    val hwList = listOf("CPU", "NNAPI", "XNNPACK")
-                    ExposedDropdownMenuBox(expanded = expandedHw, onExpandedChange = { expandedHw = it }, modifier = Modifier.fillMaxWidth()) {
-                        OutlinedTextField(
-                            value = hwList.getOrNull(hwAccelIndex) ?: hwList[0],
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Bộ tăng tốc phần cứng (Hardware AI)", color = Color(0xFF673AB7), fontWeight = FontWeight.SemiBold) },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedHw) },
-                            modifier = Modifier.menuAnchor().fillMaxWidth()
-                        )
-                        ExposedDropdownMenu(expanded = expandedHw, onDismissRequest = { expandedHw = false }) {
-                            hwList.forEachIndexed { index, mode ->
-                                DropdownMenuItem(text = { Text(mode) }, onClick = { hwAccelIndex = index; expandedHw = false })
-                            }
-                        }
-                    }
+                    OutlinedTextField(
+                        value = "Demucs native CPU",
+                        onValueChange = {},
+                        readOnly = true,
+                        enabled = false,
+                        label = { Text("Engine tách stem đang sử dụng", fontWeight = FontWeight.SemiBold) },
+                        supportingText = {
+                            Text("Ứng dụng chạy nhiều vùng Demucs song song. NNAPI và XNNPACK không áp dụng cho engine này.")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
 
                     var expandedThreads by remember { mutableStateOf(false) }
-                    val threadsList = listOf("1 luồng", "2 luồng", "4 luồng", "8 luồng")
+                    val threadsList = listOf(
+                        "1 worker - tiết kiệm RAM",
+                        "2 worker - cân bằng",
+                        "4 worker - nhanh nhất, cần máy mạnh",
+                    )
                     ExposedDropdownMenuBox(expanded = expandedThreads, onExpandedChange = { expandedThreads = it }, modifier = Modifier.fillMaxWidth()) {
                         OutlinedTextField(
                             value = threadsList.getOrNull(numThreadsIndex) ?: threadsList[2],
                             onValueChange = {},
                             readOnly = true,
-                            label = { Text("Số luồng xử lý CPU", color = Color(0xFFFF5722), fontWeight = FontWeight.SemiBold) },
+                            label = { Text("Số vùng Demucs xử lý song song", color = Color(0xFFFF5722), fontWeight = FontWeight.SemiBold) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedThreads) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
@@ -278,7 +275,6 @@ fun SettingsScreen(navController: NavController) {
                     com.aistudio.mediatool.core.SettingsManager.setAudBitrateIndex(context, audIndex)
                     com.aistudio.mediatool.core.SettingsManager.setAudFormatIndex(context, fmtIndex)
                     com.aistudio.mediatool.core.SettingsManager.setFadeDurationSec(context, fadeDuration)
-                    com.aistudio.mediatool.core.SettingsManager.setHardwareAccelIndex(context, hwAccelIndex)
                     com.aistudio.mediatool.core.SettingsManager.setNumThreadsIndex(context, numThreadsIndex)
                     com.aistudio.mediatool.core.SettingsManager.setStemModeIndex(context, stemModeIndex)
                     com.aistudio.mediatool.core.SettingsManager.setStemModelId(context, stemModeIndex, stemModelId)

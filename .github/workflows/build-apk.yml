@@ -25,6 +25,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Restore stable CI signing key
+        run: |
+          base64 --decode .ci/mediatool-ci-debug.keystore.b64 > .ci/mediatool-ci-debug.keystore
+          keytool -list \
+            -keystore .ci/mediatool-ci-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey >/dev/null
+
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -41,6 +49,14 @@ jobs:
 
       - name: Inspect APK contents
         run: python3 scripts/inspect_apks.py $(find app/build/outputs/apk -name '*.apk' -type f)
+
+      - name: Verify stable APK signatures
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          for apk in app/build/outputs/apk/debug/*.apk app/build/outputs/apk/internal/*.apk; do
+            "$APKSIGNER" verify --verbose --print-certs "$apk"
+          done
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
@@ -76,6 +92,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Restore stable CI signing key
+        run: |
+          base64 --decode .ci/mediatool-ci-debug.keystore.b64 > .ci/mediatool-ci-debug.keystore
+          keytool -list \
+            -keystore .ci/mediatool-ci-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey >/dev/null
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4

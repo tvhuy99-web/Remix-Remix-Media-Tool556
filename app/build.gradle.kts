@@ -9,6 +9,8 @@ plugins {
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val hasReleaseKeystore = keystorePropertiesFile.isFile
+val ciKeystoreFile = rootProject.file(".ci/mediatool-ci-debug.keystore")
+val hasCiKeystore = ciKeystoreFile.isFile
 if (hasReleaseKeystore) {
     keystorePropertiesFile.inputStream().use(keystoreProperties::load)
 }
@@ -36,6 +38,14 @@ android {
     }
 
     signingConfigs {
+        if (hasCiKeystore) {
+            create("ciDebug") {
+                storeFile = ciKeystoreFile
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         if (hasReleaseKeystore) {
             create("release") {
                 storeFile = file(requireNotNull(keystoreProperties.getProperty("storeFile")) {
@@ -58,6 +68,9 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            if (hasCiKeystore) {
+                signingConfig = signingConfigs.getByName("ciDebug")
+            }
         }
         release {
             isMinifyEnabled = true
@@ -74,7 +87,11 @@ android {
             initWith(getByName("release"))
             applicationIdSuffix = ".internal"
             versionNameSuffix = "-internal"
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasCiKeystore) {
+                signingConfigs.getByName("ciDebug")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             matchingFallbacks += listOf("release")
         }
     }

@@ -5,6 +5,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import android.system.OsConstants
+import androidx.annotation.RequiresApi
 import com.aistudio.mediatool.core.PersistentTaskState
 import com.aistudio.mediatool.core.PersistentTaskStatus
 import com.aistudio.mediatool.core.TaskStateStore
@@ -105,29 +106,44 @@ object ProcessExitDiagnostics {
     fun recoverPreviousExit(context: Context) {
         val app = context.applicationContext
         val checkpoint = load(app) ?: return
-        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val handledAt = prefs.getLong(KEY_HANDLED_EXIT_AT, 0L)
-        val exitInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            runCatching {
-                app.getSystemService(ActivityManager::class.java)
-                    .getHistoricalProcessExitReasons(app.packageName, 0, 8)
-                    .firstOrNull { info ->
-                        info.timestamp > handledAt &&
-                            info.timestamp >= checkpoint.startedAt - 5_000L
-                    }
-            }.getOrNull()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            recoverApi30(app, checkpoint)
         } else {
-            null
+            val message = buildUserMessage(checkpoint, "UNAVAILABLE_BELOW_API_30", false)
+            DiagnosticLogger.error(
+                component = "ProcessExitDiagnostics",
+                event = "previous_process_exit",
+                sessionId = checkpoint.taskId,
+                message = message,
+                fields = mapOf(
+                    "task_type" to checkpoint.taskType,
+                    "phase" to checkpoint.phase,
+                    "progress_percent" to (checkpoint.progress * 100f).toInt(),
+                    "model_id" to checkpoint.modelId,
+                    "exit_reason" to "UNAVAILABLE_BELOW_API_30",
+                ),
+            )
+            completeRecovery(app, checkpoint, message, System.currentTimeMillis())
         }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun recoverApi30(context: Context, checkpoint: Checkpoint) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val handledAt = prefs.getLong(KEY_HANDLED_EXIT_AT, 0L)
+        val activityManager = context.getSystemService(ActivityManager::class.java)
+        val exitInfo = runCatching {
+            activityManager.getHistoricalProcessExitReasons(context.packageName, 0, 8)
+                .firstOrNull { info ->
+                    info.timestamp > handledAt &&
+                        info.timestamp >= checkpoint.startedAt - 5_000L
+                }
+        }.getOrNull()
 
         val reasonName = exitInfo?.let(::reasonName) ?: "UNKNOWN"
         val likelyLowMemory = exitInfo?.let(::isLikelyLowMemory) == true
         val message = buildUserMessage(checkpoint, reasonName, likelyLowMemory)
-        val stateSummary = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            exitInfo?.processStateSummary?.toString(Charsets.UTF_8)
-        } else {
-            null
-        }
+        val stateSummary = exitInfo?.processStateSummary?.toString(Charsets.UTF_8)
 
         DiagnosticLogger.error(
             component = "ProcessExitDiagnostics",
@@ -146,16 +162,26 @@ object ProcessExitDiagnostics {
                 "exit_rss_kb" to exitInfo?.rss,
                 "exit_description" to exitInfo?.description,
                 "process_state_summary" to stateSummary,
-                "low_memory_report_supported" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    ActivityManager.isLowMemoryKillReportSupported()
-                } else {
-                    false
-                },
+                "low_memory_report_supported" to ActivityManager.isLowMemoryKillReportSupported(),
             ),
         )
 
+        completeRecovery(
+            context = context,
+            checkpoint = checkpoint,
+            message = message,
+            handledAt = exitInfo?.timestamp ?: System.currentTimeMillis(),
+        )
+    }
+
+    private fun completeRecovery(
+        context: Context,
+        checkpoint: Checkpoint,
+        message: String,
+        handledAt: Long,
+    ) {
         TaskStateStore.save(
-            app,
+            context,
             PersistentTaskState(
                 taskId = checkpoint.taskId,
                 type = checkpoint.taskType,
@@ -165,9 +191,10 @@ object ProcessExitDiagnostics {
                 startedAt = checkpoint.startedAt,
             ),
         )
-        prefs.edit()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
             .putBoolean(KEY_ACTIVE, false)
-            .putLong(KEY_HANDLED_EXIT_AT, exitInfo?.timestamp ?: System.currentTimeMillis())
+            .putLong(KEY_HANDLED_EXIT_AT, handledAt)
             .commit()
     }
 
@@ -211,11 +238,13 @@ object ProcessExitDiagnostics {
         else -> "xử lý AI"
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun isLikelyLowMemory(info: ApplicationExitInfo): Boolean =
         info.reason == ApplicationExitInfo.REASON_LOW_MEMORY ||
             info.reason == ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE ||
             (info.reason == ApplicationExitInfo.REASON_SIGNALED && info.status == OsConstants.SIGKILL)
 
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun reasonName(info: ApplicationExitInfo): String = when (info.reason) {
         ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
         ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"

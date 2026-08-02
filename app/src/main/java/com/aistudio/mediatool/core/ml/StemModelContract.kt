@@ -1,5 +1,7 @@
 package com.aistudio.mediatool.core.ml
 
+import kotlin.math.roundToInt
+
 data class ModelSpec(
     val url: String,
     val fileName: String,
@@ -17,6 +19,14 @@ enum class StemMode(val settingsIndex: Int, val stemCount: Int) {
         fun fromSettingsIndex(index: Int): StemMode =
             entries.firstOrNull { it.settingsIndex == index } ?: TWO_STEM
     }
+}
+
+enum class StemInferenceBackend {
+    /** Existing waveform models executed by ONNX Runtime. */
+    WAVEFORM_ONNX,
+
+    /** MDX-Net learned spectrogram core executed by LiteRT; STFT/iSTFT stay in host code. */
+    MDX_LITERT,
 }
 
 enum class TensorAudioLayout {
@@ -79,6 +89,52 @@ data class TensorContract(
     val sourceCount: Int,
 )
 
+/**
+ * Static host-DSP contract for an MDX-Net LiteRT graph.
+ *
+ * The graph sees only the learned complex-as-channels spectrogram core. Audio framing, periodic Hann
+ * STFT, inverse STFT and overlap-add are implemented by [MdxAudioSeparator].
+ */
+data class MdxSpectrogramContract(
+    val nFft: Int,
+    val hopLength: Int,
+    val frequencyBins: Int,
+    val timeFrames: Int,
+    val overlapRatio: Float,
+    val compensation: Float = 1f,
+) {
+    init {
+        require(nFft >= 4 && nFft % 2 == 0)
+        require(hopLength in 1 until nFft)
+        require(frequencyBins == nFft / 2) {
+            "MDX contract drops exactly the Nyquist bin: frequencyBins must equal nFft/2"
+        }
+        require(timeFrames >= 2)
+        require(overlapRatio in 0f..<0.5f)
+        require(compensation.isFinite() && compensation > 0f)
+        require(generatedFrames > 0)
+    }
+
+    /** Native waveform samples represented by one static 256-frame MDX tensor. */
+    val chunkFrames: Int = Math.multiplyExact(hopLength, timeFrames - 1)
+
+    /** center=True STFT trim on each side. */
+    val trimFrames: Int = nFft / 2
+
+    /** Central samples contributed by one model invocation after dropping both center trims. */
+    val generatedFrames: Int = chunkFrames - 2 * trimFrames
+
+    /** Fixed 10% crossfade stride used by the reference pipeline. */
+    val strideFrames: Int = (generatedFrames * (1f - overlapRatio))
+        .roundToInt()
+        .coerceIn(1, generatedFrames)
+
+    val overlapFrames: Int = generatedFrames - strideFrames
+
+    /** [1, 4, frequencyBins, timeFrames], float32 NCHW. */
+    val tensorElements: Int = Math.multiplyExact(4, Math.multiplyExact(frequencyBins, timeFrames))
+}
+
 data class SourceMix(val sourceIndices: List<Int>) {
     init {
         require(sourceIndices.isNotEmpty())
@@ -120,15 +176,32 @@ data class StemModelDescriptor(
     val deviceRequirements: DeviceRequirements,
     val licenseName: String,
     val projectUrl: String,
+    val backend: StemInferenceBackend = StemInferenceBackend.WAVEFORM_ONNX,
+    val mdx: MdxSpectrogramContract? = null,
 ) {
     init {
         require(id.isNotBlank())
         require(sampleRate > 0)
-        require(channels == 2) { "Backend waveform hiện hỗ trợ stereo" }
+        require(channels == 2) { "Backend stem hiện hỗ trợ stereo" }
         require(tensor.sourceCount >= 2)
         require(sources.allSourceIndices().all { it < tensor.sourceCount })
         require(mode.stemCount == if (sources.drums == null) 2 else 4)
-        require(OnnxAcceleration.CPU in allowedAccelerators) { "Mọi model phải có fallback CPU" }
+
+        when (backend) {
+            StemInferenceBackend.WAVEFORM_ONNX -> {
+                require(mdx == null) { "Model ONNX waveform không được khai báo contract MDX" }
+                require(OnnxAcceleration.CPU in allowedAccelerators) { "Mọi model ONNX phải có fallback CPU" }
+            }
+
+            StemInferenceBackend.MDX_LITERT -> {
+                require(mode == StemMode.TWO_STEM) { "Pipeline MDX LiteRT hiện chỉ xuất vocals/instrumental" }
+                requireNotNull(mdx) { "Model MDX LiteRT phải có contract STFT" }
+                require(mdx.chunkFrames == chunking.frames) {
+                    "ChunkingSpec.frames phải khớp chunkFrames của MDX"
+                }
+                require(tensor.sourceCount == 2) { "Descriptor MDX biểu diễn hai đầu ra vocals/instrumental" }
+            }
+        }
     }
 
     val downloadSizeMiB: Long

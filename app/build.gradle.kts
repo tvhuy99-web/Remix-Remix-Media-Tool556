@@ -23,8 +23,8 @@ android {
         applicationId = "com.aistudio.mediatool"
         minSdk = 24
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.3.2"
+        versionCode = 8
+        versionName = "1.3.3"
 
         // FFmpegKit maintained chỉ phát hành binary Maven cho arm64-v8a.
         // Giới hạn cả APK và App Bundle để không tạo artifact cài được nhưng

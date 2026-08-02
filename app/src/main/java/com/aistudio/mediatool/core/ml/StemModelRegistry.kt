@@ -6,10 +6,19 @@ package com.aistudio.mediatool.core.ml
  */
 object StemModelRegistry {
     const val MEL_BAND_ROFORMER_ID = "melband-roformer-kj-vocals-v1"
+    const val DEMUCS_2_STEM_LITE_ID = "demucs-ht-2stems-lite-v1"
     const val DEMUCS_4_STEM_ID = "demucs-ht-4stems-legacy-v1"
 
     private const val MIB = 1024L * 1024L
     private const val GIB = 1024L * MIB
+
+    private val demucsModelSpec = ModelSpec(
+        url = "https://huggingface.co/jackjiangxinfa/demucs-onnx/resolve/49fcb820b3fa39937e955dda5cef1ad35dec1f7c/model.onnx?download=true",
+        fileName = "demucs-4stems-49fcb820b3fa39937e955dda5cef1ad35dec1f7c.onnx",
+        familyPrefix = "demucs-4stems-",
+        expectedBytes = 304_330_587L,
+        sha256 = "0cf9f378b3a736efacafe09b8c07aafbb3109568c274ffb7b963b540aa1978d2",
+    )
 
     val melBandRoFormerTwoStem = StemModelDescriptor(
         id = MEL_BAND_ROFORMER_ID,
@@ -56,18 +65,48 @@ object StemModelRegistry {
         projectUrl = "https://huggingface.co/smank/mel-band-roformer-vocals-onnx",
     )
 
+    val demucsTwoStemLite = StemModelDescriptor(
+        id = DEMUCS_2_STEM_LITE_ID,
+        displayName = "Demucs nhẹ (2 stem)",
+        description = "Ít tốn RAM hơn Mel-Band; xuất lời và nhạc nền.",
+        mode = StemMode.TWO_STEM,
+        modelSpec = demucsModelSpec,
+        sampleRate = 44_100,
+        channels = 2,
+        chunking = ChunkingSpec(
+            frames = 343_980,
+            overlapFrames = 85_995,
+            edgeFadeFrames = 85_995,
+            overlapProfile = OverlapProfile.COMPLEMENTARY_SINE,
+        ),
+        normalization = AudioNormalization.GLOBAL_MONO_MEAN_STD,
+        tensor = TensorContract(
+            inputName = "input",
+            outputName = "output",
+            inputLayout = TensorAudioLayout.BATCH_CHANNEL_FRAME,
+            outputLayout = TensorSourceLayout.BATCH_SOURCE_CHANNEL_FRAME,
+            sourceCount = 4,
+        ),
+        sources = StemSourceMap(
+            vocals = SourceMix(listOf(3)),
+            music = SourceMix(listOf(0, 1, 2)),
+        ),
+        allowedAccelerators = OnnxAcceleration.entries.toSet(),
+        deviceRequirements = DeviceRequirements(
+            minimumTotalRamBytes = 3L * GIB,
+            minimumAvailableRamBytes = 1L * GIB,
+            userFacingSummary = "Khuyến nghị còn ít nhất 1 GB RAM trống.",
+        ),
+        licenseName = "Apache-2.0 (theo metadata nguồn)",
+        projectUrl = "https://huggingface.co/jackjiangxinfa/demucs-onnx",
+    )
+
     val demucsFourStem = StemModelDescriptor(
         id = DEMUCS_4_STEM_ID,
         displayName = "Demucs ONNX — 4 stem (cũ)",
         description = "Giữ tương thích với chế độ lời, trống, bass và nhạc cụ khác.",
         mode = StemMode.FOUR_STEM,
-        modelSpec = ModelSpec(
-            url = "https://huggingface.co/jackjiangxinfa/demucs-onnx/resolve/49fcb820b3fa39937e955dda5cef1ad35dec1f7c/model.onnx?download=true",
-            fileName = "demucs-4stems-49fcb820b3fa39937e955dda5cef1ad35dec1f7c.onnx",
-            familyPrefix = "demucs-4stems-",
-            expectedBytes = 304_330_587L,
-            sha256 = "0cf9f378b3a736efacafe09b8c07aafbb3109568c274ffb7b963b540aa1978d2",
-        ),
+        modelSpec = demucsModelSpec,
         sampleRate = 44_100,
         channels = 2,
         chunking = ChunkingSpec(
@@ -101,7 +140,11 @@ object StemModelRegistry {
         projectUrl = "https://huggingface.co/jackjiangxinfa/demucs-onnx",
     )
 
-    val all: List<StemModelDescriptor> = listOf(melBandRoFormerTwoStem, demucsFourStem)
+    val all: List<StemModelDescriptor> = listOf(
+        melBandRoFormerTwoStem,
+        demucsFourStem,
+        demucsTwoStemLite,
+    )
 
     fun modelsFor(mode: StemMode): List<StemModelDescriptor> = all.filter { it.mode == mode }
 

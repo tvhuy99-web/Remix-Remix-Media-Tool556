@@ -18,6 +18,7 @@ class MediaToolApplication : Application() {
             }
         }
         DiagnosticLogger.initialize(this)
+        // Native crash và low-memory kill chỉ có thể được khôi phục ở tiến trình kế tiếp.
         ProcessExitDiagnostics.recoverPreviousExit(this)
     }
 }

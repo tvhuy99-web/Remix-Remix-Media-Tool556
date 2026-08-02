@@ -3,7 +3,6 @@ package com.aistudio.mediatool.ui.screens
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -28,6 +27,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.aistudio.mediatool.core.GetContentWithMimeTypes
+import com.aistudio.mediatool.core.GetMultipleContentsWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.SlideshowTiming
@@ -80,7 +81,7 @@ fun Img2VidScreen(navController: NavController) {
     var outputUriText by rememberSaveable { mutableStateOf<String?>(null) }
     val outputUri = outputUriText?.let(Uri::parse)
 
-    val audioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    val audioLauncher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri: Uri? ->
         if (uri != null) {
             DocumentUtils.persistReadPermission(context, uri)
             audioUriText = uri.toString()
@@ -89,7 +90,7 @@ fun Img2VidScreen(navController: NavController) {
         }
     }
     
-    val imagesLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+    val imagesLauncher = rememberLauncherForActivityResult(GetMultipleContentsWithMimeTypes()) { uris ->
         uris.forEach { DocumentUtils.persistReadPermission(context, it) }
         val existing = selectedImageItems.map { it.uri }.toSet()
         selectedImageItems = selectedImageItems + uris.filterNot { it in existing }.map { ImageItem(it) }
@@ -266,11 +267,6 @@ fun Img2VidScreen(navController: NavController) {
                     Text("Thêm Ảnh (Nhiều file)")
                 }
                 Text("Đã chọn ${selectedImageItems.size} ảnh.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                Text(
-                    "Để trống mốc để tự chia thời lượng; nếu nhập, cả B.Đầu và K.Thúc là vị trí tuyệt đối trên timeline.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                )
             }
 
             if (selectedImageItems.isNotEmpty()) {

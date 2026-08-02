@@ -3,7 +3,6 @@ package com.aistudio.mediatool.ui.screens
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -26,6 +25,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.aistudio.mediatool.core.GetMultipleContentsWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.FileExportManager
@@ -59,7 +59,7 @@ fun JoinScreen(navController: NavController) {
     var hasOutput by rememberSaveable { mutableStateOf(false) }
     var outputPath by rememberSaveable { mutableStateOf("") }
 
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+    val launcher = rememberLauncherForActivityResult(GetMultipleContentsWithMimeTypes()) { uris ->
         uris.forEach { uri ->
             DocumentUtils.persistReadPermission(context, uri)
             if (uri !in selectedUris) selectedUris.add(uri)

@@ -56,7 +56,7 @@ android {
                 }
                 keyAlias = requireNotNull(keystoreProperties.getProperty("keyAlias")) {
                     "Thiếu keyAlias trong keystore.properties"
-                })
+                }
                 keyPassword = requireNotNull(keystoreProperties.getProperty("keyPassword")) {
                     "Thiếu keyPassword trong keystore.properties"
                 }

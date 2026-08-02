@@ -43,13 +43,13 @@ android {
                 })
                 storePassword = requireNotNull(keystoreProperties.getProperty("storePassword")) {
                     "Thiếu storePassword trong keystore.properties"
-                }
+                })
                 keyAlias = requireNotNull(keystoreProperties.getProperty("keyAlias")) {
                     "Thiếu keyAlias trong keystore.properties"
-                }
+                })
                 keyPassword = requireNotNull(keystoreProperties.getProperty("keyPassword")) {
                     "Thiếu keyPassword trong keystore.properties"
-                }
+                })
             }
         }
     }

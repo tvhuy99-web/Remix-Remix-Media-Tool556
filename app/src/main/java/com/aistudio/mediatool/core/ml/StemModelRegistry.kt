@@ -39,9 +39,10 @@ object StemModelRegistry {
             frames = 343_980,
             overlapFrames = 85_995,
             edgeFadeFrames = 85_995,
-            overlapProfile = OverlapProfile.COMPLEMENTARY_SINE,
+            overlapProfile = OverlapProfile.REFERENCE_LINEAR_WINDOW,
         ),
-        normalization = AudioNormalization.GLOBAL_MONO_MEAN_STD,
+        // Export ONNX tham chiếu nhận PCM float32 [-1, 1] trực tiếp.
+        normalization = AudioNormalization.NONE,
         tensor = TensorContract(
             inputName = "mix",
             outputName = "stems",

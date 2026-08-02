@@ -65,11 +65,18 @@ for apk in paths:
         missing_qnn = [marker for marker in qnn_markers if not any(name.endswith(f"/{marker}") for name in native)]
         if missing_qnn:
             raise SystemExit(f"{apk.name}: thiếu thành phần QNN GPU bắt buộc: {missing_qnn}")
+
+        unused_qnn = [
+            name for name in native
+            if name.rsplit("/", 1)[-1].startswith(("libQnnHtp", "libQnnDsp"))
+        ]
+        if unused_qnn:
+            raise SystemExit(f"{apk.name}: còn backend QNN HTP/DSP không dùng: {unused_qnn}")
         if any(name.endswith("/libonnxruntime_providers_qnn.so") for name in native):
             raise SystemExit(f"{apk.name}: QNN provider layout ngoài dự kiến; hãy kiểm tra lại AAR")
         if any(name.endswith("/libmediatool_demucs.so") for name in native):
             raise SystemExit(f"{apk.name}: không được đóng gói demucs.cpp CPU-only")
         print(
             f"[OK] {apk.name}: {len(native)} native libraries, "
-            f"ABI={packaged_abis}, ORT_QNN=static, QNN_GPU=present"
+            f"ABI={packaged_abis}, ORT_QNN=static, QNN_GPU=present, QNN_UNUSED=absent"
         )

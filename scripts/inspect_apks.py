@@ -54,8 +54,8 @@ for apk in paths:
         if missing_ffmpeg:
             raise SystemExit(f"{apk.name}: thiếu thư viện FFmpeg bắt buộc: {missing_ffmpeg}")
 
-        # The official Android QNN AAR statically links the QNN execution provider into
-        # libonnxruntime.so. The Qualcomm GPU and system backends remain separate shared objects.
+        # AAR QNN Android chính thức liên kết tĩnh execution provider vào
+        # libonnxruntime.so; backend Qualcomm GPU và system vẫn là các .so riêng.
         qnn_markers = (
             "libonnxruntime.so",
             "libonnxruntime4j_jni.so",

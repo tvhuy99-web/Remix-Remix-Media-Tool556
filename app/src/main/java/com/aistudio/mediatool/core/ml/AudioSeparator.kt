@@ -330,14 +330,15 @@ class AudioSeparator(
                     setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
                     setInterOpNumThreads(1)
                     addConfigEntry("session.intra_op.allow_spinning", "0")
-                    addConfigEntry("session.disable_cpu_ep_fallback", "1")
+                    // QNN GPU không hỗ trợ toàn bộ graph của model này trên mọi thiết bị.
+                    // Giữ CPU EP làm fallback để các node còn lại vẫn chạy thay vì lỗi khi mở session.
                     addQnn(hashMapOf("backend_type" to "gpu"))
                     logInfo(
                         "onnx_provider_config",
                         mapOf(
                             "provider" to OnnxAcceleration.QNN_GPU,
                             "backend_type" to "gpu",
-                            "cpu_fallback_disabled" to true,
+                            "cpu_fallback_disabled" to false,
                         ),
                     )
                 }

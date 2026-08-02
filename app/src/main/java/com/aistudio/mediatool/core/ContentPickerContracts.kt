@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.result.contract.ActivityResultContract
 
+// Dùng ACTION_GET_CONTENT để Android cho phép chọn qua ứng dụng nội dung phù hợp.
 class GetContentWithMimeTypes : ActivityResultContract<Array<String>, Uri?>() {
     override fun createIntent(context: Context, input: Array<String>): Intent =
         Intent(Intent.ACTION_GET_CONTENT)

@@ -28,22 +28,33 @@ for apk in paths:
         required_classes = (
             b"Lcom/arthenica/smartexception/java/Exceptions;",
             b"Lcom/arthenica/ffmpegkit/FFmpegKit;",
+            b"Lcom/aistudio/mediatool/core/ml/DemucsNativeBridge;",
         )
         missing_classes = [
             descriptor.decode("ascii") for descriptor in required_classes if descriptor not in dex_bytes
         ]
         if missing_classes:
             raise SystemExit(f"{apk.name}: thiếu lớp runtime bắt buộc: {missing_classes}")
+
         native = [name for name in names if name.startswith("lib/") and name.endswith(".so")]
         if not native:
             raise SystemExit(f"{apk.name}: không có thư viện native")
         packaged_abis = sorted(set(name.split("/")[1] for name in native))
         if packaged_abis != ["arm64-v8a"]:
             raise SystemExit(f"{apk.name}: ABI không hợp lệ, chỉ cho phép arm64-v8a: {packaged_abis}")
+
+        required_demucs = "lib/arm64-v8a/libmediatool_demucs.so"
+        if required_demucs not in native:
+            raise SystemExit(f"{apk.name}: thiếu {required_demucs}")
+        forbidden_onnx = [name for name in native if "onnxruntime" in name.lower()]
+        if forbidden_onnx:
+            raise SystemExit(f"{apk.name}: vẫn chứa ONNX Runtime: {forbidden_onnx}")
+
         libcxx_by_abi = Counter(name.split("/")[1] for name in native if name.endswith("/libc++_shared.so"))
         duplicates = {abi: count for abi, count in libcxx_by_abi.items() if count != 1}
-        if duplicates:
-            raise SystemExit(f"{apk.name}: số bản libc++_shared.so không hợp lệ: {duplicates}")
+        if duplicates or libcxx_by_abi.get("arm64-v8a") != 1:
+            raise SystemExit(f"{apk.name}: số bản libc++_shared.so không hợp lệ: {dict(libcxx_by_abi)}")
+
         ffmpeg_markers = (
             "libffmpegkit.so",
             "libavcodec.so",
@@ -53,4 +64,8 @@ for apk in paths:
         missing_ffmpeg = [marker for marker in ffmpeg_markers if not any(name.endswith(f"/{marker}") for name in native)]
         if missing_ffmpeg:
             raise SystemExit(f"{apk.name}: thiếu thư viện FFmpeg bắt buộc: {missing_ffmpeg}")
-        print(f"[OK] {apk.name}: {len(native)} native libraries, ABI={packaged_abis}")
+
+        print(
+            f"[OK] {apk.name}: native Demucs, không ONNX, "
+            f"{len(native)} native libraries, ABI={packaged_abis}"
+        )

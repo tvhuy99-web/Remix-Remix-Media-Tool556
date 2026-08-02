@@ -23,8 +23,8 @@ android {
         applicationId = "com.aistudio.mediatool"
         minSdk = 24
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.3.3"
+        versionCode = 9
+        versionName = "1.4.0-alpha1"
 
         // FFmpegKit maintained chỉ phát hành binary Maven cho arm64-v8a.
         // Giới hạn cả APK và App Bundle để không tạo artifact cài được nhưng
@@ -111,6 +111,11 @@ android {
         buildConfig = true
     }
 
+    androidResources {
+        // Model được tải vào filesDir, nhưng giữ quy tắc này cho các model LiteRT nhỏ có thể đóng gói sau này.
+        noCompress += "tflite"
+    }
+
     packaging {
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",
@@ -120,7 +125,7 @@ android {
         )
         jniLibs {
             useLegacyPackaging = false
-            // FFmpegKit và ONNX Runtime đều đóng gói libc++_shared.so.
+            // FFmpegKit, ONNX Runtime và LiteRT có thể cùng đóng gói libc++_shared.so.
             // CI mở từng APK để xác nhận ARM64 chỉ còn một bản.
             pickFirsts += setOf("lib/**/libc++_shared.so")
         }
@@ -164,6 +169,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.okhttp)
     implementation(libs.onnxruntime.android)
+    implementation(libs.litert)
     implementation(libs.ffmpeg.kit.full)
     // FFmpegKit 8.1.7 AAR currently does not reliably expose this runtime dependency.
     implementation(libs.smart.exception.java)

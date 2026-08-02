@@ -56,7 +56,7 @@ android {
                 }
                 keyAlias = requireNotNull(keystoreProperties.getProperty("keyAlias")) {
                     "Thiếu keyAlias trong keystore.properties"
-                }
+                })
                 keyPassword = requireNotNull(keystoreProperties.getProperty("keyPassword")) {
                     "Thiếu keyPassword trong keystore.properties"
                 }
@@ -123,6 +123,28 @@ android {
             // FFmpegKit và ONNX Runtime đều đóng gói libc++_shared.so.
             // CI mở từng APK để xác nhận ARM64 chỉ còn một bản.
             pickFirsts += setOf("lib/**/libc++_shared.so")
+
+            // Prototype này chỉ dùng backend QNN GPU. Loại bỏ HTP/DSP để không
+            // mang gần 190 MB thư viện NPU không bao giờ được nạp.
+            excludes += setOf(
+                "lib/**/libQnnHtp.so",
+                "lib/**/libQnnHtpPrepare.so",
+                "lib/**/libQnnHtpV68Skel.so",
+                "lib/**/libQnnHtpV68Stub.so",
+                "lib/**/libQnnHtpV69Skel.so",
+                "lib/**/libQnnHtpV69Stub.so",
+                "lib/**/libQnnHtpV73Skel.so",
+                "lib/**/libQnnHtpV73Stub.so",
+                "lib/**/libQnnHtpV75Skel.so",
+                "lib/**/libQnnHtpV75Stub.so",
+                "lib/**/libQnnHtpV79Skel.so",
+                "lib/**/libQnnHtpV79Stub.so",
+                "lib/**/libQnnHtpV81Skel.so",
+                "lib/**/libQnnHtpV81Stub.so",
+                "lib/**/libQnnDsp.so",
+                "lib/**/libQnnDspV66Skel.so",
+                "lib/**/libQnnDspV66Stub.so",
+            )
         }
     }
 

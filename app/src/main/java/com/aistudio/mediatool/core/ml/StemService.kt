@@ -21,6 +21,7 @@ import com.aistudio.mediatool.core.PersistentTaskStatus
 import com.aistudio.mediatool.core.TaskStateStore
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
+import com.aistudio.mediatool.core.diagnostics.ProcessExitDiagnostics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -115,6 +116,14 @@ class StemService : Service() {
         _errorMsg.value = null
         _separationState.value = SeparationState.Progress(0f)
         saveTask(PersistentTaskStatus.RUNNING, 0f, "Đang kiểm tra model và tài nguyên")
+        ProcessExitDiagnostics.checkpoint(
+            context = this,
+            taskType = TASK_TYPE,
+            taskId = taskId,
+            phase = "preflight",
+            progress = 0f,
+            modelId = modelDescriptor.id,
+        )
 
         // MediaMetadataRetriever, StatFs và SHA-256 model đều có thể chặn lâu.
         // processingJob được gán ngay để chặn ACTION_START trùng trong preflight.
@@ -125,6 +134,14 @@ class StemService : Service() {
                 require(ModelDownloader(this@StemService).isModelFileValid(model, modelDescriptor.modelSpec)) {
                     "Model AI không đúng dung lượng hoặc SHA-256; hãy tải lại model"
                 }
+                ProcessExitDiagnostics.checkpoint(
+                    context = this@StemService,
+                    taskType = TASK_TYPE,
+                    taskId = taskId,
+                    phase = "model_validated",
+                    progress = 0.01f,
+                    modelId = modelDescriptor.id,
+                )
                 DiagnosticLogger.info(
                     component = "StemService",
                     event = "model_validated",
@@ -302,6 +319,9 @@ class StemService : Service() {
     }
 
     private fun finishService() {
+        currentTaskId?.let { taskId ->
+            ProcessExitDiagnostics.finish(this, TASK_TYPE, taskId)
+        }
         _isProcessing.value = false
         processingJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -425,7 +445,7 @@ class StemService : Service() {
         const val EXTRA_URI = "extra_uri"
         const val EXTRA_MODEL_FILE = "extra_model_file"
         const val EXTRA_MODEL_ID = "extra_model_id"
-        private const val TASK_TYPE = "stem"
+        internal const val TASK_TYPE = "stem"
         private const val MAX_DURATION_MS = 3L * 60L * 60L * 1_000L
 
         private val _separationState = MutableStateFlow<SeparationState?>(null)

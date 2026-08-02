@@ -2,6 +2,7 @@ package com.aistudio.mediatool
 
 import android.app.Application
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
+import com.aistudio.mediatool.core.diagnostics.ProcessExitDiagnostics
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 
@@ -17,5 +18,7 @@ class MediaToolApplication : Application() {
             }
         }
         DiagnosticLogger.initialize(this)
+        // Khôi phục nguyên nhân native crash hoặc low-memory kill ở lần mở kế tiếp.
+        ProcessExitDiagnostics.recoverPreviousExit(this)
     }
 }

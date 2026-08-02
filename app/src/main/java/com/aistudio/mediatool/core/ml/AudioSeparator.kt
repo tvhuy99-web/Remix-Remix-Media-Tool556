@@ -2,6 +2,8 @@ package com.aistudio.mediatool.core.ml
 
 import android.content.Context
 import android.net.Uri
+import android.app.ActivityManager
+import android.os.Debug
 import android.os.SystemClock
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegSession
@@ -10,6 +12,7 @@ import com.aistudio.mediatool.core.FileExportManager
 import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
+import com.aistudio.mediatool.core.diagnostics.ProcessExitDiagnostics
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -196,6 +199,31 @@ class AudioSeparator(
         DiagnosticLogger.info(TAG, event, taskId, message, fields)
     }
 
+    private fun checkpoint(phase: String, progress: Float) {
+        ProcessExitDiagnostics.checkpoint(
+            context = context,
+            taskType = StemService.TASK_TYPE,
+            taskId = taskId,
+            phase = phase,
+            progress = progress,
+            modelId = model.id,
+        )
+    }
+
+    private fun memoryFields(): Map<String, Any?> {
+        val runtime = Runtime.getRuntime()
+        val memoryInfo = ActivityManager.MemoryInfo()
+        context.getSystemService(ActivityManager::class.java).getMemoryInfo(memoryInfo)
+        return mapOf(
+            "java_heap_used_bytes" to runtime.totalMemory() - runtime.freeMemory(),
+            "java_heap_max_bytes" to runtime.maxMemory(),
+            "native_heap_allocated_bytes" to Debug.getNativeHeapAllocatedSize(),
+            "process_pss_kb" to Debug.getPss(),
+            "system_available_ram_bytes" to memoryInfo.availMem,
+            "system_low_memory" to memoryInfo.lowMemory,
+        )
+    }
+
     private suspend fun createReflectPaddedPcm(
         source: File,
         destination: File,
@@ -253,8 +281,19 @@ class AudioSeparator(
 
     private fun createSessionOptions(hardwareAccelerationIndex: Int): OrtSession.SessionOptions =
         OrtSession.SessionOptions().apply {
-            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            val requestedThreads = SettingsManager.getNumThreads(context)
+            val conservativeMemoryMode = model.id == StemModelRegistry.MEL_BAND_ROFORMER_ID
+            setOptimizationLevel(
+                if (conservativeMemoryMode) OrtSession.SessionOptions.OptLevel.BASIC_OPT
+                else OrtSession.SessionOptions.OptLevel.ALL_OPT,
+            )
+            if (conservativeMemoryMode) {
+                setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
+                setMemoryPatternOptimization(false)
+                setCPUArenaAllocator(false)
+                setInterOpNumThreads(1)
+                addConfigEntry("session.intra_op.allow_spinning", "0")
+            }
+            val requestedThreads = if (conservativeMemoryMode) 1 else SettingsManager.getNumThreads(context)
             val threading = OnnxThreadingPolicy.resolve(hardwareAccelerationIndex, requestedThreads)
             setIntraOpNumThreads(threading.ortIntraOpThreads)
             logInfo(
@@ -301,19 +340,25 @@ class AudioSeparator(
         val configuredAcceleration = OnnxAcceleration.fromSettingsIndex(
             SettingsManager.getHardwareAccelIndex(context),
         )
-        val requestedAcceleration = configuredAcceleration.takeIf(model.allowedAccelerators::contains)
-            ?: OnnxAcceleration.CPU.also {
+        val conservativeMemoryMode = model.id == StemModelRegistry.MEL_BAND_ROFORMER_ID
+        val requestedAcceleration = when {
+            conservativeMemoryMode -> OnnxAcceleration.CPU
+            configuredAcceleration in model.allowedAccelerators -> configuredAcceleration
+            else -> OnnxAcceleration.CPU
+        }.also { selected ->
+            if (selected != configuredAcceleration) {
                 DiagnosticLogger.warn(
                     component = TAG,
-                    event = "provider_not_allowed",
+                    event = if (conservativeMemoryMode) "provider_forced_for_memory" else "provider_not_allowed",
                     sessionId = taskId,
                     fields = mapOf(
                         "model_id" to model.id,
                         "requested_provider" to configuredAcceleration,
-                        "fallback_provider" to OnnxAcceleration.CPU,
+                        "fallback_provider" to selected,
                     ),
                 )
             }
+        }
         val requestedHardware = requestedAcceleration.settingsIndex
         val primaryOptions = try {
             createSessionOptions(requestedHardware)
@@ -359,6 +404,7 @@ class AudioSeparator(
     suspend fun separate(inputUri: Uri): Flow<SeparationState> = flow {
         val pipelineStartedAt = SystemClock.elapsedRealtime()
         val sourceId = DiagnosticRedactor.stableId(inputUri.toString())
+        checkpoint("pipeline_start", 0.01f)
         emit(SeparationState.Progress(0.01f)) // Start
 
         // Mỗi tác vụ có thư mục riêng để không ghi đè khi service bị khởi động lại.
@@ -393,6 +439,7 @@ class AudioSeparator(
         try {
             // 2. Giữ PCM float32 xuyên suốt pipeline để stem vượt 0 dBFS không bị
             // cắt sớm trước khi người dùng chọn codec/định dạng xuất cuối cùng.
+            checkpoint("decode_input", 0.05f)
             emit(SeparationState.Progress(0.05f))
             val inputPath = com.arthenica.ffmpegkit.FFmpegKitConfig.getSafParameterForRead(context, inputUri)
             val decodeCmd = "-y -i \"$inputPath\" -f f32le -ac $channels -ar $sampleRate \"${tempRawMix.absolutePath}\""
@@ -442,9 +489,11 @@ class AudioSeparator(
                 tempRawMix
             }
 
+            checkpoint("decode_complete", 0.10f)
             emit(SeparationState.Progress(0.1f)) // Decode complete
 
             // 3. Process with ONNX
+            checkpoint("session_opening", 0.10f)
             val env = OrtEnvironment.getEnvironment()
             val sessionStartedAt = SystemClock.elapsedRealtime()
             val openedSession = openSession(env)
@@ -452,6 +501,7 @@ class AudioSeparator(
             val session = openedSession.session
             val runOptions = OrtSession.RunOptions()
             activeRunOptions = runOptions
+            checkpoint("session_opened", 0.11f)
             logInfo(
                 event = "onnx_session_opened",
                 fields = mapOf(
@@ -520,6 +570,7 @@ class AudioSeparator(
                 
                 var processedFrames = 0L
 
+                checkpoint("buffers_allocating", 0.12f)
                 val bSize = 524288 // 512KB buffer I/O
                 val inputStream = DataInputStream(java.io.BufferedInputStream(FileInputStream(inferencePcm), bSize))
                 val vocalsOut = DataOutputStream(java.io.BufferedOutputStream(FileOutputStream(tempRawVocals), bSize))
@@ -600,6 +651,8 @@ class AudioSeparator(
                     ),
                 )
 
+                checkpoint("buffers_ready", 0.12f)
+                logInfo("inference_buffers_ready", memoryFields())
                 var isFirstChunk = true
                 var chunkIndex = 0
 
@@ -710,25 +763,29 @@ class AudioSeparator(
 
                         // Inference
                         val inferenceStartedAt = SystemClock.elapsedRealtime()
-                        val runtime = Runtime.getRuntime()
+                        val chunkProgress = if (totalFrames > 0L) {
+                            (0.12f + 0.78f * (processedFrames.toFloat() / totalFrames.toFloat()))
+                                .coerceIn(0.12f, 0.88f)
+                        } else {
+                            0.12f
+                        }
+                        checkpoint("inference_chunk_${chunkIndex}_start", chunkProgress)
                         logInfo(
                             event = "inference_chunk_start",
                             fields = mapOf(
                                 "chunk_index" to chunkIndex,
                                 "valid_frames" to validFramesInChunk,
                                 "frames_to_write" to framesToWrite,
-                                "java_heap_used_bytes" to runtime.totalMemory() - runtime.freeMemory(),
-                                "java_heap_max_bytes" to runtime.maxMemory(),
-                            ),
+                            ) + memoryFields(),
                         )
                         result = session.run(inputMap, setOf(outputName), runOptions)
+                        checkpoint("inference_chunk_${chunkIndex}_complete", chunkProgress)
                         logInfo(
                             event = "inference_chunk_complete",
                             fields = mapOf(
                                 "chunk_index" to chunkIndex,
                                 "elapsed_ms" to SystemClock.elapsedRealtime() - inferenceStartedAt,
-                                "java_heap_used_bytes" to runtime.totalMemory() - runtime.freeMemory(),
-                            ),
+                            ) + memoryFields(),
                         )
                         
                         val outOnnxTensor = result.get(0) as? OnnxTensor
@@ -969,6 +1026,7 @@ class AudioSeparator(
                 }
             }
 
+            checkpoint("encoding", 0.90f)
             emit(SeparationState.Progress(0.9f)) // Encoding 
 
             // 4. Encode raw PCM back to selected format

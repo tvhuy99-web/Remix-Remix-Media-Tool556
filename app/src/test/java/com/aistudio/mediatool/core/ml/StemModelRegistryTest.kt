@@ -29,6 +29,17 @@ class StemModelRegistryTest {
     }
 
     @Test
+    fun demucsLiteReusesFourSourceGraphForTwoStemOutput() {
+        val model = StemModelRegistry.demucsTwoStemLite
+        assertEquals(StemMode.TWO_STEM, model.mode)
+        assertEquals(StemModelRegistry.demucsFourStem.modelSpec, model.modelSpec)
+        assertEquals(4, model.tensor.sourceCount)
+        assertEquals(listOf(3), model.sources.vocals.sourceIndices)
+        assertEquals(listOf(0, 1, 2), model.sources.music.sourceIndices)
+        assertEquals(null, model.sources.drums)
+    }
+
+    @Test
     fun incompatibleStoredChoiceFallsBackWithinMode() {
         assertSame(
             StemModelRegistry.melBandRoFormerTwoStem,

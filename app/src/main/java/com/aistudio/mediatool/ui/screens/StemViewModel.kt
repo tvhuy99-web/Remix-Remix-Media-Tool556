@@ -3,12 +3,15 @@ package com.aistudio.mediatool.ui.screens
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.aistudio.mediatool.core.PersistentTaskStatus
 import com.aistudio.mediatool.core.SettingsManager
+import com.aistudio.mediatool.core.TaskStateStore
 import com.aistudio.mediatool.core.ml.DownloadState
 import com.aistudio.mediatool.core.ml.ModelDownloader
 import com.aistudio.mediatool.core.ml.StemMode
 import com.aistudio.mediatool.core.ml.StemModelDescriptor
 import com.aistudio.mediatool.core.ml.StemModelRegistry
+import com.aistudio.mediatool.core.ml.StemService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +27,8 @@ class StemViewModel(application: Application) : AndroidViewModel(application) {
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
     private val _selectedModel = MutableStateFlow(configuredModel())
     val selectedModel: StateFlow<StemModelDescriptor> = _selectedModel.asStateFlow()
+    private val _fallbackNotice = MutableStateFlow<String?>(null)
+    val fallbackNotice: StateFlow<String?> = _fallbackNotice.asStateFlow()
     private var downloadJob: Job? = null
     private var initializationJob: Job? = null
 
@@ -34,6 +39,33 @@ class StemViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshConfiguredModel() {
         val configured = configuredModel()
         if (configured.id != _selectedModel.value.id) inspectSelectedModel(configured)
+    }
+
+    fun applyLowMemoryFallbackIfNeeded() {
+        val task = TaskStateStore.load(appContext, StemService.TASK_TYPE) ?: return
+        val current = _selectedModel.value
+        val alreadyHandled = SettingsManager.getStemLowMemoryFallbackTaskId(appContext) == task.taskId
+        val wasMelBandLowMemory =
+            task.status == PersistentTaskStatus.INTERRUPTED &&
+                task.message?.contains("thiếu RAM", ignoreCase = true) == true &&
+                current.id == StemModelRegistry.MEL_BAND_ROFORMER_ID
+        if (!wasMelBandLowMemory || alreadyHandled) return
+
+        val fallback = StemModelRegistry.demucsTwoStemLite
+        SettingsManager.setStemModeIndex(appContext, fallback.mode.settingsIndex)
+        SettingsManager.setStemModelId(appContext, fallback.mode.settingsIndex, fallback.id)
+        SettingsManager.setStemLowMemoryFallbackTaskId(appContext, task.taskId)
+        _fallbackNotice.value =
+            "Mel-Band đã bị Android dừng vì thiếu RAM. Ứng dụng đã chuyển sang Demucs nhẹ; hãy tải model mới rồi thử lại."
+        inspectSelectedModel(fallback)
+    }
+
+    fun selectModel(modelId: String) {
+        val model = StemModelRegistry.find(modelId) ?: return
+        SettingsManager.setStemModeIndex(appContext, model.mode.settingsIndex)
+        SettingsManager.setStemModelId(appContext, model.mode.settingsIndex, model.id)
+        _fallbackNotice.value = null
+        inspectSelectedModel(model)
     }
 
     private fun configuredModel(): StemModelDescriptor {

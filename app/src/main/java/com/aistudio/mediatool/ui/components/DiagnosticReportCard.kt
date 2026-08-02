@@ -46,19 +46,6 @@ fun DiagnosticReportCard(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text("Nhật ký chẩn đoán", fontWeight = FontWeight.Bold)
-            errorContext?.let {
-                Text(
-                    "Ứng dụng đã lưu lại ngữ cảnh kỹ thuật của lỗi này.",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Text(
-                "Tạo một gói ZIP gồm trạng thái thiết bị và nhật ký theo từng giai đoạn. " +
-                    "Gói không chứa media; URI, đường dẫn và metadata riêng tư được che trước khi xuất.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             Button(
                 onClick = {
                     scope.launch {

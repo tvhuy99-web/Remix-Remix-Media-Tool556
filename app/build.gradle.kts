@@ -23,14 +23,20 @@ android {
         applicationId = "com.aistudio.mediatool"
         minSdk = 24
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.3.3"
+        versionCode = 9
+        versionName = "1.3.4"
 
         // FFmpegKit maintained chỉ phát hành binary Maven cho arm64-v8a.
         // Giới hạn cả APK và App Bundle để không tạo artifact cài được nhưng
         // lỗi native ngay khi gọi FFmpeg trên ABI khác.
         ndk {
             abiFilters += "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17")
+            }
         }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -111,6 +117,13 @@ android {
         buildConfig = true
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     packaging {
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",
@@ -120,8 +133,8 @@ android {
         )
         jniLibs {
             useLegacyPackaging = false
-            // FFmpegKit và ONNX Runtime đều đóng gói libc++_shared.so.
-            // CI mở từng APK để xác nhận ARM64 chỉ còn một bản.
+            // FFmpegKit và engine Demucs native cùng dùng libc++_shared.so.
+            // CI mở APK để xác nhận ARM64 chỉ còn một bản.
             pickFirsts += setOf("lib/**/libc++_shared.so")
         }
     }
@@ -163,7 +176,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.okhttp)
-    implementation(libs.onnxruntime.android)
     implementation(libs.ffmpeg.kit.full)
     // FFmpegKit 8.1.7 AAR currently does not reliably expose this runtime dependency.
     implementation(libs.smart.exception.java)

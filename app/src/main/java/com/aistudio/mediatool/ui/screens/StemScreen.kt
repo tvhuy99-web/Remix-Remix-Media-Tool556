@@ -61,6 +61,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
@@ -157,7 +158,7 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     }
 
     val audioPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
+        GetContentWithMimeTypes(),
     ) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         DocumentUtils.persistReadPermission(context, uri)
@@ -196,20 +197,10 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(selectedModel.displayName, fontWeight = FontWeight.Bold)
-                    Text(selectedModel.description, style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "${selectedModel.downloadSizeMiB} MiB • ${selectedModel.deviceRequirements.userFacingSummary}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
             }
             when (val state = downloadState) {
                 DownloadState.Idle -> {
-                    Text(
-                        "Tải model một lần. Sau khi xác minh SHA-256, việc tách nhạc chạy trực tiếp trên thiết bị.",
-                        textAlign = TextAlign.Center,
-                    )
                     Button(onClick = stemViewModel::downloadModel) {
                         Text("Tải model ${selectedModel.downloadSizeMiB} MiB")
                     }
@@ -312,11 +303,6 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                                     textAlign = TextAlign.Center,
                                 )
                             }
-                            Text(
-                                "Model chất lượng cao rất nặng và có thể mất nhiều thời gian. Hãy đóng ứng dụng khác, giữ máy đủ pin và tránh dùng chế độ tiết kiệm pin trong lúc tách.",
-                                style = MaterialTheme.typography.bodySmall,
-                                textAlign = TextAlign.Center,
-                            )
                         }
                     }
                 }

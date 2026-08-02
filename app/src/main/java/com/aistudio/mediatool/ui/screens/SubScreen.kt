@@ -3,7 +3,6 @@ package com.aistudio.mediatool.ui.screens
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -24,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.FileExportManager
@@ -51,7 +51,7 @@ fun SubScreen(navController: NavController, subViewModel: SubViewModel = viewMod
     }
 
     // Laucher chọn Video
-    val vidLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    val vidLauncher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri: Uri? ->
         uri?.let {
             DocumentUtils.persistReadPermission(context, it)
             val fileName = DocumentUtils.displayName(context, it)
@@ -61,7 +61,7 @@ fun SubScreen(navController: NavController, subViewModel: SubViewModel = viewMod
     }
     
     // Laucher chọn Phụ đề
-    val subLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    val subLauncher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri: Uri? ->
         uri?.let {
             DocumentUtils.persistReadPermission(context, it)
             val fileName = DocumentUtils.displayName(context, it)
@@ -249,12 +249,18 @@ fun SubScreen(navController: NavController, subViewModel: SubViewModel = viewMod
 
             // CÀI ĐẶT TTS
             Text("--- CÀI ĐẶT GIỌNG ĐỌC (TTS) ---", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
-            com.aistudio.mediatool.ui.components.AccessibleSwitchRow(
-                checked = state.autoDuck,
-                onCheckedChange = { subViewModel.setAutoDuck(it) },
-                text = "Auto-Duck (Tự động nhỏ tiếng Video)",
-                modifier = Modifier.semantics { contentDescription = "Chuyển đổi giảm âm video thông minh khi đọc giọng nói" }
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Auto-Duck (Tự động nhỏ tiếng Video)", modifier = Modifier.weight(1f))
+                Switch(
+                    checked = state.autoDuck,
+                    onCheckedChange = { subViewModel.setAutoDuck(it) },
+                    modifier = Modifier.semantics { contentDescription = "Chuyển đổi giảm âm video thông minh khi đọc giọng nói" }
+                )
+            }
             
             Text("Tốc độ đọc: ${String.format("%.1f", state.ttsSpeed)}x")
             Slider(

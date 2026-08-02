@@ -13,8 +13,8 @@ object StemModelRegistry {
 
     val melBandRoFormerTwoStem = StemModelDescriptor(
         id = MEL_BAND_ROFORMER_ID,
-        displayName = "Mel-Band RoFormer — Vocals 2 stem",
-        description = "Ưu tiên chất lượng tách lời/nhạc nền; chạy hoàn toàn trên thiết bị.",
+        displayName = "Mel-Band RoFormer (2 stem)",
+        description = "Tách lời và nhạc nền.",
         mode = StemMode.TWO_STEM,
         modelSpec = ModelSpec(
             url = "https://huggingface.co/smank/mel-band-roformer-vocals-onnx/resolve/60cb6b4b97e41b42f7ff16c2e386f47a8cc7e50a/melband_roformer_vocals.onnx?download=true",
@@ -50,7 +50,7 @@ object StemModelRegistry {
         deviceRequirements = DeviceRequirements(
             minimumTotalRamBytes = 6L * GIB,
             minimumAvailableRamBytes = 5L * GIB / 2L,
-            userFacingSummary = "Yêu cầu điện thoại RAM 8 GB trở lên và khoảng 2,5 GB RAM trống.",
+            userFacingSummary = "RAM 8 GB.",
         ),
         licenseName = "MIT",
         projectUrl = "https://huggingface.co/smank/mel-band-roformer-vocals-onnx",

@@ -24,7 +24,7 @@ object StemModelRegistry {
     val htDemucsFtVocalsQnn = StemModelDescriptor(
         id = HTDEMUCS_FT_VOCALS_QNN_ID,
         displayName = "HT-Demucs v4 FT Vocals (QNN GPU)",
-        description = "Model vocals fine-tuned, ưu tiên GPU Snapdragon; instrumental được lấy từ mix trừ vocals.",
+        description = "Model vocals fine-tuned; ưu tiên QNN GPU, tự thử XNNPACK/CPU khi thiết bị không mở được session QNN.",
         mode = StemMode.TWO_STEM,
         modelSpec = ModelSpec(
             url = "https://huggingface.co/StemSplitio/htdemucs-ft-vocals-onnx/resolve/2ef0d757d3e226d0da85fb8c71514f464fcabdd0/htdemucs_ft_vocals_fp16weights.onnx?download=true",

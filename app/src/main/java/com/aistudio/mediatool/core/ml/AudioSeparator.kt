@@ -367,8 +367,7 @@ class AudioSeparator(
             effectiveAcceleration in model.allowedAccelerators -> effectiveAcceleration
             else -> OnnxAcceleration.CPU
         }.also { selected ->
-            val changed = selected != configuredAcceleration
-            if (changed) {
+            if (selected != configuredAcceleration) {
                 val event = when {
                     conservativeMemoryMode -> "provider_forced_for_memory"
                     modelForcedAcceleration != null -> "provider_forced_by_model"
@@ -387,58 +386,89 @@ class AudioSeparator(
                 )
             }
         }
-        val requestedHardware = requestedAcceleration.settingsIndex
-        val primaryOptions = try {
-            createSessionOptions(requestedHardware)
-        } catch (error: Exception) {
-            if (requestedAcceleration == OnnxAcceleration.QNN_GPU) {
-                throw IllegalStateException(
-                    "Không khởi tạo được QNN GPU. Thiết bị cần Snapdragon tương thích và QNN phải chạy toàn bộ graph.",
-                    error,
-                )
+
+        // QNN GPU vẫn được ưu tiên cho model FP16. CPU EP xử lý các node mà QNN
+        // không nhận trong cùng session. Nếu bản thân session QNN không mở được
+        // trên thiết bị, thử XNNPACK trước khi rơi về CPU thuần.
+        val providerChain = mutableListOf(requestedAcceleration).apply {
+            if (
+                requestedAcceleration == OnnxAcceleration.QNN_GPU &&
+                OnnxAcceleration.XNNPACK in model.allowedAccelerators
+            ) {
+                add(OnnxAcceleration.XNNPACK)
             }
-            if (requestedHardware == 0) throw error
-            logError("Không cấu hình được bộ tăng tốc; chuyển sang CPU", error)
-            val cpuOptions = createSessionOptions(0)
-            return OpenedSession(
-                options = cpuOptions,
-                session = try {
-                    env.createSession(modelFile.absolutePath, cpuOptions)
-                } catch (cpuError: Exception) {
-                    cpuOptions.close()
-                    throw cpuError
-                },
-                provider = OnnxAcceleration.CPU,
-            )
-        }
-        return try {
-            OpenedSession(
-                options = primaryOptions,
-                session = env.createSession(modelFile.absolutePath, primaryOptions),
-                provider = requestedAcceleration,
-            )
-        } catch (error: Exception) {
-            primaryOptions.close()
-            if (requestedAcceleration == OnnxAcceleration.QNN_GPU) {
-                throw IllegalStateException(
-                    "QNN GPU không thể nhận toàn bộ graph của ${model.displayName}; CPU fallback đã bị khóa để tránh chạy chậm âm thầm.",
-                    error,
+            if (OnnxAcceleration.CPU !in this) add(OnnxAcceleration.CPU)
+        }.distinct()
+        val failures = mutableListOf<String>()
+
+        for ((attemptIndex, candidate) in providerChain.withIndex()) {
+            val options = try {
+                createSessionOptions(candidate.settingsIndex)
+            } catch (error: Exception) {
+                val detail = "${candidate.name}/config: ${error.message ?: error::class.java.simpleName}"
+                failures += detail
+                DiagnosticLogger.warn(
+                    component = TAG,
+                    event = "onnx_provider_attempt_failed",
+                    sessionId = taskId,
+                    message = error.message,
+                    fields = mapOf(
+                        "model_id" to model.id,
+                        "requested_provider" to requestedAcceleration,
+                        "attempted_provider" to candidate,
+                        "attempt_index" to attemptIndex,
+                        "failure_stage" to "configure",
+                        "next_provider" to providerChain.getOrNull(attemptIndex + 1),
+                    ),
+                    error = error,
                 )
+                continue
             }
-            if (requestedHardware == 0) throw error
-            logError("Bộ tăng tốc không tạo được session cho ${model.displayName}; chuyển sang CPU", error)
-            val cpuOptions = createSessionOptions(0)
+
             try {
-                OpenedSession(
-                    options = cpuOptions,
-                    session = env.createSession(modelFile.absolutePath, cpuOptions),
-                    provider = OnnxAcceleration.CPU,
+                val session = env.createSession(modelFile.absolutePath, options)
+                logInfo(
+                    event = "onnx_session_opened",
+                    fields = mapOf(
+                        "model_id" to model.id,
+                        "requested_provider" to requestedAcceleration,
+                        "effective_provider" to candidate,
+                        "attempt_index" to attemptIndex,
+                        "provider_chain" to providerChain.joinToString("->"),
+                        "cpu_ep_fallback_enabled" to (candidate == OnnxAcceleration.QNN_GPU),
+                    ),
                 )
-            } catch (cpuError: Exception) {
-                cpuOptions.close()
-                throw cpuError
+                return OpenedSession(
+                    options = options,
+                    session = session,
+                    provider = candidate,
+                )
+            } catch (error: Exception) {
+                options.close()
+                val detail = "${candidate.name}/session: ${error.message ?: error::class.java.simpleName}"
+                failures += detail
+                DiagnosticLogger.warn(
+                    component = TAG,
+                    event = "onnx_provider_attempt_failed",
+                    sessionId = taskId,
+                    message = error.message,
+                    fields = mapOf(
+                        "model_id" to model.id,
+                        "requested_provider" to requestedAcceleration,
+                        "attempted_provider" to candidate,
+                        "attempt_index" to attemptIndex,
+                        "failure_stage" to "create_session",
+                        "next_provider" to providerChain.getOrNull(attemptIndex + 1),
+                    ),
+                    error = error,
+                )
             }
         }
+
+        throw IllegalStateException(
+            "Không thể mở model ${model.displayName} bằng chuỗi tăng tốc " +
+                "${providerChain.joinToString(" -> ")}. ${failures.joinToString(" | ")}",
+        )
     }
 
     suspend fun separate(inputUri: Uri): Flow<SeparationState> = flow {

@@ -161,7 +161,7 @@ fun SettingsScreen(navController: NavController) {
                     Text("Tối ưu Tốc độ Tách Audio (AI Model)", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
 
                     var expandedHw by remember { mutableStateOf(false) }
-                    val hwList = listOf("CPU", "NNAPI", "XNNPACK", "QNN GPU (Snapdragon, thử nghiệm)")
+                    val hwList = listOf("CPU", "NNAPI", "XNNPACK", "QNN GPU + fallback thông minh (Snapdragon)")
                     ExposedDropdownMenuBox(expanded = expandedHw, onExpandedChange = { expandedHw = it }, modifier = Modifier.fillMaxWidth()) {
                         OutlinedTextField(
                             value = hwList.getOrNull(hwAccelIndex) ?: hwList[0],
@@ -170,7 +170,7 @@ fun SettingsScreen(navController: NavController) {
                             label = { Text("Bộ tăng tốc phần cứng (Hardware AI)", color = Color(0xFF673AB7), fontWeight = FontWeight.SemiBold) },
                             supportingText = {
                                 if (hwAccelIndex == 3) {
-                                    Text("QNN GPU không fallback CPU: graph không tương thích sẽ báo lỗi thay vì chạy chậm âm thầm.")
+                                    Text("Ưu tiên QNN GPU; node chưa hỗ trợ dùng CPU EP. Nếu session QNN không mở được, ứng dụng thử XNNPACK rồi CPU.")
                                 }
                             },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedHw) },
@@ -192,7 +192,7 @@ fun SettingsScreen(navController: NavController) {
                             readOnly = true,
                             label = { Text("Số luồng xử lý CPU", color = Color(0xFFFF5722), fontWeight = FontWeight.SemiBold) },
                             supportingText = {
-                                if (hwAccelIndex == 3) Text("Không ảnh hưởng đến inference QNN GPU.")
+                                if (hwAccelIndex == 3) Text("Số luồng được dùng cho node CPU fallback và phương án XNNPACK dự phòng.")
                             },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedThreads) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()

@@ -209,6 +209,9 @@ for token, message in [
 check("addQnn" in separator and "backend_type" in separator, "AudioSeparator chưa cấu hình QNN GPU")
 check("session.disable_cpu_ep_fallback" not in separator, "QNN GPU vẫn khóa CPU fallback")
 check('"cpu_fallback_disabled" to false' in separator, "Log QNN chưa xác nhận CPU fallback được bật")
+check("onnx_provider_attempt_failed" in separator, "AudioSeparator thiếu log từng lần fallback provider")
+check("provider_chain" in separator and "OnnxAcceleration.XNNPACK" in separator, "QNN thiếu chuỗi dự phòng XNNPACK/CPU")
+check("CPU fallback đã bị khóa" not in separator, "AudioSeparator còn thông báo sai rằng CPU fallback bị khóa")
 check("inference_chunk_complete" in separator and "ffmpeg_failed" in separator, "Stem pipeline thiếu log phase/chunk")
 check("INPUT GỐC" not in separator and "VOCAL OUT" not in separator, "Stem pipeline còn ghi mẫu âm thanh vào log")
 check("catch (error: Exception)" in separator and "catch (error: Throwable)" in separator, "Fallback provider/OOM chưa tách biệt")
@@ -224,6 +227,8 @@ check("sanitizeFfmpegLogs" in diagnostic_redactor and "<media-uri>" in diagnosti
 check("summary.json" in diagnostic_report and "recent_process_exits" in diagnostic_report, "Gói chẩn đoán thiếu summary/exit history")
 settings_screen = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/SettingsScreen.kt").read_text(encoding="utf-8")
 check("DiagnosticReportCard" in settings_screen, "Cài đặt thiếu nút xuất nhật ký")
+check("không fallback CPU" not in settings_screen, "Cài đặt còn mô tả sai chính sách QNN fallback")
+check("fallback thông minh" in settings_screen, "Cài đặt chưa mô tả chuỗi fallback QNN")
 
 core_dir = ROOT / "app/src/main/java/com/aistudio/mediatool/core"
 recording_service = (core_dir / "media/RecordingService.kt").read_text(encoding="utf-8")

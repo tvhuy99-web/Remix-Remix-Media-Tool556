@@ -51,6 +51,38 @@ class MediaEngine(private val context: Context) {
         )
         trySend(ExecutionState.Connecting)
         var session: FFmpegSession? = null
+
+        fun reportStartFailure(error: Throwable) {
+            terminal.set(true)
+            val cause = if (BuildConfig.DEBUG) {
+                generateSequence(error) { it.cause }
+                    .joinToString(" -> ") { it.message ?: it.javaClass.simpleName }
+            } else {
+                when (error) {
+                    is LinkageError -> "Thành phần xử lý media chưa được đóng gói đầy đủ"
+                    else -> error.message ?: "Không thể khởi động FFmpeg"
+                }
+            }.let { DiagnosticRedactor.sanitize(it).orEmpty() }
+            DiagnosticLogger.error(
+                component = TAG,
+                event = "ffmpeg_start_failed",
+                sessionId = taskId,
+                message = cause,
+                fields = mapOf(
+                    "phase" to diagnosticPhase,
+                    "command_id" to commandId,
+                    "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
+                    "failure_type" to error.javaClass.name,
+                ),
+                error = error,
+            )
+            trySend(ExecutionState.Error(null, cause, null))
+            // Đóng flow bình thường sau khi đã phát trạng thái Error. Nếu đóng bằng
+            // chính LinkageError, collector ở màn hình có thể nhận lại Error JVM và
+            // làm tiến trình ứng dụng thoát thay vì hiển thị thông báo.
+            close()
+        }
+
         try {
             session = FFmpegKit.executeAsync(
                 command,
@@ -139,28 +171,13 @@ class MediaEngine(private val context: Context) {
             // Collector có thể bị hủy trong khe rất nhỏ trước khi executeAsync
             // trả về session. Khi đó awaitClose chưa có ID để hủy, nên kiểm tra lại.
             if (terminal.get()) session?.let { FFmpegKit.cancel(it.sessionId) }
-        } catch (error: Exception) {
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
             terminal.set(true)
-            val cause = if (BuildConfig.DEBUG) {
-                generateSequence<Throwable>(error) { it.cause }
-                    .joinToString(" -> ") { it.message ?: it.javaClass.simpleName }
-            } else {
-                error.message ?: "Không thể khởi động FFmpeg"
-            }.let { DiagnosticRedactor.sanitize(it).orEmpty() }
-            DiagnosticLogger.error(
-                component = TAG,
-                event = "ffmpeg_start_failed",
-                sessionId = taskId,
-                message = cause,
-                fields = mapOf(
-                    "phase" to diagnosticPhase,
-                    "command_id" to commandId,
-                    "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
-                ),
-                error = error,
-            )
-            trySend(ExecutionState.Error(null, cause, null))
-            close(error)
+            throw cancelled
+        } catch (error: LinkageError) {
+            reportStartFailure(error)
+        } catch (error: Exception) {
+            reportStartFailure(error)
         }
 
         awaitClose {

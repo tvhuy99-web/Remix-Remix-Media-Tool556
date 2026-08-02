@@ -4,7 +4,6 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -26,6 +25,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import androidx.media3.exoplayer.ExoPlayer
+import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.FileExportManager
@@ -63,7 +63,7 @@ fun TrimScreen(navController: NavController) {
     var outputPath by rememberSaveable { mutableStateOf("") }
     
 
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    val launcher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri: Uri? ->
         uri?.let {
             DocumentUtils.persistReadPermission(context, it)
             selectedUriText = it.toString()

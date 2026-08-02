@@ -83,24 +83,14 @@ def balanced_kotlin(path: Path) -> str | None:
 
 
 required = [
-    "settings.gradle.kts",
-    "build.gradle.kts",
-    "app/build.gradle.kts",
-    "gradlew",
-    "gradle/wrapper/gradle-wrapper.jar",
-    "gradle/wrapper/gradle-wrapper.properties",
-    "app/src/main/AndroidManifest.xml",
-    "app/src/main/cpp/CMakeLists.txt",
-    "app/src/main/cpp/demucs_jni.cpp",
-    "app/src/main/java/com/aistudio/mediatool/core/ml/DemucsNativeBridge.kt",
-    "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt",
-    "app/src/main/java/com/aistudio/mediatool/core/ml/StemModelRegistry.kt",
-    "scripts/prepare_demucs_cpp.sh",
-    "scripts/inspect_apks.py",
-    ".github/workflows/build-apk.yml",
-    "README.md",
-    "CHANGELOG.md",
-    "THIRD_PARTY_NOTICES.md",
+    "settings.gradle.kts", "build.gradle.kts", "app/build.gradle.kts",
+    "gradlew", "gradlew.bat", "gradle/wrapper/gradle-wrapper.jar",
+    "gradle/wrapper/gradle-wrapper.properties", "app/src/main/AndroidManifest.xml",
+    "README.md", "PROJECT_STATUS.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md",
+    "docs/ARCHITECTURE.md", "docs/ADDING_STEM_MODELS.md", "docs/MEL_BAND_ROFORMER_INTEGRATION.md",
+    "docs/DIAGNOSTICS.md", "docs/RELEASE_CHECKLIST.md", "keystore.properties.example",
+    "scripts/run_core_smoke.sh", "scripts/test_wrapper_bootstrap.py",
+    "app/src/main/assets/third_party_notices.txt",
 ]
 for rel in required:
     check((ROOT / rel).is_file(), f"Thiếu tệp bắt buộc: {rel}")
@@ -114,95 +104,49 @@ for xml in sorted((ROOT / "app/src/main/res").rglob("*.xml")) + [ROOT / "app/src
 try:
     catalog = tomllib.loads((ROOT / "gradle/libs.versions.toml").read_text(encoding="utf-8"))
     versions = catalog.get("versions", {})
-    libraries = catalog.get("libraries", {})
     check(versions.get("agp") == "8.13.2", "AGP không phải 8.13.2")
     check(versions.get("ffmpegKit") == "8.1.7", "FFmpegKit không phải 8.1.7")
     check(versions.get("smartException") == "0.2.1", "Smart Exception không phải 0.2.1")
-    check("onnxruntime" not in versions, "Version catalog vẫn chứa ONNX Runtime")
-    check("onnxruntime-android" not in libraries, "Version catalog vẫn chứa dependency ONNX Runtime")
 except Exception as exc:
     ERRORS.append(f"Version catalog TOML lỗi: {exc}")
 
+text_files = [p for p in ROOT.rglob("*") if p.is_file() and ".git" not in p.parts and "build" not in p.parts]
+zero_files = [p.relative_to(ROOT) for p in text_files if p.stat().st_size == 0]
+check(not zero_files, "Có tệp rỗng: " + ", ".join(map(str, zero_files)))
+check(not list(ROOT.rglob("*.aar")), "Không được chứa AAR cục bộ")
+check(not (ROOT / ".env").exists() and not (ROOT / ".env.example").exists(), "Không được phụ thuộc .env")
+
+code_and_build = list((ROOT / "app").rglob("*.kt")) + [ROOT / "app/build.gradle.kts", ROOT / "settings.gradle.kts"]
+for path in code_and_build:
+    body = path.read_text(encoding="utf-8")
+    check("com.example" not in body, f"Package mẫu còn trong {path.relative_to(ROOT)}")
+
 build_gradle = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
-for token, message in [
-    ('namespace = "com.aistudio.mediatool"', "Namespace không đúng"),
-    ('applicationId = "com.aistudio.mediatool"', "Application ID không đúng"),
-    ('versionCode = 9', "versionCode không phải 9"),
-    ('versionName = "1.3.4"', "versionName không phải 1.3.4"),
-    ('abiFilters += "arm64-v8a"', "Bản phân phối chưa giới hạn arm64-v8a"),
-    ('path = file("src/main/cpp/CMakeLists.txt")', "Gradle chưa bật CMake Demucs"),
-    ('libs.ffmpeg.kit.full', "Thiếu FFmpegKit"),
-]:
-    check(token in build_gradle, message)
-check("libs.onnxruntime.android" not in build_gradle, "Gradle vẫn phụ thuộc ONNX Runtime")
-check("armeabi-v7a" not in build_gradle and "x86_64" not in build_gradle, "Build vẫn đóng gói ABI ngoài ARM64")
-
-registry = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/StemModelRegistry.kt").read_text(encoding="utf-8")
-for token, message in [
-    ("83_994_361L", "Dung lượng Demucs FT Vocals ghim không đúng"),
-    ("19186500a45a551a034d96e9500415ebe73c8bd570bf55337ddc8cc8f53a9120", "SHA Demucs FT Vocals ghim không đúng"),
-    ("5f5daffffcf06ad7b27a7285da327e18ea62068a", "Commit weights Demucs chưa ghim"),
-    ("demucs-ht-v4-ft-vocals-native-f16-v1", "Thiếu ID model native mặc định"),
-]:
-    check(token in registry, message)
-check("953_292_899" not in registry, "Registry vẫn chứa Mel-Band 953 MB")
-check("304_330_587" not in registry, "Registry vẫn chứa Demucs ONNX 304 MB")
-check(".onnx" not in registry.lower(), "Registry vẫn trỏ model ONNX")
-
-separator = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt").read_text(encoding="utf-8")
-for token, message in [
-    ("nativeBridge.separate", "AudioSeparator chưa gọi Demucs native"),
-    ("nativeBridge.cancel", "AudioSeparator chưa hủy Demucs native"),
-    ("FFmpegKit.cancel", "AudioSeparator chưa hủy FFmpeg"),
-    ("-f f32le", "Pipeline stem chưa giữ PCM float32"),
-    ("native_inference_start", "Pipeline thiếu log bắt đầu native inference"),
-    ("native_inference_complete", "Pipeline thiếu log hoàn tất native inference"),
-    ("createdOutputs", "Pipeline thiếu transaction output"),
-    ("outputsCommitted", "Pipeline thiếu commit output"),
-]:
-    check(token in separator, message)
-check("ai.onnxruntime" not in separator and "OrtSession" not in separator, "AudioSeparator vẫn chứa ONNX")
-
-jni = (ROOT / "app/src/main/cpp/demucs_jni.cpp").read_text(encoding="utf-8")
-for token, message in [
-    ("load_demucs_model", "JNI chưa tải model Demucs"),
-    ("demucs_inference", "JNI chưa gọi inference Demucs"),
-    ("VOCALS_SOURCE = 3", "JNI ánh xạ vocals sai"),
-    ("mix(channel, offset + frame) - vocal", "JNI chưa tạo instrumental từ mix trừ vocals"),
-    ("OUT_OF_MEMORY", "JNI thiếu lỗi bộ nhớ ổn định"),
-]:
-    check(token in jni, message)
-
-cmake = (ROOT / "app/src/main/cpp/CMakeLists.txt").read_text(encoding="utf-8")
-check("mediatool_demucs" in cmake, "CMake thiếu thư viện mediatool_demucs")
-check(".deps/demucs.cpp" in cmake, "CMake chưa dùng nguồn Demucs ghim")
-check("DEMUCS_SOURCES" in cmake, "CMake chưa biên dịch nguồn demucs.cpp")
-check((ROOT / ".deps/demucs.cpp/src/model.hpp").is_file(), "Nguồn demucs.cpp ghim chưa được chuẩn bị")
-check((ROOT / ".deps/demucs.cpp/vendor/eigen/Eigen/Core").is_file(), "Eigen của demucs.cpp chưa được chuẩn bị")
-
-workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
-for token in ["prepare_demucs_cpp.sh", "assembleDebug", "inspect_apks.py", "app-debug-apk"]:
-    check(token in workflow, f"Workflow thiếu {token}")
-check("assembleInternal --" not in workflow and "assembleDebugAndroidTest --" not in workflow, "Workflow còn build APK không cần thiết")
-
-inspect = (ROOT / "scripts/inspect_apks.py").read_text(encoding="utf-8")
-check("libmediatool_demucs.so" in inspect, "Kiểm tra APK chưa bắt buộc Demucs native")
-check("onnxruntime" in inspect.lower() and "forbidden_onnx" in inspect, "Kiểm tra APK chưa cấm ONNX Runtime")
+check('namespace = "com.aistudio.mediatool"' in build_gradle, "Namespace không đúng")
+check('applicationId = "com.aistudio.mediatool"' in build_gradle, "Application ID không đúng")
+check("libs.ffmpeg.kit.full" in build_gradle, "Thiếu dependency FFmpegKit Maven")
+check("libs.onnxruntime.android" in build_gradle, "Thiếu dependency ONNX Runtime")
+check("versionCode = 8" in build_gradle, "versionCode không phải 8")
+check('versionName = "1.3.3"' in build_gradle, "versionName không phải 1.3.3")
+check('create("internal")' in build_gradle, "Thiếu build type internal")
+check('initWith(getByName("release"))' in build_gradle, "Internal không kế thừa release")
+check("isMinifyEnabled = true" in build_gradle and "isShrinkResources = true" in build_gradle, "Release chưa bật tối ưu")
+check("assembleInternal" in build_gradle, "Thông báo release chưa hướng người dùng sang assembleInternal")
+check('signingConfigs.getByName("debug")' in build_gradle, "Internal chưa ký debug")
+check("if (hasReleaseKeystore)" in build_gradle and "Bản release yêu cầu keystore.properties" in build_gradle, "Release chưa bắt buộc keystore")
+check('else {\n                signingConfig = signingConfigs.getByName("debug")' not in build_gradle, "Release vẫn fallback sang debug key")
+check('abiFilters += "arm64-v8a"' in build_gradle, "Bản phân phối chưa giới hạn arm64-v8a")
+check("armeabi-v7a" not in build_gradle and "x86_64" not in build_gradle, "Build vẫn đóng gói ABI chưa được FFmpegKit hỗ trợ")
 
 manifest = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
 for token in [
-    "FOREGROUND_SERVICE_MEDIA_PROCESSING",
-    'android:foregroundServiceType="mediaProcessing"',
+    "FOREGROUND_SERVICE_MICROPHONE", "FOREGROUND_SERVICE_MEDIA_PROJECTION",
+    "FOREGROUND_SERVICE_MEDIA_PROCESSING", "android.intent.action.TTS_SERVICE",
+    'android:foregroundServiceType="mediaProcessing"', "FileProvider", "${applicationId}.provider",
     'android:name=".MediaToolApplication"',
-    "FileProvider",
 ]:
     check(token in manifest, f"Manifest thiếu {token}")
 check("MANAGE_EXTERNAL_STORAGE" not in manifest, "Manifest không được xin MANAGE_EXTERNAL_STORAGE")
-
-for kt in sorted((ROOT / "app/src/main/java").rglob("*.kt")):
-    issue = balanced_kotlin(kt)
-    if issue:
-        ERRORS.append(issue)
 
 try:
     with zipfile.ZipFile(ROOT / "gradle/wrapper/gradle-wrapper.jar") as jar:
@@ -211,17 +155,88 @@ except Exception as exc:
     ERRORS.append(f"Wrapper JAR lỗi: {exc}")
 
 props = (ROOT / "gradle/wrapper/gradle-wrapper.properties").read_text(encoding="utf-8")
-check(bool(re.search(r"distributionSha256Sum=[0-9a-f]{64}", props)), "Checksum Gradle wrapper thiếu hoặc sai")
+sha = re.search(r"distributionSha256Sum=([0-9a-f]{64})", props)
+check(bool(sha), "Checksum Gradle wrapper thiếu hoặc sai định dạng")
 check("gradle-8.13-bin.zip" in props, "Wrapper không dùng Gradle 8.13")
+
+screens_dir = ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens"
+for screen in sorted(screens_dir.glob("*Screen.kt")):
+    if screen.name == "MainScreen.kt":
+        continue
+    check("ToolScaffold(" in screen.read_text(encoding="utf-8"), f"{screen.name} chưa dùng ToolScaffold")
+
+for kt in sorted((ROOT / "app/src/main/java").rglob("*.kt")):
+    issue = balanced_kotlin(kt)
+    if issue:
+        ERRORS.append(issue)
+
+downloader = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/ModelDownloader.kt").read_text(encoding="utf-8")
+registry = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/StemModelRegistry.kt").read_text(encoding="utf-8")
+check("953_292_899" in registry, "Dung lượng Mel-Band RoFormer ghim không đúng")
+check("64a4f3bee48fbe7d971b23875adc924ed004c3533f49672592641dddc0f6f561" in registry, "SHA Mel-Band RoFormer ghim không đúng")
+check("60cb6b4b97e41b42f7ff16c2e386f47a8cc7e50a" in registry, "Commit Mel-Band RoFormer ghim không đúng")
+check("frames = 352_800" in registry and "overlapFrames = 176_400" in registry, "Chunk contract Mel-Band RoFormer không đúng")
+check("Content-Range" in downloader and "suspendCancellableCoroutine" in downloader, "Tải model chưa hỗ trợ resume/hủy")
+check("call.cancel()" in downloader and "AtomicBoolean" in downloader and "resumeWith(Result" in downloader, "OkHttp call chưa gắn cancellation an toàn")
+
+separator = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt").read_text(encoding="utf-8")
+check("FFmpegKit.cancel" in separator, "AudioSeparator chưa hủy FFmpeg")
+check("setTerminate(true)" in separator, "AudioSeparator chưa hủy ONNX")
+check("createdOutputs" in separator and "outputsCommitted" in separator, "AudioSeparator chưa cleanup output theo transaction")
+check("sharedInputBufferDirect" in separator, "AudioSeparator thiếu buffer tensor đầu vào")
+check("-f f32le" in separator, "Pipeline stem chưa giữ PCM float32")
+check("createReflectPaddedPcm" in separator, "Mel-Band RoFormer thiếu reflect padding ở biên")
+check("AudioNormalization.GLOBAL_MONO_MEAN_STD" in separator, "Chuẩn hóa model chưa theo descriptor")
+check("inference_chunk_complete" in separator and "ffmpeg_failed" in separator, "Stem pipeline thiếu log phase/chunk")
+check("INPUT GỐC" not in separator and "VOCAL OUT" not in separator, "Stem pipeline còn ghi mẫu âm thanh vào log")
+check("catch (error: Exception)" in separator and "catch (error: Throwable)" in separator, "Fallback provider/OOM chưa tách biệt")
+
+diagnostic_logger = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticLogger.kt").read_text(encoding="utf-8")
+diagnostic_report = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticReportManager.kt").read_text(encoding="utf-8")
+diagnostic_redactor = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticRedactor.kt").read_text(encoding="utf-8")
+check("diagnostics-current.jsonl" in diagnostic_logger and "MAX_FILE_BYTES" in diagnostic_logger, "Logger thiếu JSONL/rotation")
+check("QUEUE_CAPACITY" in diagnostic_logger and "MediaTool-Diagnostics" in diagnostic_logger, "Logger chưa có worker/hàng đợi giới hạn")
+check("recordCrashSync" in diagnostic_logger and "uncaught_exception" in diagnostic_logger, "Logger thiếu crash capture")
+check("sanitizeFfmpegLogs" in diagnostic_redactor and "<media-uri>" in diagnostic_redactor, "Logger thiếu che dữ liệu media")
+check("summary.json" in diagnostic_report and "recent_process_exits" in diagnostic_report, "Gói chẩn đoán thiếu summary/exit history")
+check("DiagnosticReportCard" in (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/SettingsScreen.kt").read_text(encoding="utf-8"), "Cài đặt thiếu nút xuất nhật ký")
+
+recording_service = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/RecordingService.kt").read_text(encoding="utf-8")
+check("registerCallback" in recording_service and "unregisterCallback" in recording_service, "MediaProjection callback chưa hoàn chỉnh")
+recording_manager = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/RecordingManager.kt").read_text(encoding="utf-8")
+wav_recorder = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/WavRecorder.kt").read_text(encoding="utf-8")
+task_store = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/TaskStateStore.kt").read_text(encoding="utf-8")
+check("WavRecorder.lastError" in recording_manager, "Lỗi thread WAV chưa được chuyển lên RecordingManager")
+check("WavHeader.HEADER_SIZE.toLong()" in wav_recorder, "So sánh kích thước WAV chưa dùng Long")
+check("stableStartedAt" in task_store, "TaskStateStore còn đặt lại startedAt khi cập nhật progress")
+
+workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
+for token in ["assembleDebug", "assembleInternal", "assembleDebugAndroidTest", "inspect_apks.py"]:
+    check(token in workflow, f"Workflow thiếu {token}")
+check("assembleRelease" not in workflow, "CI không nên build release khi thiếu keystore")
+try:
+    import yaml  # type: ignore
+    yaml.safe_load(workflow)
+except ImportError:
+    NOTES.append("PyYAML không có; chỉ kiểm tra workflow bằng token")
+except Exception as exc:
+    ERRORS.append(f"Workflow YAML lỗi: {exc}")
 
 unit_tests = list((ROOT / "app/src/test").rglob("*Test.kt"))
 android_tests = list((ROOT / "app/src/androidTest").rglob("*Test.kt"))
 check(len(unit_tests) >= 13, "Cần ít nhất 13 unit test Kotlin")
 check(len(android_tests) >= 1, "Thiếu instrumentation smoke test")
-
+check(
+    "diagnosticReportIsExportableAndRedactsUris" in "\n".join(p.read_text(encoding="utf-8") for p in android_tests),
+    "Instrumentation test chưa kiểm tra ZIP chẩn đoán/redaction",
+)
 NOTES.append(f"Tests: {len(unit_tests)} unit, {len(android_tests)} instrumentation")
-NOTES.append("Stem runtime: demucs.cpp native ARM64")
-NOTES.append("Model: htdemucs_ft_vocals GGML FP16, 83,994,361 byte")
+
+kotlin_files = list((ROOT / "app/src/main/java").rglob("*.kt"))
+source_bytes = sum(p.stat().st_size for p in kotlin_files)
+NOTES.append(f"Kotlin: {len(kotlin_files)} tệp, {source_bytes:,} byte")
+NOTES.append(f"XML: {len(list((ROOT / 'app/src/main/res').rglob('*.xml'))) + 1} tệp")
+NOTES.append(f"Tổng tệp dự án kiểm tra: {len(text_files)}")
 
 if ERRORS:
     print("VERIFY FAILED")

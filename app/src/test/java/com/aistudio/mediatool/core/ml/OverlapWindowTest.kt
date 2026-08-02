@@ -26,14 +26,8 @@ class OverlapWindowTest {
     }
 
     @Test
-    fun referenceLinearWindowIsNormalizedAcrossHalfOverlap() {
-        val chunking = ChunkingSpec(
-            frames = 352_800,
-            overlapFrames = 176_400,
-            edgeFadeFrames = 35_280,
-            overlapProfile = OverlapProfile.REFERENCE_LINEAR_WINDOW,
-            reflectBoundaryFrames = 176_400,
-        )
+    fun melBandReferenceWindowIsNormalizedAcrossHalfOverlap() {
+        val chunking = StemModelRegistry.melBandRoFormerTwoStem.chunking
         repeat(chunking.overlapFrames) { index ->
             val weights = OverlapWindow.weights(index, chunking)
             assertEquals(1f, weights.previous + weights.current, 0.000001f)

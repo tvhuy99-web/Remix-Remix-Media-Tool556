@@ -42,12 +42,21 @@ target_compile_options(
     -fassociative-math
     -freciprocal-math
     -fno-signed-zeros
+    -ffp-contract=fast
+    -fvectorize
+    -fslp-vectorize
 )
 
 if(ANDROID_ABI STREQUAL "arm64-v8a")
     target_compile_options(mediatool_demucs PRIVATE -march=armv8-a)
 endif()
 
+find_package(Threads REQUIRED)
 find_library(LOG_LIB log)
 find_library(ANDROID_LIB android)
-target_link_libraries(mediatool_demucs ${LOG_LIB} ${ANDROID_LIB})
+target_link_libraries(
+    mediatool_demucs
+    Threads::Threads
+    ${LOG_LIB}
+    ${ANDROID_LIB}
+)

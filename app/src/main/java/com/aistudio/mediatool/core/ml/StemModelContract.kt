@@ -103,19 +103,7 @@ data class MdxSpectrogramContract(
     val overlapRatio: Float,
     val compensation: Float = 1f,
 ) {
-    init {
-        require(nFft >= 4 && nFft % 2 == 0)
-        require(hopLength in 1 until nFft)
-        require(frequencyBins == nFft / 2) {
-            "MDX contract drops exactly the Nyquist bin: frequencyBins must equal nFft/2"
-        }
-        require(timeFrames >= 2)
-        require(overlapRatio in 0f..<0.5f)
-        require(compensation.isFinite() && compensation > 0f)
-        require(generatedFrames > 0)
-    }
-
-    /** Native waveform samples represented by one static 256-frame MDX tensor. */
+    /** Native waveform samples represented by one static MDX tensor. */
     val chunkFrames: Int = Math.multiplyExact(hopLength, timeFrames - 1)
 
     /** center=True STFT trim on each side. */
@@ -124,7 +112,7 @@ data class MdxSpectrogramContract(
     /** Central samples contributed by one model invocation after dropping both center trims. */
     val generatedFrames: Int = chunkFrames - 2 * trimFrames
 
-    /** Fixed 10% crossfade stride used by the reference pipeline. */
+    /** Fixed overlap stride used by the reference pipeline. */
     val strideFrames: Int = (generatedFrames * (1f - overlapRatio))
         .roundToInt()
         .coerceIn(1, generatedFrames)
@@ -133,6 +121,18 @@ data class MdxSpectrogramContract(
 
     /** [1, 4, frequencyBins, timeFrames], float32 NCHW. */
     val tensorElements: Int = Math.multiplyExact(4, Math.multiplyExact(frequencyBins, timeFrames))
+
+    init {
+        require(nFft >= 4 && nFft % 2 == 0)
+        require(hopLength in 1 until nFft)
+        require(frequencyBins == nFft / 2) {
+            "MDX contract drops exactly the Nyquist bin: frequencyBins must equal nFft/2"
+        }
+        require(timeFrames >= 2)
+        require(overlapRatio >= 0f && overlapRatio < 0.5f)
+        require(compensation.isFinite() && compensation > 0f)
+        require(generatedFrames > 0)
+    }
 }
 
 data class SourceMix(val sourceIndices: List<Int>) {

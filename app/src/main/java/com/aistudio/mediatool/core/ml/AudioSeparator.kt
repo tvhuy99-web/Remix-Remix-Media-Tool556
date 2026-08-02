@@ -785,8 +785,7 @@ class AudioSeparator(
                             fields = mapOf(
                                 "chunk_index" to chunkIndex,
                                 "elapsed_ms" to SystemClock.elapsedRealtime() - inferenceStartedAt,
-                                "java_heap_used_bytes" to runtime.totalMemory() - runtime.freeMemory(),
-                            ),
+                            ) + memoryFields(),
                         )
                         
                         val outOnnxTensor = result.get(0) as? OnnxTensor

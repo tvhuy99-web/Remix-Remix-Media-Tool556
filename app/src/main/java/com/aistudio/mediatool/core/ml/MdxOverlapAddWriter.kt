@@ -88,11 +88,16 @@ internal class MdxOverlapAddWriter(
     }
 
     /**
-     * Closing an interrupted writer must not synthesize a partial tail or mask the original error.
-     * Successful callers invoke [finish] explicitly before leaving their use block.
+     * A complete use block is finalized automatically. An interrupted block only flushes samples
+     * that were already committed, so cleanup cannot hide the original cancellation or inference error.
      */
     override fun close() {
-        runCatching(::flushBuffer)
+        val availableAfterTail = chunks.toLong() * strideFrames + overlapFrames
+        if (!finished && chunks > 0 && availableAfterTail >= totalFrames) {
+            finish()
+        } else {
+            runCatching(::flushBuffer)
+        }
         output.close()
     }
 

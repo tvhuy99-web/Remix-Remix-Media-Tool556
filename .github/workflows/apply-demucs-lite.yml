@@ -1,0 +1,46 @@
+name: Apply Demucs lite fallback
+
+on:
+  push:
+    branches:
+      - fix/stem-demucs-lite-fallback
+    paths:
+      - .ci/demucs-lite.patch.b64
+      - .github/workflows/apply-demucs-lite.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/stem-demucs-lite-fallback
+          fetch-depth: 0
+
+      - name: Verify and apply patch
+        shell: bash
+        run: |
+          base64 --decode .ci/demucs-lite.patch.b64 > /tmp/demucs-lite.patch
+          git apply --check /tmp/demucs-lite.patch
+          git apply /tmp/demucs-lite.patch
+          rm .ci/demucs-lite.patch.b64
+          rm .github/workflows/apply-demucs-lite.yml
+
+      - name: Verify source
+        shell: bash
+        run: |
+          python3 scripts/verify_project.py
+          ./scripts/run_core_smoke.sh
+
+      - name: Commit applied patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: add low-memory Demucs two-stem fallback"
+          git push origin HEAD:fix/stem-demucs-lite-fallback

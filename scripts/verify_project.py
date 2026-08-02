@@ -23,9 +23,9 @@ def balanced_kotlin(path: Path) -> str | None:
     stack: list[tuple[str, int]] = []
     pairs = {')': '(', ']': '[', '}': '{'}
     opens = set(pairs.values())
-    i = 0
-    line = 1
     state = "code"
+    line = 1
+    i = 0
     while i < len(text):
         ch = text[i]
         nxt = text[i + 1] if i + 1 < len(text) else ""
@@ -87,15 +87,17 @@ required = [
     "gradlew", "gradlew.bat", "gradle/wrapper/gradle-wrapper.jar",
     "gradle/wrapper/gradle-wrapper.properties", "app/src/main/AndroidManifest.xml",
     "README.md", "PROJECT_STATUS.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md",
-    "docs/ARCHITECTURE.md", "docs/ADDING_STEM_MODELS.md", "docs/MEL_BAND_ROFORMER_INTEGRATION.md",
-    "docs/DIAGNOSTICS.md", "docs/RELEASE_CHECKLIST.md", "keystore.properties.example",
+    "docs/ARCHITECTURE.md", "docs/ADDING_STEM_MODELS.md",
+    "docs/MEL_BAND_ROFORMER_INTEGRATION.md", "docs/DIAGNOSTICS.md",
+    "docs/RELEASE_CHECKLIST.md", "keystore.properties.example",
     "scripts/run_core_smoke.sh", "scripts/test_wrapper_bootstrap.py",
     "app/src/main/assets/third_party_notices.txt",
 ]
 for rel in required:
     check((ROOT / rel).is_file(), f"Thiếu tệp bắt buộc: {rel}")
 
-for xml in sorted((ROOT / "app/src/main/res").rglob("*.xml")) + [ROOT / "app/src/main/AndroidManifest.xml"]:
+xml_files = sorted((ROOT / "app/src/main/res").rglob("*.xml")) + [ROOT / "app/src/main/AndroidManifest.xml"]
+for xml in xml_files:
     try:
         ET.parse(xml)
     except Exception as exc:
@@ -104,9 +106,12 @@ for xml in sorted((ROOT / "app/src/main/res").rglob("*.xml")) + [ROOT / "app/src
 try:
     catalog = tomllib.loads((ROOT / "gradle/libs.versions.toml").read_text(encoding="utf-8"))
     versions = catalog.get("versions", {})
-    check(versions.get("agp") == "8.13.2", "AGP không phải 8.13.2")
-    check(versions.get("ffmpegKit") == "8.1.7", "FFmpegKit không phải 8.1.7")
-    check(versions.get("smartException") == "0.2.1", "Smart Exception không phải 0.2.1")
+    for key, expected, label in [
+        ("agp", "8.13.2", "AGP"),
+        ("ffmpegKit", "8.1.7", "FFmpegKit"),
+        ("smartException", "0.2.1", "Smart Exception"),
+    ]:
+        check(versions.get(key) == expected, f"{label} không phải {expected}")
 except Exception as exc:
     ERRORS.append(f"Version catalog TOML lỗi: {exc}")
 
@@ -118,32 +123,34 @@ check(not (ROOT / ".env").exists() and not (ROOT / ".env.example").exists(), "Kh
 
 code_and_build = list((ROOT / "app").rglob("*.kt")) + [ROOT / "app/build.gradle.kts", ROOT / "settings.gradle.kts"]
 for path in code_and_build:
-    body = path.read_text(encoding="utf-8")
-    check("com.example" not in body, f"Package mẫu còn trong {path.relative_to(ROOT)}")
+    check("com.example" not in path.read_text(encoding="utf-8"), f"Package mẫu còn trong {path.relative_to(ROOT)}")
 
 build_gradle = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
-check('namespace = "com.aistudio.mediatool"' in build_gradle, "Namespace không đúng")
-check('applicationId = "com.aistudio.mediatool"' in build_gradle, "Application ID không đúng")
-check("libs.ffmpeg.kit.full" in build_gradle, "Thiếu dependency FFmpegKit Maven")
-check("libs.onnxruntime.android.qnn" in build_gradle, "Thiếu dependency ONNX Runtime QNN")
-check("versionCode = 10" in build_gradle, "versionCode không phải 10")
-check('versionName = "1.3.6"' in build_gradle, "versionName không phải 1.3.6")
-check('create("internal")' in build_gradle, "Thiếu build type internal")
-check('initWith(getByName("release"))' in build_gradle, "Internal không kế thừa release")
+for token, message in [
+    ('namespace = "com.aistudio.mediatool"', "Namespace không đúng"),
+    ('applicationId = "com.aistudio.mediatool"', "Application ID không đúng"),
+    ("libs.ffmpeg.kit.full", "Thiếu dependency FFmpegKit Maven"),
+    ("libs.onnxruntime.android.qnn", "Thiếu dependency ONNX Runtime QNN"),
+    ("versionCode = 10", "versionCode không phải 10"),
+    ('versionName = "1.3.6"', "versionName không phải 1.3.6"),
+    ('create("internal")', "Thiếu build type internal"),
+    ('initWith(getByName("release"))', "Internal không kế thừa release"),
+    ("assembleInternal", "Thông báo release chưa hướng người dùng sang assembleInternal"),
+    ('signingConfigs.getByName("debug")', "Internal chưa ký debug"),
+    ('abiFilters += "arm64-v8a"', "Bản phân phối chưa giới hạn arm64-v8a"),
+]:
+    check(token in build_gradle, message)
 check("isMinifyEnabled = true" in build_gradle and "isShrinkResources = true" in build_gradle, "Release chưa bật tối ưu")
-check("assembleInternal" in build_gradle, "Thông báo release chưa hướng người dùng sang assembleInternal")
-check('signingConfigs.getByName("debug")' in build_gradle, "Internal chưa ký debug")
 check("if (hasReleaseKeystore)" in build_gradle and "Bản release yêu cầu keystore.properties" in build_gradle, "Release chưa bắt buộc keystore")
 check('else {\n                signingConfig = signingConfigs.getByName("debug")' not in build_gradle, "Release vẫn fallback sang debug key")
-check('abiFilters += "arm64-v8a"' in build_gradle, "Bản phân phối chưa giới hạn arm64-v8a")
 check("armeabi-v7a" not in build_gradle and "x86_64" not in build_gradle, "Build vẫn đóng gói ABI chưa được FFmpegKit hỗ trợ")
 
 manifest = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
 for token in [
     "FOREGROUND_SERVICE_MICROPHONE", "FOREGROUND_SERVICE_MEDIA_PROJECTION",
     "FOREGROUND_SERVICE_MEDIA_PROCESSING", "android.intent.action.TTS_SERVICE",
-    'android:foregroundServiceType="mediaProcessing"', "FileProvider", "${applicationId}.provider",
-    'android:name=".MediaToolApplication"',
+    'android:foregroundServiceType="mediaProcessing"', "FileProvider",
+    "${applicationId}.provider", 'android:name=".MediaToolApplication"',
 ]:
     check(token in manifest, f"Manifest thiếu {token}")
 check("MANAGE_EXTERNAL_STORAGE" not in manifest, "Manifest không được xin MANAGE_EXTERNAL_STORAGE")
@@ -155,64 +162,75 @@ except Exception as exc:
     ERRORS.append(f"Wrapper JAR lỗi: {exc}")
 
 props = (ROOT / "gradle/wrapper/gradle-wrapper.properties").read_text(encoding="utf-8")
-sha = re.search(r"distributionSha256Sum=([0-9a-f]{64})", props)
-check(bool(sha), "Checksum Gradle wrapper thiếu hoặc sai định dạng")
+check(bool(re.search(r"distributionSha256Sum=([0-9a-f]{64})", props)), "Checksum Gradle wrapper thiếu hoặc sai định dạng")
 check("gradle-8.13-bin.zip" in props, "Wrapper không dùng Gradle 8.13")
 
 screens_dir = ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens"
 for screen in sorted(screens_dir.glob("*Screen.kt")):
-    if screen.name == "MainScreen.kt":
-        continue
-    check("ToolScaffold(" in screen.read_text(encoding="utf-8"), f"{screen.name} chưa dùng ToolScaffold")
+    if screen.name != "MainScreen.kt":
+        check("ToolScaffold(" in screen.read_text(encoding="utf-8"), f"{screen.name} chưa dùng ToolScaffold")
 
 for kt in sorted((ROOT / "app/src/main/java").rglob("*.kt")):
     issue = balanced_kotlin(kt)
     if issue:
         ERRORS.append(issue)
 
-downloader = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/ModelDownloader.kt").read_text(encoding="utf-8")
-registry = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/StemModelRegistry.kt").read_text(encoding="utf-8")
-check("165_612_636" in registry, "Dung lượng HT-Demucs FT Vocals ghim không đúng")
-check("0cbe651f535415c9d26a7bb614f7d322dd5a080fa0298f2e50f478030a994dce" in registry, "SHA HT-Demucs FT Vocals ghim không đúng")
-check("2ef0d757d3e226d0da85fb8c71514f464fcabdd0" in registry, "Commit HT-Demucs FT Vocals ghim không đúng")
-check("953_292_899" in registry, "Dung lượng Mel-Band RoFormer ghim không đúng")
-check("64a4f3bee48fbe7d971b23875adc924ed004c3533f49672592641dddc0f6f561" in registry, "SHA Mel-Band RoFormer ghim không đúng")
-check("60cb6b4b97e41b42f7ff16c2e386f47a8cc7e50a" in registry, "Commit Mel-Band RoFormer ghim không đúng")
+ml_dir = ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml"
+downloader = (ml_dir / "ModelDownloader.kt").read_text(encoding="utf-8")
+registry = (ml_dir / "StemModelRegistry.kt").read_text(encoding="utf-8")
+for token, message in [
+    ("165_612_636", "Dung lượng HT-Demucs FT Vocals ghim không đúng"),
+    ("0cbe651f535415c9d26a7bb614f7d322dd5a080fa0298f2e50f478030a994dce", "SHA HT-Demucs FT Vocals ghim không đúng"),
+    ("2ef0d757d3e226d0da85fb8c71514f464fcabdd0", "Commit HT-Demucs FT Vocals ghim không đúng"),
+    ("953_292_899", "Dung lượng Mel-Band RoFormer ghim không đúng"),
+    ("64a4f3bee48fbe7d971b23875adc924ed004c3533f49672592641dddc0f6f561", "SHA Mel-Band RoFormer ghim không đúng"),
+    ("60cb6b4b97e41b42f7ff16c2e386f47a8cc7e50a", "Commit Mel-Band RoFormer ghim không đúng"),
+]:
+    check(token in registry, message)
 check("frames = 352_800" in registry and "overlapFrames = 176_400" in registry, "Chunk contract Mel-Band RoFormer không đúng")
 check("Content-Range" in downloader and "suspendCancellableCoroutine" in downloader, "Tải model chưa hỗ trợ resume/hủy")
 check("call.cancel()" in downloader and "AtomicBoolean" in downloader and "resumeWith(Result" in downloader, "OkHttp call chưa gắn cancellation an toàn")
 
-separator = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt").read_text(encoding="utf-8")
-check("FFmpegKit.cancel" in separator, "AudioSeparator chưa hủy FFmpeg")
-check("setTerminate(true)" in separator, "AudioSeparator chưa hủy ONNX")
+separator = (ml_dir / "AudioSeparator.kt").read_text(encoding="utf-8")
+for token, message in [
+    ("FFmpegKit.cancel", "AudioSeparator chưa hủy FFmpeg"),
+    ("setTerminate(true)", "AudioSeparator chưa hủy ONNX"),
+    ("provider_forced_by_model", "Model QNN chưa bắt buộc dùng QNN GPU"),
+    ("HTDEMUCS_FT_VOCALS_QNN_ID", "Model QNN chưa bắt buộc dùng QNN GPU"),
+    ("musicFromMixMinusVocals", "HT-Demucs vocals chưa tạo instrumental từ mix trừ vocals"),
+    ("createdOutputs", "AudioSeparator chưa cleanup output theo transaction"),
+    ("outputsCommitted", "AudioSeparator chưa cleanup output theo transaction"),
+    ("sharedInputBufferDirect", "AudioSeparator thiếu buffer tensor đầu vào"),
+    ("-f f32le", "Pipeline stem chưa giữ PCM float32"),
+    ("createReflectPaddedPcm", "Mel-Band RoFormer thiếu reflect padding ở biên"),
+    ("AudioNormalization.GLOBAL_MONO_MEAN_STD", "Chuẩn hóa model chưa theo descriptor"),
+]:
+    check(token in separator, message)
 check("addQnn" in separator and "backend_type" in separator, "AudioSeparator chưa cấu hình QNN GPU")
-check("session.disable_cpu_ep_fallback" in separator, "QNN GPU chưa khóa CPU fallback")
-check("provider_forced_by_model" in separator and "HTDEMUCS_FT_VOCALS_QNN_ID" in separator, "Model QNN chưa bắt buộc dùng QNN GPU")
-check("musicFromMixMinusVocals" in separator, "HT-Demucs vocals chưa tạo instrumental từ mix trừ vocals")
-check("createdOutputs" in separator and "outputsCommitted" in separator, "AudioSeparator chưa cleanup output theo transaction")
-check("sharedInputBufferDirect" in separator, "AudioSeparator thiếu buffer tensor đầu vào")
-check("-f f32le" in separator, "Pipeline stem chưa giữ PCM float32")
-check("createReflectPaddedPcm" in separator, "Mel-Band RoFormer thiếu reflect padding ở biên")
-check("AudioNormalization.GLOBAL_MONO_MEAN_STD" in separator, "Chuẩn hóa model chưa theo descriptor")
+check("session.disable_cpu_ep_fallback" not in separator, "QNN GPU vẫn khóa CPU fallback")
+check('"cpu_fallback_disabled" to false' in separator, "Log QNN chưa xác nhận CPU fallback được bật")
 check("inference_chunk_complete" in separator and "ffmpeg_failed" in separator, "Stem pipeline thiếu log phase/chunk")
 check("INPUT GỐC" not in separator and "VOCAL OUT" not in separator, "Stem pipeline còn ghi mẫu âm thanh vào log")
 check("catch (error: Exception)" in separator and "catch (error: Throwable)" in separator, "Fallback provider/OOM chưa tách biệt")
 
-diagnostic_logger = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticLogger.kt").read_text(encoding="utf-8")
-diagnostic_report = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticReportManager.kt").read_text(encoding="utf-8")
-diagnostic_redactor = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticRedactor.kt").read_text(encoding="utf-8")
+diagnostics_dir = ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics"
+diagnostic_logger = (diagnostics_dir / "DiagnosticLogger.kt").read_text(encoding="utf-8")
+diagnostic_report = (diagnostics_dir / "DiagnosticReportManager.kt").read_text(encoding="utf-8")
+diagnostic_redactor = (diagnostics_dir / "DiagnosticRedactor.kt").read_text(encoding="utf-8")
 check("diagnostics-current.jsonl" in diagnostic_logger and "MAX_FILE_BYTES" in diagnostic_logger, "Logger thiếu JSONL/rotation")
 check("QUEUE_CAPACITY" in diagnostic_logger and "MediaTool-Diagnostics" in diagnostic_logger, "Logger chưa có worker/hàng đợi giới hạn")
 check("recordCrashSync" in diagnostic_logger and "uncaught_exception" in diagnostic_logger, "Logger thiếu crash capture")
 check("sanitizeFfmpegLogs" in diagnostic_redactor and "<media-uri>" in diagnostic_redactor, "Logger thiếu che dữ liệu media")
 check("summary.json" in diagnostic_report and "recent_process_exits" in diagnostic_report, "Gói chẩn đoán thiếu summary/exit history")
-check("DiagnosticReportCard" in (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/SettingsScreen.kt").read_text(encoding="utf-8"), "Cài đặt thiếu nút xuất nhật ký")
+settings_screen = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/SettingsScreen.kt").read_text(encoding="utf-8")
+check("DiagnosticReportCard" in settings_screen, "Cài đặt thiếu nút xuất nhật ký")
 
-recording_service = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/RecordingService.kt").read_text(encoding="utf-8")
+core_dir = ROOT / "app/src/main/java/com/aistudio/mediatool/core"
+recording_service = (core_dir / "media/RecordingService.kt").read_text(encoding="utf-8")
+recording_manager = (core_dir / "media/RecordingManager.kt").read_text(encoding="utf-8")
+wav_recorder = (core_dir / "media/WavRecorder.kt").read_text(encoding="utf-8")
+task_store = (core_dir / "TaskStateStore.kt").read_text(encoding="utf-8")
 check("registerCallback" in recording_service and "unregisterCallback" in recording_service, "MediaProjection callback chưa hoàn chỉnh")
-recording_manager = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/RecordingManager.kt").read_text(encoding="utf-8")
-wav_recorder = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/WavRecorder.kt").read_text(encoding="utf-8")
-task_store = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/TaskStateStore.kt").read_text(encoding="utf-8")
 check("WavRecorder.lastError" in recording_manager, "Lỗi thread WAV chưa được chuyển lên RecordingManager")
 check("WavHeader.HEADER_SIZE.toLong()" in wav_recorder, "So sánh kích thước WAV chưa dùng Long")
 check("stableStartedAt" in task_store, "TaskStateStore còn đặt lại startedAt khi cập nhật progress")
@@ -242,7 +260,7 @@ NOTES.append(f"Tests: {len(unit_tests)} unit, {len(android_tests)} instrumentati
 kotlin_files = list((ROOT / "app/src/main/java").rglob("*.kt"))
 source_bytes = sum(p.stat().st_size for p in kotlin_files)
 NOTES.append(f"Kotlin: {len(kotlin_files)} tệp, {source_bytes:,} byte")
-NOTES.append(f"XML: {len(list((ROOT / 'app/src/main/res').rglob('*.xml'))) + 1} tệp")
+NOTES.append(f"XML: {len(xml_files)} tệp")
 NOTES.append(f"Tổng tệp dự án kiểm tra: {len(text_files)}")
 
 if ERRORS:

@@ -34,6 +34,6 @@ class StemEngineRouter(
         mdxDelegate?.cancel()
     }
 
-    fun separate(inputUri: Uri): Flow<SeparationState> =
+    suspend fun separate(inputUri: Uri): Flow<SeparationState> =
         onnxDelegate?.separate(inputUri) ?: checkNotNull(mdxDelegate).separate(inputUri)
 }

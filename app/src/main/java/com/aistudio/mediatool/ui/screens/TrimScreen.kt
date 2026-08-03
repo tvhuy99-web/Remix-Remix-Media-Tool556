@@ -54,8 +54,8 @@ fun TrimScreen(navController: NavController) {
     var fileName by rememberSaveable { mutableStateOf("Chưa chọn") }
     var exoPlayer by remember { mutableStateOf<ExoPlayer?>(null) }
     
-    var startMs by rememberSaveable { mutableStateOf("0") }
-    var endMs by rememberSaveable { mutableStateOf("0") }
+    var startMs by rememberSaveable { mutableStateOf("") }
+    var endMs by rememberSaveable { mutableStateOf("") }
     
     var isProcessing by remember { mutableStateOf(false) }
     var progressMsg by remember { mutableStateOf("") }
@@ -68,6 +68,8 @@ fun TrimScreen(navController: NavController) {
             DocumentUtils.persistReadPermission(context, it)
             selectedUriText = it.toString()
             fileName = DocumentUtils.displayName(context, it)
+            startMs = ""
+            endMs = ""
             hasOutput = false
             outputPath = ""
             progressMsg = ""

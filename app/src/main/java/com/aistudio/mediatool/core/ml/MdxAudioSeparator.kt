@@ -164,17 +164,19 @@ class MdxAudioSeparator(
                 val dsp = MdxDsp(contract)
                 val chunkLeft = FloatArray(contract.chunkFrames)
                 val chunkRight = FloatArray(contract.chunkFrames)
-                val inputTensor = FloatArray(contract.tensorElements)
+                val tensorSlot = MdxTensorSlot(contract.tensorElements)
                 val vocalsLeft = FloatArray(contract.chunkFrames)
                 val vocalsRight = FloatArray(contract.chunkFrames)
                 val pcmScratch = ByteArray(contract.chunkFrames * bytesPerFrame)
+                val tensorBytes = contract.tensorElements.toLong() * Float.SIZE_BYTES
 
                 logInfo(
                     event = "mdx_buffers_ready",
                     fields = mapOf(
                         "chunk_count" to chunkCount,
-                        "input_tensor_elements" to inputTensor.size,
-                        "input_tensor_bytes" to inputTensor.size.toLong() * Float.SIZE_BYTES,
+                        "tensor_elements" to contract.tensorElements,
+                        "tensor_bytes" to tensorBytes,
+                        "tensor_handoff" to "output_reused_as_next_input",
                     ) + memoryFields(),
                 )
 
@@ -206,15 +208,23 @@ class MdxAudioSeparator(
                             )
                             val readElapsed = SystemClock.elapsedRealtime() - chunkStartedAt
                             val stftStartedAt = SystemClock.elapsedRealtime()
-                            dsp.forward(chunkLeft, chunkRight, inputTensor)
+                            dsp.forward(chunkLeft, chunkRight, tensorSlot.borrow())
                             val stftElapsed = SystemClock.elapsedRealtime() - stftStartedAt
                             val inferenceStartedAt = SystemClock.elapsedRealtime()
-                            val outputTensor = engine.run(inputTensor)
+
+                            // LiteRT copies the input during writeInput. Drop the Java reference before
+                            // native inference so the previous ~12 MiB tensor can be reclaimed before
+                            // readOutput materializes the next one.
+                            engine.writeInput(tensorSlot.borrow())
+                            tensorSlot.release()
+                            engine.execute()
+                            val outputTensor = engine.readOutput()
                             val inferenceElapsed = SystemClock.elapsedRealtime() - inferenceStartedAt
                             coroutineContext.ensureActive()
                             check(!cancelRequested.get()) { "Đã hủy xử lý" }
                             val istftStartedAt = SystemClock.elapsedRealtime()
                             dsp.inverse(outputTensor, vocalsLeft, vocalsRight)
+                            tensorSlot.accept(outputTensor)
                             val istftElapsed = SystemClock.elapsedRealtime() - istftStartedAt
                             val writeStartedAt = SystemClock.elapsedRealtime()
                             writer.append(

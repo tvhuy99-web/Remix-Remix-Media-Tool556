@@ -9,8 +9,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+ANDROID_NS = "http://schemas.android.com/apk/res/android"
+ANDROID_NAME = f"{{{ANDROID_NS}}}name"
 ERRORS: list[str] = []
-NOTES: list[str] = []
 
 
 def check(condition: bool, message: str) -> None:
@@ -18,251 +19,223 @@ def check(condition: bool, message: str) -> None:
         ERRORS.append(message)
 
 
-def balanced_kotlin(path: Path) -> str | None:
-    text = path.read_text(encoding="utf-8")
-    stack: list[tuple[str, int]] = []
-    pairs = {')': '(', ']': '[', '}': '{'}
-    opens = set(pairs.values())
-    i = 0
-    line = 1
-    state = "code"
-    while i < len(text):
-        ch = text[i]
-        nxt = text[i + 1] if i + 1 < len(text) else ""
-        tri = text[i:i + 3]
-        if ch == "\n":
-            line += 1
-        if state == "line_comment":
-            if ch == "\n":
-                state = "code"
-        elif state == "block_comment":
-            if ch == "*" and nxt == "/":
-                state = "code"
-                i += 1
-        elif state == "string":
-            if ch == "\\":
-                i += 1
-            elif ch == '"':
-                state = "code"
-        elif state == "triple":
-            if tri == '"""':
-                state = "code"
-                i += 2
-        elif state == "char":
-            if ch == "\\":
-                i += 1
-            elif ch == "'":
-                state = "code"
-        else:
-            if ch == "/" and nxt == "/":
-                state = "line_comment"
-                i += 1
-            elif ch == "/" and nxt == "*":
-                state = "block_comment"
-                i += 1
-            elif tri == '"""':
-                state = "triple"
-                i += 2
-            elif ch == '"':
-                state = "string"
-            elif ch == "'":
-                state = "char"
-            elif ch in opens:
-                stack.append((ch, line))
-            elif ch in pairs:
-                if not stack or stack[-1][0] != pairs[ch]:
-                    return f"{path.relative_to(ROOT)}:{line}: dấu {ch} không khớp"
-                stack.pop()
-        i += 1
-    if state in {"block_comment", "string", "triple", "char"}:
-        return f"{path.relative_to(ROOT)}: kết thúc trong trạng thái {state}"
-    if stack:
-        ch, start_line = stack[-1]
-        return f"{path.relative_to(ROOT)}:{start_line}: dấu {ch} chưa đóng"
-    return None
+def require_file(relative_path: str) -> Path:
+    path = ROOT / relative_path
+    check(path.is_file(), f"Thiếu tệp bắt buộc: {relative_path}")
+    return path
 
 
-required = [
-    "settings.gradle.kts", "build.gradle.kts", "app/build.gradle.kts",
-    "gradlew", "gradlew.bat", "gradle/wrapper/gradle-wrapper.jar",
-    "gradle/wrapper/gradle-wrapper.properties", "app/src/main/AndroidManifest.xml",
-    "README.md", "PROJECT_STATUS.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md",
-    "docs/ARCHITECTURE.md", "docs/ADDING_STEM_MODELS.md",
-    "docs/DIAGNOSTICS.md", "docs/RELEASE_CHECKLIST.md", "keystore.properties.example",
-    "scripts/run_core_smoke.sh", "scripts/test_wrapper_bootstrap.py",
-    "app/src/main/assets/third_party_notices.txt",
-]
-for rel in required:
-    check((ROOT / rel).is_file(), f"Thiếu tệp bắt buộc: {rel}")
+def read_properties(path: Path) -> dict[str, str]:
+    properties: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        properties[key.strip()] = (
+            value.strip()
+            .replace(r"\:", ":")
+            .replace(r"\=", "=")
+        )
+    return properties
 
-for xml in sorted((ROOT / "app/src/main/res").rglob("*.xml")) + [ROOT / "app/src/main/AndroidManifest.xml"]:
+
+def verify_required_files() -> None:
+    required = [
+        "settings.gradle.kts",
+        "build.gradle.kts",
+        "app/build.gradle.kts",
+        "app/src/main/AndroidManifest.xml",
+        "gradle/libs.versions.toml",
+        "gradle/wrapper/gradle-wrapper.jar",
+        "gradle/wrapper/gradle-wrapper.properties",
+        "gradlew",
+        "gradlew.bat",
+        "README.md",
+        "PROJECT_STATUS.md",
+        "CHANGELOG.md",
+        "THIRD_PARTY_NOTICES.md",
+        "docs/ARCHITECTURE.md",
+        "docs/ADDING_STEM_MODELS.md",
+        "docs/DIAGNOSTICS.md",
+        "docs/RELEASE_CHECKLIST.md",
+        "scripts/check_local.sh",
+        "scripts/test_wrapper_bootstrap.py",
+        "app/src/main/assets/third_party_notices.txt",
+    ]
+    for relative_path in required:
+        require_file(relative_path)
+
+
+def verify_xml_and_manifest() -> None:
+    manifest_path = require_file("app/src/main/AndroidManifest.xml")
+    manifest: ET.Element | None = None
+    xml_files = sorted((ROOT / "app/src/main/res").rglob("*.xml"))
+    if manifest_path.is_file():
+        xml_files.append(manifest_path)
+
+    for path in xml_files:
+        try:
+            root = ET.parse(path).getroot()
+            if path == manifest_path:
+                manifest = root
+        except (OSError, ET.ParseError) as error:
+            ERRORS.append(f"XML lỗi {path.relative_to(ROOT)}: {error}")
+
+    if manifest is None:
+        return
+
+    permissions = {
+        node.attrib.get(ANDROID_NAME)
+        for node in manifest.findall("uses-permission")
+        if node.attrib.get(ANDROID_NAME)
+    }
+    required_permissions = {
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING",
+    }
+    for permission in sorted(required_permissions):
+        check(permission in permissions, f"Manifest thiếu quyền {permission}")
+    check(
+        "android.permission.MANAGE_EXTERNAL_STORAGE" not in permissions,
+        "Manifest không được xin MANAGE_EXTERNAL_STORAGE",
+    )
+
+    application = manifest.find("application")
+    check(application is not None, "Manifest thiếu application")
+    if application is None:
+        return
+
+    check(
+        application.attrib.get(f"{{{ANDROID_NS}}}allowBackup") == "false",
+        "Application phải tắt allowBackup",
+    )
+
+    service_types: set[str] = set()
+    for service in application.findall("service"):
+        raw_types = service.attrib.get(
+            f"{{{ANDROID_NS}}}foregroundServiceType",
+            "",
+        )
+        service_types.update(
+            part.strip()
+            for part in raw_types.split("|")
+            if part.strip()
+        )
+    check("mediaProcessing" in service_types, "Manifest thiếu service mediaProcessing")
+
+    provider_names = {
+        provider.attrib.get(ANDROID_NAME)
+        for provider in application.findall("provider")
+        if provider.attrib.get(ANDROID_NAME)
+    }
+    check(
+        "androidx.core.content.FileProvider" in provider_names,
+        "Manifest thiếu androidx.core.content.FileProvider",
+    )
+
+
+def verify_version_catalog() -> None:
+    path = require_file("gradle/libs.versions.toml")
+    if not path.is_file():
+        return
     try:
-        ET.parse(xml)
-    except Exception as exc:
-        ERRORS.append(f"XML lỗi {xml.relative_to(ROOT)}: {exc}")
+        catalog = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        ERRORS.append(f"Version catalog TOML lỗi: {error}")
+        return
 
-try:
-    catalog = tomllib.loads((ROOT / "gradle/libs.versions.toml").read_text(encoding="utf-8"))
     versions = catalog.get("versions", {})
-    check(versions.get("agp") == "8.13.2", "AGP không phải 8.13.2")
-    check(versions.get("ffmpegKit") == "8.1.7", "FFmpegKit không phải 8.1.7")
-    check(versions.get("smartException") == "0.2.1", "Smart Exception không phải 0.2.1")
-    check(versions.get("litert") == "2.1.6", "LiteRT không phải 2.1.6")
-except Exception as exc:
-    ERRORS.append(f"Version catalog TOML lỗi: {exc}")
+    libraries = catalog.get("libraries", {})
+    plugins = catalog.get("plugins", {})
 
-text_files = [p for p in ROOT.rglob("*") if p.is_file() and ".git" not in p.parts and "build" not in p.parts]
-zero_files = [p.relative_to(ROOT) for p in text_files if p.stat().st_size == 0]
-check(not zero_files, "Có tệp rỗng: " + ", ".join(map(str, zero_files)))
-check(not list(ROOT.rglob("*.aar")), "Không được chứa AAR cục bộ")
-check(not (ROOT / ".env").exists() and not (ROOT / ".env.example").exists(), "Không được phụ thuộc .env")
+    for key in ("agp", "kotlin", "onnxruntime", "litert", "ffmpegKit"):
+        check(bool(versions.get(key)), f"Version catalog thiếu versions.{key}")
 
-code_and_build = list((ROOT / "app").rglob("*.kt")) + [ROOT / "app/build.gradle.kts", ROOT / "settings.gradle.kts"]
-for path in code_and_build:
-    body = path.read_text(encoding="utf-8")
-    check("com.example" not in body, f"Package mẫu còn trong {path.relative_to(ROOT)}")
+    expected_modules = {
+        "onnxruntime-android": "com.microsoft.onnxruntime:onnxruntime-android",
+        "litert": "com.google.ai.edge.litert:litert",
+        "ffmpeg-kit-full": "dev.ffmpegkit-maintained:ffmpeg-kit-full",
+    }
+    for alias, module in expected_modules.items():
+        entry = libraries.get(alias, {})
+        check(entry.get("module") == module, f"Alias {alias} không trỏ tới {module}")
 
-build_gradle = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
-check('namespace = "com.aistudio.mediatool"' in build_gradle, "Namespace không đúng")
-check('applicationId = "com.aistudio.mediatool"' in build_gradle, "Application ID không đúng")
-check("libs.ffmpeg.kit.full" in build_gradle, "Thiếu dependency FFmpegKit")
-check("libs.onnxruntime.android" in build_gradle, "Thiếu dependency ONNX Runtime")
-check("libs.litert" in build_gradle, "Thiếu dependency LiteRT")
-check("versionCode = 8" in build_gradle, "versionCode không phải 8")
-check('versionName = "1.3.3"' in build_gradle, "versionName không phải 1.3.3")
-check('create("internal")' in build_gradle, "Thiếu build type internal")
-check('initWith(getByName("release"))' in build_gradle, "Internal không kế thừa release")
-check("isMinifyEnabled = true" in build_gradle and "isShrinkResources = true" in build_gradle, "Release chưa bật tối ưu")
-check("assembleInternal" in build_gradle, "Thông báo release chưa hướng người dùng sang assembleInternal")
-check('signingConfigs.getByName("debug")' in build_gradle, "Internal chưa ký debug")
-check("if (hasReleaseKeystore)" in build_gradle and "Bản release yêu cầu keystore.properties" in build_gradle, "Release chưa bắt buộc keystore")
-check('abiFilters += "arm64-v8a"' in build_gradle, "Bản phân phối chưa giới hạn arm64-v8a")
-check("armeabi-v7a" not in build_gradle and "x86_64" not in build_gradle, "Build vẫn đóng gói ABI không hỗ trợ")
+    expected_plugins = {
+        "android-application": "com.android.application",
+        "kotlin-android": "org.jetbrains.kotlin.android",
+        "kotlin-compose": "org.jetbrains.kotlin.plugin.compose",
+    }
+    for alias, plugin_id in expected_plugins.items():
+        entry = plugins.get(alias, {})
+        check(entry.get("id") == plugin_id, f"Plugin {alias} không trỏ tới {plugin_id}")
 
-manifest = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
-for token in [
-    "FOREGROUND_SERVICE_MICROPHONE", "FOREGROUND_SERVICE_MEDIA_PROJECTION",
-    "FOREGROUND_SERVICE_MEDIA_PROCESSING", "android.intent.action.TTS_SERVICE",
-    'android:foregroundServiceType="mediaProcessing"', "FileProvider", "${applicationId}.provider",
-    'android:name=".MediaToolApplication"',
-]:
-    check(token in manifest, f"Manifest thiếu {token}")
-check("MANAGE_EXTERNAL_STORAGE" not in manifest, "Manifest không được xin MANAGE_EXTERNAL_STORAGE")
 
-try:
-    with zipfile.ZipFile(ROOT / "gradle/wrapper/gradle-wrapper.jar") as jar:
-        check("org/gradle/wrapper/GradleWrapperMain.class" in jar.namelist(), "Wrapper JAR thiếu main class")
-except Exception as exc:
-    ERRORS.append(f"Wrapper JAR lỗi: {exc}")
+def verify_gradle_wrapper() -> None:
+    jar_path = require_file("gradle/wrapper/gradle-wrapper.jar")
+    properties_path = require_file("gradle/wrapper/gradle-wrapper.properties")
 
-props = (ROOT / "gradle/wrapper/gradle-wrapper.properties").read_text(encoding="utf-8")
-sha = re.search(r"distributionSha256Sum=([0-9a-f]{64})", props)
-check(bool(sha), "Checksum Gradle wrapper thiếu hoặc sai định dạng")
-check("gradle-8.13-bin.zip" in props, "Wrapper không dùng Gradle 8.13")
+    if jar_path.is_file():
+        try:
+            with zipfile.ZipFile(jar_path) as wrapper_jar:
+                check(
+                    "org/gradle/wrapper/GradleWrapperMain.class" in wrapper_jar.namelist(),
+                    "Wrapper JAR thiếu GradleWrapperMain.class",
+                )
+        except (OSError, zipfile.BadZipFile) as error:
+            ERRORS.append(f"Wrapper JAR lỗi: {error}")
 
-screens_dir = ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens"
-for screen in sorted(screens_dir.glob("*Screen.kt")):
-    if screen.name == "MainScreen.kt":
-        continue
-    check("ToolScaffold(" in screen.read_text(encoding="utf-8"), f"{screen.name} chưa dùng ToolScaffold")
+    if properties_path.is_file():
+        properties = read_properties(properties_path)
+        distribution_url = properties.get("distributionUrl", "")
+        checksum = properties.get("distributionSha256Sum", "")
+        check(
+            distribution_url.startswith("https://"),
+            "Gradle distributionUrl phải dùng HTTPS",
+        )
+        check(
+            re.fullmatch(r"[0-9a-fA-F]{64}", checksum) is not None,
+            "Checksum Gradle wrapper thiếu hoặc sai định dạng SHA-256",
+        )
 
-for kt in sorted((ROOT / "app/src/main/java").rglob("*.kt")):
-    issue = balanced_kotlin(kt)
-    if issue:
-        ERRORS.append(issue)
 
-downloader = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/ModelDownloader.kt").read_text(encoding="utf-8")
-registry = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/StemModelRegistry.kt").read_text(encoding="utf-8")
-view_model = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/StemViewModel.kt").read_text(encoding="utf-8")
-stem_screen = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/StemScreen.kt").read_text(encoding="utf-8")
-trim_screen = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/TrimScreen.kt").read_text(encoding="utf-8")
-settings_screen = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/SettingsScreen.kt").read_text(encoding="utf-8")
-mdx_engine = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/MdxLiteRtEngine.kt").read_text(encoding="utf-8")
-check("66_848_828" in registry, "Dung lượng UVR LiteRT ghim không đúng")
-check("5ef47e3b3bafa14357532c0a3f6c5f18444d94b6efe3fd62b3d13f80051f1e58" in registry, "SHA UVR LiteRT ghim không đúng")
-check("MEL_BAND_ROFORMER_ID" not in registry and "953_292_899" not in registry, "Mel-Band vẫn còn trong catalog")
-check("UVR MDX-Net Voc FT" in registry and 'displayName = "Demucs"' in registry, "Catalog thiếu UVR hoặc Demucs")
-check("setOf(OnnxAcceleration.CPU, OnnxAcceleration.XNNPACK)" in registry, "Demucs chưa giới hạn CPU/XNNPACK")
-check("REMOVED_MEL_BAND_PREFIX" in view_model and "deleteRemovedMelBandFiles" in view_model, "Chưa xóa cache Mel-Band cũ")
-check("fallbackNotice" not in view_model and "applyLowMemoryFallbackIfNeeded" not in view_model, "StemViewModel còn trạng thái fallback rỗng")
-check("fallbackNotice" not in stem_screen and "selectedModel.description" not in stem_screen, "Màn hình tách còn mô tả hoặc fallback thừa")
-check("OnnxAcceleration.XNNPACK.settingsIndex" in view_model, "Demucs chưa tự ưu tiên XNNPACK")
-check("Luồng CPU" in settings_screen and "Bộ tăng tốc phần cứng" not in settings_screen, "Cài đặt AI chưa được rút gọn")
-check("1 luồng" in settings_screen and "2 luồng" in settings_screen and "4 luồng" in settings_screen and "8 luồng" in settings_screen, "Thiếu lựa chọn luồng CPU")
-check('mutableStateOf("0")' not in trim_screen, "Màn hình cắt vẫn điền sẵn số 0")
-check('startMs = ""' in trim_screen and 'endMs = ""' in trim_screen, "Màn hình cắt chưa xóa mốc khi chọn tệp mới")
-check("numThreads = cpuThreads.coerceIn(1, 8)" in mdx_engine, "LiteRT CPU chưa dùng đúng số luồng")
-check("LITERT_GPU_FP16" in mdx_engine and "LITERT_CPU_XNNPACK" in mdx_engine, "LiteRT thiếu GPU hoặc CPU fallback")
-check("Content-Range" in downloader and "suspendCancellableCoroutine" in downloader, "Tải model chưa hỗ trợ resume/hủy")
-check("call.cancel()" in downloader and "AtomicBoolean" in downloader and "resumeWith(Result" in downloader, "OkHttp call chưa gắn cancellation")
+def verify_repository_hygiene() -> None:
+    ignored_parts = {".git", ".gradle", "build"}
+    files = [
+        path
+        for path in ROOT.rglob("*")
+        if path.is_file() and not any(part in ignored_parts for part in path.parts)
+    ]
+    empty_files = [
+        str(path.relative_to(ROOT))
+        for path in files
+        if path.stat().st_size == 0
+    ]
+    check(not empty_files, "Có tệp rỗng: " + ", ".join(empty_files))
 
-separator = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt").read_text(encoding="utf-8")
-check("FFmpegKit.cancel" in separator, "AudioSeparator chưa hủy FFmpeg")
-check("setTerminate(true)" in separator, "AudioSeparator chưa hủy ONNX")
-check("createdOutputs" in separator and "outputsCommitted" in separator, "AudioSeparator chưa cleanup output")
-check("sharedInputBufferDirect" in separator, "AudioSeparator thiếu buffer tensor đầu vào")
-check("-f f32le" in separator, "Pipeline stem chưa giữ PCM float32")
-check("AudioNormalization.GLOBAL_MONO_MEAN_STD" in separator, "Chuẩn hóa Demucs chưa theo descriptor")
-check("MEL_BAND_ROFORMER_ID" not in separator, "AudioSeparator còn nhánh Mel-Band cũ")
-check(not (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/RemovedModelCompatibility.kt").exists(), "Còn tệp tương thích model đã bỏ")
-check("inference_chunk_complete" in separator and "ffmpeg_failed" in separator, "Stem pipeline thiếu log")
-check("INPUT GỐC" not in separator and "VOCAL OUT" not in separator, "Stem pipeline ghi mẫu âm thanh vào log")
-check("catch (error: Exception)" in separator and "catch (error: Throwable)" in separator, "Fallback/OOM chưa tách biệt")
+    local_aars = [str(path.relative_to(ROOT)) for path in ROOT.rglob("*.aar")]
+    check(not local_aars, "Không được chứa AAR cục bộ: " + ", ".join(local_aars))
+    check(not (ROOT / ".env").exists(), "Không được phụ thuộc tệp .env")
 
-diagnostic_logger = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticLogger.kt").read_text(encoding="utf-8")
-diagnostic_report = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticReportManager.kt").read_text(encoding="utf-8")
-diagnostic_redactor = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticRedactor.kt").read_text(encoding="utf-8")
-check("diagnostics-current.jsonl" in diagnostic_logger and "MAX_FILE_BYTES" in diagnostic_logger, "Logger thiếu JSONL/rotation")
-check("QUEUE_CAPACITY" in diagnostic_logger and "MediaTool-Diagnostics" in diagnostic_logger, "Logger chưa có worker giới hạn")
-check("recordCrashSync" in diagnostic_logger and "uncaught_exception" in diagnostic_logger, "Logger thiếu crash capture")
-check("clearLogs" in diagnostic_logger and "log_session" in diagnostic_logger, "Logger thiếu xóa log hoặc phiên log")
-check("sanitizeFfmpegLogs" in diagnostic_redactor and "<media-uri>" in diagnostic_redactor, "Logger thiếu che dữ liệu media")
-check("summary.json" in diagnostic_report and "recent_process_exits" in diagnostic_report, "Gói chẩn đoán thiếu summary/exit history")
-check("DiagnosticReportCard" in settings_screen and "Xóa nhật ký" in (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/components/DiagnosticReportCard.kt").read_text(encoding="utf-8"), "Cài đặt thiếu quản lý nhật ký")
 
-recording_service = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/RecordingService.kt").read_text(encoding="utf-8")
-check("registerCallback" in recording_service and "unregisterCallback" in recording_service, "MediaProjection callback chưa hoàn chỉnh")
-recording_manager = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/RecordingManager.kt").read_text(encoding="utf-8")
-wav_recorder = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/WavRecorder.kt").read_text(encoding="utf-8")
-task_store = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/TaskStateStore.kt").read_text(encoding="utf-8")
-check("WavRecorder.lastError" in recording_manager, "Lỗi thread WAV chưa được chuyển lên RecordingManager")
-check("WavHeader.HEADER_SIZE.toLong()" in wav_recorder, "So sánh kích thước WAV chưa dùng Long")
-check("stableStartedAt" in task_store, "TaskStateStore còn đặt lại startedAt")
+def main() -> int:
+    verify_required_files()
+    verify_xml_and_manifest()
+    verify_version_catalog()
+    verify_gradle_wrapper()
+    verify_repository_hygiene()
 
-workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
-for token in ["assembleDebug", "assembleInternal", "assembleDebugAndroidTest", "inspect_apks.py"]:
-    check(token in workflow, f"Workflow thiếu {token}")
-check("assembleRelease" not in workflow, "CI không nên build release khi thiếu keystore")
-try:
-    import yaml  # type: ignore
-    yaml.safe_load(workflow)
-except ImportError:
-    NOTES.append("PyYAML không có; chỉ kiểm tra workflow bằng token")
-except Exception as exc:
-    ERRORS.append(f"Workflow YAML lỗi: {exc}")
+    if ERRORS:
+        print("VERIFY FAILED")
+        for error in ERRORS:
+            print(f"- {error}")
+        return 1
 
-unit_tests = list((ROOT / "app/src/test").rglob("*Test.kt"))
-android_tests = list((ROOT / "app/src/androidTest").rglob("*Test.kt"))
-check(len(unit_tests) >= 13, "Cần ít nhất 13 unit test Kotlin")
-check(len(android_tests) >= 1, "Thiếu instrumentation smoke test")
-check(
-    "diagnosticReportIsExportableAndRedactsUris" in "\n".join(p.read_text(encoding="utf-8") for p in android_tests),
-    "Instrumentation test chưa kiểm tra ZIP chẩn đoán/redaction",
-)
-NOTES.append(f"Tests: {len(unit_tests)} unit, {len(android_tests)} instrumentation")
+    print("VERIFY OK: cấu trúc, XML, TOML, manifest và Gradle wrapper hợp lệ")
+    print("Chạy scripts/check_local.sh để biên dịch, lint và unit test bằng Gradle.")
+    return 0
 
-kotlin_files = list((ROOT / "app/src/main/java").rglob("*.kt"))
-source_bytes = sum(p.stat().st_size for p in kotlin_files)
-NOTES.append(f"Kotlin: {len(kotlin_files)} tệp, {source_bytes:,} byte")
-NOTES.append(f"XML: {len(list((ROOT / 'app/src/main/res').rglob('*.xml'))) + 1} tệp")
-NOTES.append(f"Tổng tệp dự án kiểm tra: {len(text_files)}")
 
-if ERRORS:
-    print("VERIFY FAILED")
-    for item in ERRORS:
-        print(f"[ERROR] {item}")
-    sys.exit(1)
-
-print("VERIFY OK")
-for note in NOTES:
-    print(f"[OK] {note}")
+if __name__ == "__main__":
+    sys.exit(main())

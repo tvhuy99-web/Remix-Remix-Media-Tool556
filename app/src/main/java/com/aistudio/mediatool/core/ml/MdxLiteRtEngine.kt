@@ -61,11 +61,13 @@ internal class MdxLiteRtEngine private constructor(
                 MdxExecutionBackend.LITERT_CPU_XNNPACK,
             )
             val failures = mutableListOf<String>()
-            for (backend in attempts) {
+
+            for ((attemptIndex, backend) in attempts.withIndex()) {
                 var environment: Environment? = null
                 var compiledModel: CompiledModel? = null
                 var inputs: List<TensorBuffer> = emptyList()
                 var outputs: List<TensorBuffer> = emptyList()
+
                 try {
                     environment = Environment.create()
                     val options = when (backend) {
@@ -92,17 +94,20 @@ internal class MdxLiteRtEngine private constructor(
                     compiledModel = CompiledModel.create(modelFile.absolutePath, options, environment)
                     inputs = compiledModel.createInputBuffers()
                     outputs = compiledModel.createOutputBuffers()
-                    require(inputs.size == 1 && outputs.size == 1) {
-                        "MDX graph must expose exactly one input and one output"
+                    if (inputs.size != 1 || outputs.size != 1) {
+                        throw MdxModelContractException(
+                            "MDX graph must expose exactly one input and one output",
+                        )
                     }
 
-                    // Warm-up is part of provider acceptance. A delegate that compiles but cannot execute
-                    // must fall through before the real audio task starts.
+                    // A backend is accepted only after it completes one real invocation.
                     inputs.single().writeFloat(FloatArray(tensorElements))
                     compiledModel.run(inputs, outputs)
                     val warmOutput = outputs.single().readFloat()
-                    require(warmOutput.size == tensorElements) {
-                        "MDX warm-up output has ${warmOutput.size} elements, expected $tensorElements"
+                    if (warmOutput.size != tensorElements) {
+                        throw MdxModelContractException(
+                            "MDX warm-up output has ${warmOutput.size} elements, expected $tensorElements",
+                        )
                     }
 
                     return MdxEngineOpenResult(
@@ -117,15 +122,58 @@ internal class MdxLiteRtEngine private constructor(
                         failedAttempts = failures.toList(),
                     )
                 } catch (error: Throwable) {
+                    closeAfterFailure(
+                        primary = error,
+                        outputs = outputs,
+                        inputs = inputs,
+                        compiledModel = compiledModel,
+                        environment = environment,
+                    )
+                    if (error is InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    }
+                    if (!MdxBackendFailurePolicy.isRecoverable(error)) {
+                        throw error
+                    }
+
                     failures += "${backend.name}: ${error.message ?: error::class.java.simpleName}"
                     onAttemptFailed(backend, error)
-                    outputs.forEach { runCatching(it::close) }
-                    inputs.forEach { runCatching(it::close) }
-                    runCatching { compiledModel?.close() }
-                    runCatching { environment?.close() }
+                    val hasNextBackend = attemptIndex < attempts.lastIndex
+                    if (!MdxBackendFailurePolicy.shouldFallback(error, hasNextBackend)) {
+                        throw IllegalStateException(
+                            "Không thể mở UVR MDX-Net bằng GPU hoặc CPU: ${failures.joinToString(" | ")}",
+                            error,
+                        )
+                    }
                 }
             }
-            error("Không thể mở UVR MDX-Net bằng GPU hoặc CPU: ${failures.joinToString(" | ")}")
+
+            error("Danh sách backend MDX không được để trống")
+        }
+
+        private fun closeAfterFailure(
+            primary: Throwable,
+            outputs: List<TensorBuffer>,
+            inputs: List<TensorBuffer>,
+            compiledModel: CompiledModel?,
+            environment: Environment?,
+        ) {
+            outputs.asReversed().forEach { buffer ->
+                closeAndSuppress(primary, buffer::close)
+            }
+            inputs.asReversed().forEach { buffer ->
+                closeAndSuppress(primary, buffer::close)
+            }
+            if (compiledModel != null) closeAndSuppress(primary, compiledModel::close)
+            if (environment != null) closeAndSuppress(primary, environment::close)
+        }
+
+        private inline fun closeAndSuppress(primary: Throwable, close: () -> Unit) {
+            try {
+                close()
+            } catch (closeError: Throwable) {
+                if (closeError !== primary) primary.addSuppressed(closeError)
+            }
         }
     }
 }

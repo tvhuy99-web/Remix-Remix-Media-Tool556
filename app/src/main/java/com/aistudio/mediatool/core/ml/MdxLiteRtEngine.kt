@@ -25,18 +25,55 @@ internal class MdxLiteRtEngine private constructor(
     val backend: MdxExecutionBackend,
     private val tensorElements: Int,
 ) : AutoCloseable {
+    private var invocationPhase = InvocationPhase.READY_FOR_INPUT
 
-    fun run(input: FloatArray): FloatArray {
+    /** Copies one host tensor into LiteRT. The caller may release its Java array after this returns. */
+    fun writeInput(input: FloatArray) {
+        check(invocationPhase == InvocationPhase.READY_FOR_INPUT) {
+            "MDX invocation is not ready for input: $invocationPhase"
+        }
         require(input.size == tensorElements) {
             "MDX input has ${input.size} elements, expected $tensorElements"
         }
         inputBuffers.single().writeFloat(input)
-        compiledModel.run(inputBuffers, outputBuffers)
-        return outputBuffers.single().readFloat().also { output ->
-            require(output.size == tensorElements) {
-                "MDX output has ${output.size} elements, expected $tensorElements"
-            }
+        invocationPhase = InvocationPhase.INPUT_WRITTEN
+    }
+
+    /** Runs inference using the already-copied input tensor. */
+    fun execute() {
+        check(invocationPhase == InvocationPhase.INPUT_WRITTEN) {
+            "MDX input must be written before execute: $invocationPhase"
         }
+        compiledModel.run(inputBuffers, outputBuffers)
+        invocationPhase = InvocationPhase.OUTPUT_READY
+    }
+
+    /**
+     * Materializes the native output once. LiteRT 2.1.6 returns a new FloatArray here, so callers
+     * should recycle that array as the next input scratch and release the previous input before run.
+     */
+    fun readOutput(): FloatArray {
+        check(invocationPhase == InvocationPhase.OUTPUT_READY) {
+            "MDX output is not ready: $invocationPhase"
+        }
+        return try {
+            outputBuffers.single().readFloat().also { output ->
+                if (output.size != tensorElements) {
+                    throw MdxModelContractException(
+                        "MDX output has ${output.size} elements, expected $tensorElements",
+                    )
+                }
+            }
+        } finally {
+            invocationPhase = InvocationPhase.READY_FOR_INPUT
+        }
+    }
+
+    private fun warmUpWithoutMaterializingOutput() {
+        // The temporary zero tensor is eligible for collection before native inference starts.
+        writeInput(FloatArray(tensorElements))
+        execute()
+        invocationPhase = InvocationPhase.READY_FOR_INPUT
     }
 
     override fun close() {
@@ -44,6 +81,12 @@ internal class MdxLiteRtEngine private constructor(
         inputBuffers.forEach { runCatching(it::close) }
         runCatching(compiledModel::close)
         runCatching(environment::close)
+    }
+
+    private enum class InvocationPhase {
+        READY_FOR_INPUT,
+        INPUT_WRITTEN,
+        OUTPUT_READY,
     }
 
     companion object {
@@ -100,25 +143,19 @@ internal class MdxLiteRtEngine private constructor(
                         )
                     }
 
-                    // A backend is accepted only after it completes one real invocation.
-                    inputs.single().writeFloat(FloatArray(tensorElements))
-                    compiledModel.run(inputs, outputs)
-                    val warmOutput = outputs.single().readFloat()
-                    if (warmOutput.size != tensorElements) {
-                        throw MdxModelContractException(
-                            "MDX warm-up output has ${warmOutput.size} elements, expected $tensorElements",
-                        )
-                    }
+                    val engine = MdxLiteRtEngine(
+                        environment = environment,
+                        compiledModel = compiledModel,
+                        inputBuffers = inputs,
+                        outputBuffers = outputs,
+                        backend = backend,
+                        tensorElements = tensorElements,
+                    )
+                    // Warm-up still accepts/rejects the backend, but avoids a full Java output copy.
+                    engine.warmUpWithoutMaterializingOutput()
 
                     return MdxEngineOpenResult(
-                        engine = MdxLiteRtEngine(
-                            environment = environment,
-                            compiledModel = compiledModel,
-                            inputBuffers = inputs,
-                            outputBuffers = outputs,
-                            backend = backend,
-                            tensorElements = tensorElements,
-                        ),
+                        engine = engine,
                         failedAttempts = failures.toList(),
                     )
                 } catch (error: Throwable) {

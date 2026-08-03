@@ -32,7 +32,9 @@ class MediaEngine(private val context: Context) {
         diagnosticPhase: String = "media_command",
     ): Flow<ExecutionState> = callbackFlow {
         val taskId = UUID.randomUUID().toString()
-        val commandId = DiagnosticRedactor.stableId(command)
+        val sanitization = MediaCommandSanitizer.sanitize(command)
+        val effectiveCommand = sanitization.command
+        val commandId = DiagnosticRedactor.stableId(effectiveCommand)
         val startedAt = SystemClock.elapsedRealtime()
         val terminal = AtomicBoolean(false)
         val lastMediaTimeMs = AtomicLong(0L)
@@ -44,9 +46,11 @@ class MediaEngine(private val context: Context) {
             fields = mapOf(
                 "phase" to diagnosticPhase,
                 "command_id" to commandId,
-                "has_audio_filter" to command.contains("-af "),
-                "has_video_filter" to command.contains("-vf "),
-                "has_filter_complex" to command.contains("-filter_complex"),
+                "has_audio_filter" to effectiveCommand.contains("-af "),
+                "has_video_filter" to effectiveCommand.contains("-vf "),
+                "has_filter_complex" to effectiveCommand.contains("-filter_complex"),
+                "command_adjustment_count" to sanitization.adjustments.size,
+                "command_adjustments" to sanitization.adjustments.sorted().joinToString(","),
             ),
         )
         trySend(ExecutionState.Connecting)
@@ -77,15 +81,12 @@ class MediaEngine(private val context: Context) {
                 error = error,
             )
             trySend(ExecutionState.Error(null, cause, null))
-            // Đóng flow bình thường sau khi đã phát trạng thái Error. Nếu đóng bằng
-            // chính LinkageError, collector ở màn hình có thể nhận lại Error JVM và
-            // làm tiến trình ứng dụng thoát thay vì hiển thị thông báo.
             close()
         }
 
         try {
             session = FFmpegKit.executeAsync(
-                command,
+                effectiveCommand,
                 { completed ->
                     if (!terminal.compareAndSet(false, true)) return@executeAsync
                     val returnCode = completed.returnCode
@@ -168,8 +169,6 @@ class MediaEngine(private val context: Context) {
                     )
                 },
             )
-            // Collector có thể bị hủy trong khe rất nhỏ trước khi executeAsync
-            // trả về session. Khi đó awaitClose chưa có ID để hủy, nên kiểm tra lại.
             if (terminal.get()) session?.let { FFmpegKit.cancel(it.sessionId) }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             terminal.set(true)

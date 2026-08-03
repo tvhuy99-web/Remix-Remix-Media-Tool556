@@ -1,6 +1,7 @@
 package com.aistudio.mediatool.core.ml
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Test
 
@@ -48,16 +49,18 @@ class StemModelRegistryTest {
     }
 
     @Test
-    fun demucsUsesSelectedCpuThreadPool() {
-        val model = StemModelRegistry.demucsTwoStemLite
-        assertEquals(StemMode.TWO_STEM, model.mode)
-        assertEquals(StemModelRegistry.demucsFourStem.modelSpec, model.modelSpec)
-        assertEquals(
-            setOf(OnnxAcceleration.CPU, OnnxAcceleration.XNNPACK),
-            model.allowedAccelerators,
-        )
-        assertEquals(listOf(3), model.sources.vocals.sourceIndices)
-        assertEquals(listOf(0, 1, 2), model.sources.music.sourceIndices)
+    fun demucsUsesCpuProviderOnly() {
+        val twoStem = StemModelRegistry.demucsTwoStemLite
+        val fourStem = StemModelRegistry.demucsFourStem
+
+        assertEquals(StemMode.TWO_STEM, twoStem.mode)
+        assertEquals(fourStem.modelSpec, twoStem.modelSpec)
+        listOf(twoStem, fourStem).forEach { model ->
+            assertEquals(setOf(OnnxAcceleration.CPU), model.allowedAccelerators)
+            assertFalse(OnnxAcceleration.XNNPACK in model.allowedAccelerators)
+        }
+        assertEquals(listOf(3), twoStem.sources.vocals.sourceIndices)
+        assertEquals(listOf(0, 1, 2), twoStem.sources.music.sourceIndices)
     }
 
     @Test

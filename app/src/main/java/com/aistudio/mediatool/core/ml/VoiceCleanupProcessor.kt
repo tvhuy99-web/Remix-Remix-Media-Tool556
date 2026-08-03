@@ -330,7 +330,7 @@ class VoiceCleanupProcessor(
 
     internal fun parseLoudnessMeasurement(logs: String?): LoudnessMeasurement? {
         if (logs.isNullOrBlank()) return null
-        val json = LOUDNESS_JSON.findAll(logs).lastOrNull()?.value ?: return null
+        val json = extractLoudnessJson(logs) ?: return null
         fun value(key: String): Double? = Regex("\\\"$key\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
             .find(json)
             ?.groupValues
@@ -471,9 +471,21 @@ class VoiceCleanupProcessor(
         private const val ATTENUATION_FRAME_OFFSET = 4
         private const val VOICE_SHAPING_FILTER =
             "highpass=f=70,acompressor=threshold=0.125:ratio=2.5:attack=10:release=180:makeup=1.35"
-        private val LOUDNESS_JSON = Regex(
-            "\\{\\s*\\\"input_i\\\".*?\\\"target_offset\\\"\\s*:\\s*\\\"[^\\\"]+\\\"\\s*}",
-            setOf(RegexOption.DOT_MATCHES_ALL),
-        )
+
+        internal fun extractLoudnessJson(logs: String): String? {
+            var cursor = 0
+            var latest: String? = null
+            while (true) {
+                val inputMarker = logs.indexOf("\"input_i\"", cursor)
+                if (inputMarker < 0) return latest
+                val objectStart = logs.lastIndexOf('{', inputMarker)
+                val offsetMarker = logs.indexOf("\"target_offset\"", inputMarker)
+                if (objectStart < 0 || offsetMarker < 0) return latest
+                val objectEnd = logs.indexOf('}', offsetMarker)
+                if (objectEnd < 0) return latest
+                latest = logs.substring(objectStart, objectEnd + 1)
+                cursor = objectEnd + 1
+            }
+        }
     }
 }

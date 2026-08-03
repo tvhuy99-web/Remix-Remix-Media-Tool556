@@ -80,7 +80,6 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     val stemViewModel: StemViewModel = viewModel()
     val downloadState by stemViewModel.downloadState.collectAsStateWithLifecycle()
     val selectedModel by stemViewModel.selectedModel.collectAsStateWithLifecycle()
-    val fallbackNotice by stemViewModel.fallbackNotice.collectAsStateWithLifecycle()
 
     var selectedAudioUriText by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedAudioName by rememberSaveable { mutableStateOf("Chọn âm thanh hoặc video") }
@@ -95,7 +94,6 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     LaunchedEffect(Unit) {
         stemViewModel.refreshConfiguredModel()
         StemService.restorePersistedState(context)
-        stemViewModel.applyLowMemoryFallbackIfNeeded()
     }
 
     var pendingStemStart by remember { mutableStateOf<Triple<String, String, String>?>(null) }
@@ -190,34 +188,11 @@ fun StemScreen(onNavigateBack: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Card(
+            Text(
+                text = selectedModel.displayName,
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(selectedModel.displayName, fontWeight = FontWeight.Bold)
-                    Text(
-                        selectedModel.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            fallbackNotice?.let { notice ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                ) {
-                    Text(
-                        text = notice,
-                        modifier = Modifier.padding(16.dp),
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
-                }
-            }
+                fontWeight = FontWeight.Bold,
+            )
             when (val state = downloadState) {
                 DownloadState.Idle -> {
                     Button(onClick = stemViewModel::downloadModel) {

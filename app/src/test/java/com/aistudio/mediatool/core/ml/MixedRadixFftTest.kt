@@ -69,6 +69,28 @@ class MixedRadixFftTest {
         assertMaxErrorBelow(imag, FloatArray(size), 1e-3f)
     }
 
+    @Test
+    fun precomputedTablesRemainStableAcrossRepeatedTransforms() {
+        val size = 6_144
+        val sourceReal = FloatArray(size) { index ->
+            (0.3 * sin(2.0 * PI * 19.0 * index / size) + index * 0.00001).toFloat()
+        }
+        val sourceImag = FloatArray(size) { index ->
+            (0.07 * cos(2.0 * PI * 211.0 * index / size)).toFloat()
+        }
+        val firstReal = sourceReal.copyOf()
+        val firstImag = sourceImag.copyOf()
+        val secondReal = sourceReal.copyOf()
+        val secondImag = sourceImag.copyOf()
+        val fft = MixedRadixFft(size)
+
+        fft.forward(firstReal, firstImag)
+        fft.forward(secondReal, secondImag)
+
+        assertMaxErrorBelow(firstReal, secondReal, 0f)
+        assertMaxErrorBelow(firstImag, secondImag, 0f)
+    }
+
     private fun assertMaxErrorBelow(actual: FloatArray, expected: FloatArray, threshold: Float) {
         val maxError = actual.indices.maxOf { index -> abs(actual[index] - expected[index]) }
         assertTrue("max error $maxError exceeds $threshold", maxError <= threshold)

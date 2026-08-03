@@ -7,5 +7,6 @@
 - Smart Exception Java/Common 0.2.1: BSD 3-Clause.
 - `jackjiangxinfa/demucs-onnx`: Apache License 2.0 theo metadata nguồn.
 - `gyoom-sa/UVR-MDX-LiteRT`: MIT theo metadata nguồn.
+- `Ceva-IP/DPDFNet`, model `dpdfnet8_48khz_hr`: Apache License 2.0. Nguồn: https://github.com/ceva-ip/DPDFNet
 
 Các model được tải khi chạy và không nằm trong APK.

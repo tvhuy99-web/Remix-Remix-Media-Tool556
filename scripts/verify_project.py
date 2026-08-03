@@ -87,7 +87,7 @@ required = [
     "gradlew", "gradlew.bat", "gradle/wrapper/gradle-wrapper.jar",
     "gradle/wrapper/gradle-wrapper.properties", "app/src/main/AndroidManifest.xml",
     "README.md", "PROJECT_STATUS.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md",
-    "docs/ARCHITECTURE.md", "docs/ADDING_STEM_MODELS.md", "docs/MEL_BAND_ROFORMER_INTEGRATION.md",
+    "docs/ARCHITECTURE.md", "docs/ADDING_STEM_MODELS.md",
     "docs/DIAGNOSTICS.md", "docs/RELEASE_CHECKLIST.md", "keystore.properties.example",
     "scripts/run_core_smoke.sh", "scripts/test_wrapper_bootstrap.py",
     "app/src/main/assets/third_party_notices.txt",
@@ -107,6 +107,7 @@ try:
     check(versions.get("agp") == "8.13.2", "AGP không phải 8.13.2")
     check(versions.get("ffmpegKit") == "8.1.7", "FFmpegKit không phải 8.1.7")
     check(versions.get("smartException") == "0.2.1", "Smart Exception không phải 0.2.1")
+    check(versions.get("litert") == "2.1.6", "LiteRT không phải 2.1.6")
 except Exception as exc:
     ERRORS.append(f"Version catalog TOML lỗi: {exc}")
 
@@ -124,8 +125,9 @@ for path in code_and_build:
 build_gradle = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
 check('namespace = "com.aistudio.mediatool"' in build_gradle, "Namespace không đúng")
 check('applicationId = "com.aistudio.mediatool"' in build_gradle, "Application ID không đúng")
-check("libs.ffmpeg.kit.full" in build_gradle, "Thiếu dependency FFmpegKit Maven")
+check("libs.ffmpeg.kit.full" in build_gradle, "Thiếu dependency FFmpegKit")
 check("libs.onnxruntime.android" in build_gradle, "Thiếu dependency ONNX Runtime")
+check("libs.litert" in build_gradle, "Thiếu dependency LiteRT")
 check("versionCode = 8" in build_gradle, "versionCode không phải 8")
 check('versionName = "1.3.3"' in build_gradle, "versionName không phải 1.3.3")
 check('create("internal")' in build_gradle, "Thiếu build type internal")
@@ -134,9 +136,8 @@ check("isMinifyEnabled = true" in build_gradle and "isShrinkResources = true" in
 check("assembleInternal" in build_gradle, "Thông báo release chưa hướng người dùng sang assembleInternal")
 check('signingConfigs.getByName("debug")' in build_gradle, "Internal chưa ký debug")
 check("if (hasReleaseKeystore)" in build_gradle and "Bản release yêu cầu keystore.properties" in build_gradle, "Release chưa bắt buộc keystore")
-check('else {\n                signingConfig = signingConfigs.getByName("debug")' not in build_gradle, "Release vẫn fallback sang debug key")
 check('abiFilters += "arm64-v8a"' in build_gradle, "Bản phân phối chưa giới hạn arm64-v8a")
-check("armeabi-v7a" not in build_gradle and "x86_64" not in build_gradle, "Build vẫn đóng gói ABI chưa được FFmpegKit hỗ trợ")
+check("armeabi-v7a" not in build_gradle and "x86_64" not in build_gradle, "Build vẫn đóng gói ABI không hỗ trợ")
 
 manifest = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
 for token in [
@@ -172,34 +173,52 @@ for kt in sorted((ROOT / "app/src/main/java").rglob("*.kt")):
 
 downloader = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/ModelDownloader.kt").read_text(encoding="utf-8")
 registry = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/StemModelRegistry.kt").read_text(encoding="utf-8")
-check("953_292_899" in registry, "Dung lượng Mel-Band RoFormer ghim không đúng")
-check("64a4f3bee48fbe7d971b23875adc924ed004c3533f49672592641dddc0f6f561" in registry, "SHA Mel-Band RoFormer ghim không đúng")
-check("60cb6b4b97e41b42f7ff16c2e386f47a8cc7e50a" in registry, "Commit Mel-Band RoFormer ghim không đúng")
-check("frames = 352_800" in registry and "overlapFrames = 176_400" in registry, "Chunk contract Mel-Band RoFormer không đúng")
+view_model = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/StemViewModel.kt").read_text(encoding="utf-8")
+stem_screen = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/StemScreen.kt").read_text(encoding="utf-8")
+trim_screen = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/TrimScreen.kt").read_text(encoding="utf-8")
+settings_screen = (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/SettingsScreen.kt").read_text(encoding="utf-8")
+mdx_engine = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/MdxLiteRtEngine.kt").read_text(encoding="utf-8")
+check("66_848_828" in registry, "Dung lượng UVR LiteRT ghim không đúng")
+check("5ef47e3b3bafa14357532c0a3f6c5f18444d94b6efe3fd62b3d13f80051f1e58" in registry, "SHA UVR LiteRT ghim không đúng")
+check("MEL_BAND_ROFORMER_ID" not in registry and "953_292_899" not in registry, "Mel-Band vẫn còn trong catalog")
+check("UVR MDX-Net Voc FT" in registry and 'displayName = "Demucs"' in registry, "Catalog thiếu UVR hoặc Demucs")
+check("setOf(OnnxAcceleration.CPU, OnnxAcceleration.XNNPACK)" in registry, "Demucs chưa giới hạn CPU/XNNPACK")
+check("REMOVED_MEL_BAND_PREFIX" in view_model and "deleteRemovedMelBandFiles" in view_model, "Chưa xóa cache Mel-Band cũ")
+check("fallbackNotice" not in view_model and "applyLowMemoryFallbackIfNeeded" not in view_model, "StemViewModel còn trạng thái fallback rỗng")
+check("fallbackNotice" not in stem_screen and "selectedModel.description" not in stem_screen, "Màn hình tách còn mô tả hoặc fallback thừa")
+check("OnnxAcceleration.XNNPACK.settingsIndex" in view_model, "Demucs chưa tự ưu tiên XNNPACK")
+check("Luồng CPU" in settings_screen and "Bộ tăng tốc phần cứng" not in settings_screen, "Cài đặt AI chưa được rút gọn")
+check("1 luồng" in settings_screen and "2 luồng" in settings_screen and "4 luồng" in settings_screen and "8 luồng" in settings_screen, "Thiếu lựa chọn luồng CPU")
+check('mutableStateOf("0")' not in trim_screen, "Màn hình cắt vẫn điền sẵn số 0")
+check('startMs = ""' in trim_screen and 'endMs = ""' in trim_screen, "Màn hình cắt chưa xóa mốc khi chọn tệp mới")
+check("numThreads = cpuThreads.coerceIn(1, 8)" in mdx_engine, "LiteRT CPU chưa dùng đúng số luồng")
+check("LITERT_GPU_FP16" in mdx_engine and "LITERT_CPU_XNNPACK" in mdx_engine, "LiteRT thiếu GPU hoặc CPU fallback")
 check("Content-Range" in downloader and "suspendCancellableCoroutine" in downloader, "Tải model chưa hỗ trợ resume/hủy")
-check("call.cancel()" in downloader and "AtomicBoolean" in downloader and "resumeWith(Result" in downloader, "OkHttp call chưa gắn cancellation an toàn")
+check("call.cancel()" in downloader and "AtomicBoolean" in downloader and "resumeWith(Result" in downloader, "OkHttp call chưa gắn cancellation")
 
 separator = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt").read_text(encoding="utf-8")
 check("FFmpegKit.cancel" in separator, "AudioSeparator chưa hủy FFmpeg")
 check("setTerminate(true)" in separator, "AudioSeparator chưa hủy ONNX")
-check("createdOutputs" in separator and "outputsCommitted" in separator, "AudioSeparator chưa cleanup output theo transaction")
+check("createdOutputs" in separator and "outputsCommitted" in separator, "AudioSeparator chưa cleanup output")
 check("sharedInputBufferDirect" in separator, "AudioSeparator thiếu buffer tensor đầu vào")
 check("-f f32le" in separator, "Pipeline stem chưa giữ PCM float32")
-check("createReflectPaddedPcm" in separator, "Mel-Band RoFormer thiếu reflect padding ở biên")
-check("AudioNormalization.GLOBAL_MONO_MEAN_STD" in separator, "Chuẩn hóa model chưa theo descriptor")
-check("inference_chunk_complete" in separator and "ffmpeg_failed" in separator, "Stem pipeline thiếu log phase/chunk")
-check("INPUT GỐC" not in separator and "VOCAL OUT" not in separator, "Stem pipeline còn ghi mẫu âm thanh vào log")
-check("catch (error: Exception)" in separator and "catch (error: Throwable)" in separator, "Fallback provider/OOM chưa tách biệt")
+check("AudioNormalization.GLOBAL_MONO_MEAN_STD" in separator, "Chuẩn hóa Demucs chưa theo descriptor")
+check("MEL_BAND_ROFORMER_ID" not in separator, "AudioSeparator còn nhánh Mel-Band cũ")
+check(not (ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/RemovedModelCompatibility.kt").exists(), "Còn tệp tương thích model đã bỏ")
+check("inference_chunk_complete" in separator and "ffmpeg_failed" in separator, "Stem pipeline thiếu log")
+check("INPUT GỐC" not in separator and "VOCAL OUT" not in separator, "Stem pipeline ghi mẫu âm thanh vào log")
+check("catch (error: Exception)" in separator and "catch (error: Throwable)" in separator, "Fallback/OOM chưa tách biệt")
 
 diagnostic_logger = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticLogger.kt").read_text(encoding="utf-8")
 diagnostic_report = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticReportManager.kt").read_text(encoding="utf-8")
 diagnostic_redactor = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/diagnostics/DiagnosticRedactor.kt").read_text(encoding="utf-8")
 check("diagnostics-current.jsonl" in diagnostic_logger and "MAX_FILE_BYTES" in diagnostic_logger, "Logger thiếu JSONL/rotation")
-check("QUEUE_CAPACITY" in diagnostic_logger and "MediaTool-Diagnostics" in diagnostic_logger, "Logger chưa có worker/hàng đợi giới hạn")
+check("QUEUE_CAPACITY" in diagnostic_logger and "MediaTool-Diagnostics" in diagnostic_logger, "Logger chưa có worker giới hạn")
 check("recordCrashSync" in diagnostic_logger and "uncaught_exception" in diagnostic_logger, "Logger thiếu crash capture")
+check("clearLogs" in diagnostic_logger and "log_session" in diagnostic_logger, "Logger thiếu xóa log hoặc phiên log")
 check("sanitizeFfmpegLogs" in diagnostic_redactor and "<media-uri>" in diagnostic_redactor, "Logger thiếu che dữ liệu media")
 check("summary.json" in diagnostic_report and "recent_process_exits" in diagnostic_report, "Gói chẩn đoán thiếu summary/exit history")
-check("DiagnosticReportCard" in (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/screens/SettingsScreen.kt").read_text(encoding="utf-8"), "Cài đặt thiếu nút xuất nhật ký")
+check("DiagnosticReportCard" in settings_screen and "Xóa nhật ký" in (ROOT / "app/src/main/java/com/aistudio/mediatool/ui/components/DiagnosticReportCard.kt").read_text(encoding="utf-8"), "Cài đặt thiếu quản lý nhật ký")
 
 recording_service = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/RecordingService.kt").read_text(encoding="utf-8")
 check("registerCallback" in recording_service and "unregisterCallback" in recording_service, "MediaProjection callback chưa hoàn chỉnh")
@@ -208,7 +227,7 @@ wav_recorder = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/media/WavR
 task_store = (ROOT / "app/src/main/java/com/aistudio/mediatool/core/TaskStateStore.kt").read_text(encoding="utf-8")
 check("WavRecorder.lastError" in recording_manager, "Lỗi thread WAV chưa được chuyển lên RecordingManager")
 check("WavHeader.HEADER_SIZE.toLong()" in wav_recorder, "So sánh kích thước WAV chưa dùng Long")
-check("stableStartedAt" in task_store, "TaskStateStore còn đặt lại startedAt khi cập nhật progress")
+check("stableStartedAt" in task_store, "TaskStateStore còn đặt lại startedAt")
 
 workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
 for token in ["assembleDebug", "assembleInternal", "assembleDebugAndroidTest", "inspect_apks.py"]:

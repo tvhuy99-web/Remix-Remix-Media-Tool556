@@ -11,6 +11,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Callable
 import java.util.concurrent.RejectedExecutionHandler
@@ -18,6 +19,7 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 enum class DiagnosticLevel { DEBUG, INFO, WARN, ERROR }
 
@@ -25,6 +27,12 @@ data class DiagnosticLogStats(
     val droppedEvents: Long,
     val retainedFiles: Int,
     val retainedBytes: Long,
+)
+
+data class DiagnosticClearResult(
+    val deletedFiles: Int,
+    val deletedBytes: Long,
+    val logSessionId: String,
 )
 
 /**
@@ -48,6 +56,7 @@ object DiagnosticLogger {
     private val handlingCrash = AtomicBoolean(false)
     private val sequence = AtomicLong(0L)
     private val droppedEvents = AtomicLong(0L)
+    private val logSessionId = AtomicReference(UUID.randomUUID().toString())
     private val ioLock = Any()
     @Volatile private var appContext: Context? = null
 
@@ -178,6 +187,45 @@ object DiagnosticLogger {
         return executor.submit(task).get(timeoutMs, TimeUnit.MILLISECONDS)
     }
 
+    /** Xóa tuần tự toàn bộ JSONL và bắt đầu một phiên log mới. Chỉ gọi ngoài main thread. */
+    fun clearLogs(timeoutMs: Long = 8_000L): DiagnosticClearResult {
+        check(initialized.get()) { "DiagnosticLogger chưa được khởi tạo" }
+        check(Thread.currentThread().name != "MediaTool-Diagnostics") {
+            "Không thể xóa nhật ký từ worker ghi log"
+        }
+        val task = Callable {
+            synchronized(ioLock) {
+                val files = logDirectory().listFiles().orEmpty()
+                    .filter { it.isFile && it.extension == "jsonl" }
+                val deletedBytes = files.sumOf(File::length)
+                val failed = files.filterNot(File::delete)
+                check(failed.isEmpty()) {
+                    "Không thể xóa ${failed.size} tệp nhật ký"
+                }
+                sequence.set(0L)
+                droppedEvents.set(0L)
+                val newSessionId = UUID.randomUUID().toString()
+                logSessionId.set(newSessionId)
+                DiagnosticClearResult(
+                    deletedFiles = files.size,
+                    deletedBytes = deletedBytes,
+                    logSessionId = newSessionId,
+                )
+            }
+        }
+        val result = executor.submit(task).get(timeoutMs, TimeUnit.MILLISECONDS)
+        info(
+            component = "DiagnosticLogger",
+            event = "logs_cleared",
+            fields = mapOf(
+                "deleted_files" to result.deletedFiles,
+                "deleted_bytes" to result.deletedBytes,
+                "log_session" to result.logSessionId,
+            ),
+        )
+        return result
+    }
+
     fun stats(): DiagnosticLogStats = synchronized(ioLock) {
         val files = if (initialized.get()) logFilesLocked() else emptyList()
         DiagnosticLogStats(
@@ -240,6 +288,7 @@ object DiagnosticLogger {
     private fun encode(record: Event): String {
         val root = JSONObject()
             .put("schema", SCHEMA_VERSION)
+            .put("log_session", safeToken(logSessionId.get()))
             .put("seq", sequence.incrementAndGet())
             .put("ts_utc", utcTimestamp(record.timestampMs))
             .put("elapsed_ms", record.elapsedMs)

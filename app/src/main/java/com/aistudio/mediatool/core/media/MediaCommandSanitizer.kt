@@ -1,14 +1,12 @@
 package com.aistudio.mediatool.core.media
 
-import kotlin.math.abs
-
 object MediaCommandSanitizer {
     data class Result(
         val command: String,
         val adjustments: Set<String> = emptySet(),
     )
 
-    private val audioFilterArgument = Regex("-af\\s+\\\"([^\\\"]*)\\\"")
+    private val audioFilterArgument = Regex("-af\\s+\"([^\"]*)\"")
     private val timelineOption = Regex(":enable='[^']*'")
     private val denoiseNoiseFloor = Regex("^afftdn=nf=-([0-9]+(?:\\.[0-9]+)?)(.*)$")
     private val asetrate = Regex("^asetrate=([0-9]+(?:\\.[0-9]+)?)$")
@@ -16,8 +14,7 @@ object MediaCommandSanitizer {
 
     fun sanitize(command: String): Result {
         val match = audioFilterArgument.find(command) ?: return Result(command)
-        val originalChain = match.groupValues[1]
-        val filters = splitFilterChain(originalChain).toMutableList()
+        val filters = splitFilterChain(match.groupValues[1]).toMutableList()
         val adjustments = linkedSetOf<String>()
 
         disableUnsupportedTimelines(filters, adjustments)
@@ -30,7 +27,7 @@ object MediaCommandSanitizer {
         val replacement = if (filters.isEmpty()) {
             ""
         } else {
-            "-af \\\"${filters.joinToString(",")}\\\""
+            "-af \"${filters.joinToString(",\")}\""
         }
         val sanitized = command.replaceRange(match.range, replacement)
             .replace(Regex("\\s{2,}"), " ")
@@ -104,8 +101,9 @@ object MediaCommandSanitizer {
         adjustments: MutableSet<String>,
     ) {
         if (!command.contains("-c:v copy")) return
-        val removed = filters.removeAll { it.startsWith("silenceremove=") }
-        if (removed) adjustments += "video_silence_removal_disabled"
+        if (filters.removeAll { it.startsWith("silenceremove=") }) {
+            adjustments += "video_silence_removal_disabled"
+        }
     }
 
     private fun stabilizeSpeedAndPitch(

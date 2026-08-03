@@ -24,7 +24,7 @@ class DpdfNetDspTest {
     }
 
     @Test
-    fun stftAndIstftOverlapAddRestoreSignal() {
+    fun stftAndIstftOverlapAddRestoreCenteredSignal() {
         val hop = DpdfNetDsp.HOP_LENGTH
         val frameCount = 24
         val signal = FloatArray(frameCount * hop + hop) { index ->
@@ -46,11 +46,15 @@ class DpdfNetDspTest {
         dsp.flushHop(hopOutput)
         System.arraycopy(hopOutput, 0, restored, frameCount * hop, hop)
 
+        // Librosa center=True discards the first and last half-window. Those edge
+        // samples intentionally have only a near-zero Vorbis weight; the actual
+        // DPDFNet pipeline never exports them.
         var maxError = 0.0
-        for (index in restored.indices) {
+        for (index in hop until restored.size - hop) {
             maxError = maxOf(maxError, abs(restored[index] - signal[index]).toDouble())
         }
-        assertTrue("max error=$maxError", maxError < 3e-4)
+        assertTrue("centered max error=$maxError", maxError < 3e-4)
+        assertTrue(restored.all(Float::isFinite))
     }
 
     @Test

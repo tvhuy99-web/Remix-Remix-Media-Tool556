@@ -26,8 +26,6 @@ class StemViewModel(application: Application) : AndroidViewModel(application) {
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
     private val _selectedModel = MutableStateFlow(configuredModel())
     val selectedModel: StateFlow<StemModelDescriptor> = _selectedModel.asStateFlow()
-    private val _fallbackNotice = MutableStateFlow<String?>(null)
-    val fallbackNotice: StateFlow<String?> = _fallbackNotice.asStateFlow()
     private var downloadJob: Job? = null
     private var initializationJob: Job? = null
 
@@ -40,8 +38,6 @@ class StemViewModel(application: Application) : AndroidViewModel(application) {
         val configured = configuredModel()
         if (configured.id != _selectedModel.value.id) inspectSelectedModel(configured)
     }
-
-    fun applyLowMemoryFallbackIfNeeded() = Unit
 
     fun selectModel(modelId: String) {
         val model = StemModelRegistry.find(modelId) ?: return

@@ -26,8 +26,8 @@ class OverlapWindowTest {
     }
 
     @Test
-    fun melBandReferenceWindowIsNormalizedAcrossHalfOverlap() {
-        val chunking = StemModelRegistry.melBandRoFormerTwoStem.chunking
+    fun uvrReferenceWindowIsNormalizedAcrossOverlap() {
+        val chunking = StemModelRegistry.uvrMdxVocFtLiteRt.chunking
         repeat(chunking.overlapFrames) { index ->
             val weights = OverlapWindow.weights(index, chunking)
             assertEquals(1f, weights.previous + weights.current, 0.000001f)

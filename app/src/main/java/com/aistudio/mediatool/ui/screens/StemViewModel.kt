@@ -30,7 +30,7 @@ class StemViewModel(application: Application) : AndroidViewModel(application) {
     private var initializationJob: Job? = null
 
     init {
-        SettingsManager.setHardwareAccelIndex(appContext, OnnxAcceleration.XNNPACK.settingsIndex)
+        SettingsManager.setHardwareAccelIndex(appContext, OnnxAcceleration.CPU.settingsIndex)
         inspectSelectedModel(_selectedModel.value)
     }
 

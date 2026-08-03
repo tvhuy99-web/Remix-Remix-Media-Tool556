@@ -12,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Image
@@ -53,6 +54,7 @@ fun MainScreen(
     onNavigateToImg2Vid: () -> Unit,
     onNavigateToSub: () -> Unit,
     onNavigateToStem: () -> Unit,
+    onNavigateToVoiceCleanup: () -> Unit,
     onNavigateToOther: () -> Unit,
     onNavigateToSettings: () -> Unit,
 ) {
@@ -61,6 +63,12 @@ fun MainScreen(
         ToolEntry("Cắt media", "Cắt một hoặc nhiều đoạn audio/video", Icons.Default.ContentCut, onNavigateToTrim),
         ToolEntry("Nối audio", "Nối nhiều tệp theo thứ tự đã chọn", Icons.Default.Add, onNavigateToJoin),
         ToolEntry("Trộn nhiều luồng", "Ghép nhạc nền, pan và tự động ducking", Icons.Default.MusicNote, onNavigateToMix),
+        ToolEntry(
+            "Làm sạch giọng nói AI",
+            "DPDFNet-8 lọc nhiễu, làm rõ lời và chuẩn hóa âm lượng",
+            Icons.Default.AutoFixHigh,
+            onNavigateToVoiceCleanup,
+        ),
         ToolEntry("Hiệu ứng và trích xuất", "Đổi định dạng, lọc âm, nén video, lấy ảnh", Icons.Default.Tune, onNavigateToOther),
         ToolEntry("Tạo video từ ảnh", "Ghép ảnh và âm thanh thành video MP4", Icons.Default.Image, onNavigateToImg2Vid),
         ToolEntry("Phụ đề", "Trích xuất SRT và đọc phụ đề bằng TTS", Icons.Default.Subtitles, onNavigateToSub),
@@ -91,9 +99,7 @@ fun MainScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            tools.forEach { tool ->
-                ToolEntryCard(tool)
-            }
+            tools.forEach { tool -> ToolEntryCard(tool) }
 
             Spacer(modifier = Modifier.height(4.dp))
             HorizontalDivider()
@@ -126,10 +132,7 @@ fun MainScreen(
 
 @Composable
 private fun ToolEntryCard(tool: ToolEntry) {
-    Card(
-        onClick = tool.action,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    Card(onClick = tool.action, modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()

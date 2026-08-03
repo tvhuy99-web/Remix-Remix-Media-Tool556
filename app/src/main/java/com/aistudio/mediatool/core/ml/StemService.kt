@@ -11,6 +11,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.StatFs
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
@@ -40,6 +41,7 @@ class StemService : Service() {
     private var processingJob: Job? = null
     private var separator: StemEngineRouter? = null
     private var currentTaskId: String? = null
+    private var processingWakeLock: PowerManager.WakeLock? = null
     @Volatile private var stopping = false
 
     override fun onCreate() {
@@ -86,6 +88,7 @@ class StemService : Service() {
 
         try {
             startAsForeground()
+            acquireProcessingWakeLock()
         } catch (error: Exception) {
             DiagnosticLogger.error(
                 component = "StemService",
@@ -323,7 +326,39 @@ class StemService : Service() {
         finishService()
     }
 
+    private fun acquireProcessingWakeLock() {
+        if (processingWakeLock?.isHeld == true) return
+        val lock = getSystemService(PowerManager::class.java).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "$packageName:StemProcessing",
+        ).apply {
+            setReferenceCounted(false)
+            acquire(WAKE_LOCK_TIMEOUT_MS)
+        }
+        processingWakeLock = lock
+        DiagnosticLogger.info(
+            component = "StemService",
+            event = "wake_lock_acquired",
+            sessionId = currentTaskId,
+            fields = mapOf("timeout_ms" to WAKE_LOCK_TIMEOUT_MS),
+        )
+    }
+
+    private fun releaseProcessingWakeLock(reason: String) {
+        val lock = processingWakeLock ?: return
+        processingWakeLock = null
+        val wasHeld = runCatching { lock.isHeld }.getOrDefault(false)
+        if (wasHeld) runCatching { lock.release() }
+        DiagnosticLogger.info(
+            component = "StemService",
+            event = "wake_lock_released",
+            sessionId = currentTaskId,
+            fields = mapOf("held" to wasHeld, "reason" to reason),
+        )
+    }
+
     private fun finishService() {
+        releaseProcessingWakeLock("finish")
         currentTaskId?.let { taskId -> ProcessExitDiagnostics.finish(this, TASK_TYPE, taskId) }
         _isProcessing.value = false
         processingJob = null
@@ -355,8 +390,8 @@ class StemService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Tách nhạc bằng AI")
-            .setContentText("Đang chuẩn bị model và âm thanh")
+            .setContentTitle("Tách nhạc")
+            .setContentText("Đang chuẩn bị")
             .setSmallIcon(R.drawable.ic_notification_ai)
             .setContentIntent(openApp)
             .addAction(R.drawable.ic_notification_ai, "Hủy", cancel)
@@ -383,8 +418,8 @@ class StemService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Tách nhạc bằng AI")
-            .setContentText("Đang xử lý: ${progress.coerceIn(0, 100)}%")
+            .setContentTitle("Tách nhạc")
+            .setContentText("${progress.coerceIn(0, 100)}%")
             .setProgress(100, progress.coerceIn(0, 100), false)
             .setSmallIcon(R.drawable.ic_notification_ai)
             .addAction(R.drawable.ic_notification_ai, "Hủy", cancel)
@@ -423,6 +458,7 @@ class StemService : Service() {
         )
         separator?.cancel()
         processingJob?.cancel()
+        releaseProcessingWakeLock("destroy")
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -432,7 +468,7 @@ class StemService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "Xử lý AI", NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(CHANNEL_ID, "Tách nhạc", NotificationManager.IMPORTANCE_LOW),
             )
         }
     }
@@ -449,6 +485,7 @@ class StemService : Service() {
         const val EXTRA_MODEL_ID = "extra_model_id"
         internal const val TASK_TYPE = "stem"
         private const val MAX_DURATION_MS = 3L * 60L * 60L * 1_000L
+        private const val WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1_000L
 
         private val _separationState = MutableStateFlow<SeparationState?>(null)
         val separationState: StateFlow<SeparationState?> = _separationState.asStateFlow()

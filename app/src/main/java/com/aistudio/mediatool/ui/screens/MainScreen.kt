@@ -38,7 +38,6 @@ import androidx.compose.ui.unit.dp
 
 private data class ToolEntry(
     val title: String,
-    val description: String,
     val icon: ImageVector,
     val action: () -> Unit,
 )
@@ -57,29 +56,20 @@ fun MainScreen(
     onNavigateToSettings: () -> Unit,
 ) {
     val tools = listOf(
-        ToolEntry("Ghi âm", "Microphone hoặc âm thanh hệ thống", Icons.Default.Mic, onNavigateToRecord),
-        ToolEntry("Cắt media", "Cắt một hoặc nhiều đoạn audio/video", Icons.Default.ContentCut, onNavigateToTrim),
-        ToolEntry("Nối audio", "Nối nhiều tệp theo thứ tự đã chọn", Icons.Default.Add, onNavigateToJoin),
-        ToolEntry("Trộn nhiều luồng", "Ghép nhạc nền, pan và tự động ducking", Icons.Default.MusicNote, onNavigateToMix),
-        ToolEntry("Hiệu ứng và trích xuất", "Đổi định dạng, lọc âm, nén video, lấy ảnh", Icons.Default.Tune, onNavigateToOther),
-        ToolEntry("Tạo video từ ảnh", "Ghép ảnh và âm thanh thành video MP4", Icons.Default.Image, onNavigateToImg2Vid),
-        ToolEntry("Phụ đề", "Trích xuất SRT và đọc phụ đề bằng TTS", Icons.Default.Subtitles, onNavigateToSub),
-        ToolEntry("Tách nhạc bằng AI", "Tách lời, nhạc nền hoặc bốn stem trên máy", Icons.Default.GraphicEq, onNavigateToStem),
+        ToolEntry("Ghi âm", Icons.Default.Mic, onNavigateToRecord),
+        ToolEntry("Cắt", Icons.Default.ContentCut, onNavigateToTrim),
+        ToolEntry("Nối audio", Icons.Default.Add, onNavigateToJoin),
+        ToolEntry("Trộn audio", Icons.Default.MusicNote, onNavigateToMix),
+        ToolEntry("Công cụ khác", Icons.Default.Tune, onNavigateToOther),
+        ToolEntry("Tạo video", Icons.Default.Image, onNavigateToImg2Vid),
+        ToolEntry("Phụ đề", Icons.Default.Subtitles, onNavigateToSub),
+        ToolEntry("Tách nhạc", Icons.Default.GraphicEq, onNavigateToStem),
     )
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Column {
-                        Text("MediaTool", fontWeight = FontWeight.Bold)
-                        Text(
-                            "Xử lý audio và video trên thiết bị",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
+                title = { Text("MediaTool", fontWeight = FontWeight.Bold) },
             )
         },
     ) { innerPadding ->
@@ -91,9 +81,7 @@ fun MainScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            tools.forEach { tool ->
-                ToolEntryCard(tool)
-            }
+            tools.forEach { tool -> ToolEntryCard(tool) }
 
             Spacer(modifier = Modifier.height(4.dp))
             HorizontalDivider()
@@ -110,14 +98,7 @@ fun MainScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     Icon(Icons.Default.Settings, contentDescription = null)
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Cài đặt", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "Định dạng, chất lượng và cấu hình xử lý AI",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                    }
+                    Text("Cài đặt", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -142,14 +123,7 @@ private fun ToolEntryCard(tool: ToolEntry) {
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
             )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(tool.title, fontWeight = FontWeight.SemiBold)
-                Text(
-                    tool.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(tool.title, fontWeight = FontWeight.SemiBold)
         }
     }
 }

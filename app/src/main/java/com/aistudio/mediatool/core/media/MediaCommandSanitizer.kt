@@ -27,11 +27,9 @@ object MediaCommandSanitizer {
         val replacement = if (filters.isEmpty()) {
             ""
         } else {
-            "-af \"${filters.joinToString(",\")}\""
+            "-af \"${filters.joinToString(",")}\""
         }
-        val sanitized = command.replaceRange(match.range, replacement)
-            .replace(Regex("\\s{2,}"), " ")
-            .trim()
+        val sanitized = command.replaceRange(match.range, replacement).trim()
         return Result(sanitized, adjustments)
     }
 

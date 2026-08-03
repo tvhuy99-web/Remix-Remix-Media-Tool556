@@ -49,6 +49,10 @@
             android:name=".core.ml.StemService"
             android:exported="false"
             android:foregroundServiceType="mediaProcessing" />
+        <service
+            android:name=".core.ml.VoiceCleanupService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

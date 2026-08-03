@@ -180,7 +180,6 @@ class AudioSeparator(
         }
     }
 
-
     companion object {
         private const val TAG = "AudioSeparator"
     }
@@ -245,8 +244,6 @@ class AudioSeparator(
         val prefix = ByteArray(edgeByteCount)
         val suffix = ByteArray(edgeByteCount)
         RandomAccessFile(source, "r").use { input ->
-            // PyTorch reflect padding không lặp lại chính sample ở biên:
-            // trái = x[p]..x[1], phải = x[n-2]..x[n-p-1].
             input.seek(bytesPerFrame.toLong())
             input.readFully(prefix)
             input.seek(
@@ -281,19 +278,8 @@ class AudioSeparator(
 
     private fun createSessionOptions(hardwareAccelerationIndex: Int): OrtSession.SessionOptions =
         OrtSession.SessionOptions().apply {
-            val conservativeMemoryMode = model.id == StemModelRegistry.MEL_BAND_ROFORMER_ID
-            setOptimizationLevel(
-                if (conservativeMemoryMode) OrtSession.SessionOptions.OptLevel.BASIC_OPT
-                else OrtSession.SessionOptions.OptLevel.ALL_OPT,
-            )
-            if (conservativeMemoryMode) {
-                setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
-                setMemoryPatternOptimization(false)
-                setCPUArenaAllocator(false)
-                setInterOpNumThreads(1)
-                addConfigEntry("session.intra_op.allow_spinning", "0")
-            }
-            val requestedThreads = if (conservativeMemoryMode) 1 else SettingsManager.getNumThreads(context)
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            val requestedThreads = SettingsManager.getNumThreads(context)
             val threading = OnnxThreadingPolicy.resolve(hardwareAccelerationIndex, requestedThreads)
             setIntraOpNumThreads(threading.ortIntraOpThreads)
             logInfo(
@@ -317,8 +303,6 @@ class AudioSeparator(
                 }
                 2 -> {
                     val xnnpackThreads = requireNotNull(threading.xnnpackThreads)
-                    // XNNPACK có pool riêng. Tắt spinning của ORT và giữ ORT intra-op = 1
-                    // theo khuyến nghị chính thức để tránh hai pool tranh CPU.
                     addConfigEntry("session.intra_op.allow_spinning", "0")
                     addXnnpack(hashMapOf("intra_op_num_threads" to xnnpackThreads.toString()))
                     logInfo(
@@ -340,16 +324,15 @@ class AudioSeparator(
         val configuredAcceleration = OnnxAcceleration.fromSettingsIndex(
             SettingsManager.getHardwareAccelIndex(context),
         )
-        val conservativeMemoryMode = model.id == StemModelRegistry.MEL_BAND_ROFORMER_ID
-        val requestedAcceleration = when {
-            conservativeMemoryMode -> OnnxAcceleration.CPU
-            configuredAcceleration in model.allowedAccelerators -> configuredAcceleration
-            else -> OnnxAcceleration.CPU
+        val requestedAcceleration = if (configuredAcceleration in model.allowedAccelerators) {
+            configuredAcceleration
+        } else {
+            OnnxAcceleration.CPU
         }.also { selected ->
             if (selected != configuredAcceleration) {
                 DiagnosticLogger.warn(
                     component = TAG,
-                    event = if (conservativeMemoryMode) "provider_forced_for_memory" else "provider_not_allowed",
+                    event = "provider_not_allowed",
                     sessionId = taskId,
                     fields = mapOf(
                         "model_id" to model.id,
@@ -405,9 +388,8 @@ class AudioSeparator(
         val pipelineStartedAt = SystemClock.elapsedRealtime()
         val sourceId = DiagnosticRedactor.stableId(inputUri.toString())
         checkpoint("pipeline_start", 0.01f)
-        emit(SeparationState.Progress(0.01f)) // Start
+        emit(SeparationState.Progress(0.01f))
 
-        // Mỗi tác vụ có thư mục riêng để không ghi đè khi service bị khởi động lại.
         val workDir = File(context.cacheDir, "stem-work-${System.currentTimeMillis()}").apply {
             require(mkdirs() || isDirectory) { "Không thể tạo thư mục tạm cho tác vụ tách stem" }
         }
@@ -437,8 +419,6 @@ class AudioSeparator(
             ),
         )
         try {
-            // 2. Giữ PCM float32 xuyên suốt pipeline để stem vượt 0 dBFS không bị
-            // cắt sớm trước khi người dùng chọn codec/định dạng xuất cuối cùng.
             checkpoint("decode_input", 0.05f)
             emit(SeparationState.Progress(0.05f))
             val inputPath = com.arthenica.ffmpegkit.FFmpegKitConfig.getSafParameterForRead(context, inputUri)
@@ -490,9 +470,8 @@ class AudioSeparator(
             }
 
             checkpoint("decode_complete", 0.10f)
-            emit(SeparationState.Progress(0.1f)) // Decode complete
+            emit(SeparationState.Progress(0.1f))
 
-            // 3. Process with ONNX
             checkpoint("session_opening", 0.10f)
             val env = OrtEnvironment.getEnvironment()
             val sessionStartedAt = SystemClock.elapsedRealtime()
@@ -520,8 +499,6 @@ class AudioSeparator(
                 )
 
                 val (mean, std) = if (model.normalization == AudioNormalization.GLOBAL_MONO_MEAN_STD) {
-                    // Chỉ model khai báo rõ mới dùng chuẩn hóa kiểu Demucs. Mel-Band
-                    // RoFormer waveform export nhận PCM [-1, 1] trực tiếp.
                     logInfo("normalization_scan_start", mapOf("mode" to model.normalization))
                     var welfordMean = 0.0
                     var welfordM2 = 0.0
@@ -571,7 +548,7 @@ class AudioSeparator(
                 var processedFrames = 0L
 
                 checkpoint("buffers_allocating", 0.12f)
-                val bSize = 524288 // 512KB buffer I/O
+                val bSize = 524288
                 val inputStream = DataInputStream(java.io.BufferedInputStream(FileInputStream(inferencePcm), bSize))
                 val vocalsOut = DataOutputStream(java.io.BufferedOutputStream(FileOutputStream(tempRawVocals), bSize))
                 val musicOut = DataOutputStream(java.io.BufferedOutputStream(FileOutputStream(tempRawMusic), bSize))
@@ -581,391 +558,368 @@ class AudioSeparator(
 
                 var streamFailure: Throwable? = null
                 try {
-                val overlapSize = model.chunking.overlapFrames
-                val stepSize = model.chunking.stepFrames
+                    val overlapSize = model.chunking.overlapFrames
+                    val stepSize = model.chunking.stepFrames
 
-                val chunkBufferBytes = ByteArray(chunkFrames * bytesPerFrame)
-                val chunkBufferFloat = FloatArray(chunkFrames * channels)
-                val sharedInputBufferDirect = ByteBuffer
-                    .allocateDirect(chunkFrames * channels * Float.SIZE_BYTES)
-                    .order(ByteOrder.nativeOrder())
-                    .asFloatBuffer()
-                
-                // Buffer lưu các đoạn âm thanh nối (Overlap)
-                val outVocalsOverlap = FloatArray(overlapSize * channels)
-                val outBeatOverlap = FloatArray(overlapSize * channels)
-                val outDrumsOverlap = if (is4StemMode) FloatArray(overlapSize * channels) else null
-                val outBassOverlap = if (is4StemMode) FloatArray(overlapSize * channels) else null
-                val outOtherOverlap = if (is4StemMode) FloatArray(overlapSize * channels) else null
+                    val chunkBufferBytes = ByteArray(chunkFrames * bytesPerFrame)
+                    val chunkBufferFloat = FloatArray(chunkFrames * channels)
+                    val sharedInputBufferDirect = ByteBuffer
+                        .allocateDirect(chunkFrames * channels * Float.SIZE_BYTES)
+                        .order(ByteOrder.nativeOrder())
+                        .asFloatBuffer()
+                    
+                    val outVocalsOverlap = FloatArray(overlapSize * channels)
+                    val outBeatOverlap = FloatArray(overlapSize * channels)
+                    val outDrumsOverlap = if (is4StemMode) FloatArray(overlapSize * channels) else null
+                    val outBassOverlap = if (is4StemMode) FloatArray(overlapSize * channels) else null
+                    val outOtherOverlap = if (is4StemMode) FloatArray(overlapSize * channels) else null
 
-                val vocalsMerged = ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN)
-                val vocalsMergedFloat = vocalsMerged.asFloatBuffer()
-                val musicMerged = ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN)
-                val musicMergedFloat = musicMerged.asFloatBuffer()
-                val drumsMerged = if (is4StemMode) ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN) else null
-                val drumsMergedFloat = drumsMerged?.asFloatBuffer()
-                val bassMerged = if (is4StemMode) ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN) else null
-                val bassMergedFloat = bassMerged?.asFloatBuffer()
-                val otherMerged = if (is4StemMode) ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN) else null
-                val otherMergedFloat = otherMerged?.asFloatBuffer()
+                    val vocalsMerged = ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN)
+                    val vocalsMergedFloat = vocalsMerged.asFloatBuffer()
+                    val musicMerged = ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN)
+                    val musicMergedFloat = musicMerged.asFloatBuffer()
+                    val drumsMerged = if (is4StemMode) ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN) else null
+                    val drumsMergedFloat = drumsMerged?.asFloatBuffer()
+                    val bassMerged = if (is4StemMode) ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN) else null
+                    val bassMergedFloat = bassMerged?.asFloatBuffer()
+                    val otherMerged = if (is4StemMode) ByteBuffer.allocate(chunkFrames * bytesPerFrame).order(ByteOrder.LITTLE_ENDIAN) else null
+                    val otherMergedFloat = otherMerged?.asFloatBuffer()
 
-                val inputName = model.tensor.inputName.takeIf(session.inputNames::contains)
-                    ?: session.inputNames.singleOrNull()
-                    ?: error("Không tìm thấy input '${model.tensor.inputName}'")
-                val outputName = model.tensor.outputName.takeIf(session.outputNames::contains)
-                    ?: session.outputNames.singleOrNull()
-                    ?: error("Không tìm thấy output '${model.tensor.outputName}'")
-                val (inShape, inCAxis, inFAxis) = when (model.tensor.inputLayout) {
-                    TensorAudioLayout.BATCH_CHANNEL_FRAME -> Triple(
-                        longArrayOf(1, channels.toLong(), chunkFrames.toLong()),
-                        1,
-                        2,
+                    val inputName = model.tensor.inputName.takeIf(session.inputNames::contains)
+                        ?: session.inputNames.singleOrNull()
+                        ?: error("Không tìm thấy input '${model.tensor.inputName}'")
+                    val outputName = model.tensor.outputName.takeIf(session.outputNames::contains)
+                        ?: session.outputNames.singleOrNull()
+                        ?: error("Không tìm thấy output '${model.tensor.outputName}'")
+                    val (inShape, inCAxis, inFAxis) = when (model.tensor.inputLayout) {
+                        TensorAudioLayout.BATCH_CHANNEL_FRAME -> Triple(
+                            longArrayOf(1, channels.toLong(), chunkFrames.toLong()),
+                            1,
+                            2,
+                        )
+                        TensorAudioLayout.BATCH_FRAME_CHANNEL -> Triple(
+                            longArrayOf(1, chunkFrames.toLong(), channels.toLong()),
+                            2,
+                            1,
+                        )
+                    }
+                    val expectedShape = (session.inputInfo[inputName]?.info as? ai.onnxruntime.TensorInfo)?.shape
+                    require(
+                        expectedShape == null ||
+                            (expectedShape.size == inShape.size && expectedShape.indices.all { axis ->
+                                expectedShape[axis] <= 0L || expectedShape[axis] == inShape[axis]
+                            }),
+                    ) { "Input model không đúng contract: ${expectedShape?.joinToString(" x ")}" }
+                    val inStrides = LongArray(3)
+                    inStrides[2] = 1L
+                    inStrides[1] = inShape[2]
+                    inStrides[0] = inShape[1] * inShape[2]
+                    logInfo(
+                        event = "tensor_contract_validated",
+                        fields = mapOf(
+                            "input_name" to inputName,
+                            "output_name" to outputName,
+                            "input_shape" to inShape.joinToString("x"),
+                            "model_input_shape" to expectedShape?.joinToString("x"),
+                            "input_layout" to model.tensor.inputLayout,
+                            "output_layout" to model.tensor.outputLayout,
+                            "source_count" to model.tensor.sourceCount,
+                        ),
                     )
-                    TensorAudioLayout.BATCH_FRAME_CHANNEL -> Triple(
-                        longArrayOf(1, chunkFrames.toLong(), channels.toLong()),
-                        2,
-                        1,
-                    )
-                }
-                val expectedShape = (session.inputInfo[inputName]?.info as? ai.onnxruntime.TensorInfo)?.shape
-                require(
-                    expectedShape == null ||
-                        (expectedShape.size == inShape.size && expectedShape.indices.all { axis ->
-                            expectedShape[axis] <= 0L || expectedShape[axis] == inShape[axis]
-                        }),
-                ) { "Input model không đúng contract: ${expectedShape?.joinToString(" x ")}" }
-                val inStrides = LongArray(3)
-                inStrides[2] = 1L
-                inStrides[1] = inShape[2]
-                inStrides[0] = inShape[1] * inShape[2]
-                logInfo(
-                    event = "tensor_contract_validated",
-                    fields = mapOf(
-                        "input_name" to inputName,
-                        "output_name" to outputName,
-                        "input_shape" to inShape.joinToString("x"),
-                        "model_input_shape" to expectedShape?.joinToString("x"),
-                        "input_layout" to model.tensor.inputLayout,
-                        "output_layout" to model.tensor.outputLayout,
-                        "source_count" to model.tensor.sourceCount,
-                    ),
-                )
 
-                checkpoint("buffers_ready", 0.12f)
-                logInfo("inference_buffers_ready", memoryFields())
-                var isFirstChunk = true
-                var chunkIndex = 0
+                    checkpoint("buffers_ready", 0.12f)
+                    logInfo("inference_buffers_ready", memoryFields())
+                    var isFirstChunk = true
+                    var chunkIndex = 0
 
-                while (coroutineContext.isActive) {
+                    while (coroutineContext.isActive) {
                         val chunkStartedAt = SystemClock.elapsedRealtime()
                         coroutineContext.ensureActive()
                         val framesToRead = if (isFirstChunk) chunkFrames else stepSize
                         val bytesToRead = framesToRead * bytesPerFrame
                         java.util.Arrays.fill(chunkBufferBytes, 0.toByte())
 
-                    var bytesRead = 0
-                    while (bytesRead < bytesToRead) {
-                        coroutineContext.ensureActive()
-                        val read = inputStream.read(chunkBufferBytes, bytesRead, bytesToRead - bytesRead)
-                        if (read == -1) break
-                        bytesRead += read
-                    }
+                        var bytesRead = 0
+                        while (bytesRead < bytesToRead) {
+                            coroutineContext.ensureActive()
+                            val read = inputStream.read(chunkBufferBytes, bytesRead, bytesToRead - bytesRead)
+                            if (read == -1) break
+                            bytesRead += read
+                        }
                         
                         val actualFramesRead = bytesRead / bytesPerFrame
-                    logInfo(
-                        event = "chunk_read",
-                        fields = mapOf(
-                            "chunk_index" to chunkIndex,
-                            "frames" to actualFramesRead,
-                            "bytes" to bytesRead,
-                            "first_chunk" to isFirstChunk,
-                        ),
-                    )
-
-                    if (actualFramesRead == 0 && !isFirstChunk) {
                         logInfo(
-                            event = "overlap_tail_flush",
-                            fields = mapOf("chunk_index" to chunkIndex, "frames" to overlapSize),
-                        )
-                        // EOF: Xả nốt đoạn overlap cuối cùng.
-                        vocalsMergedFloat.clear()
-                        musicMergedFloat.clear()
-                        drumsMergedFloat?.clear()
-                        bassMergedFloat?.clear()
-                        otherMergedFloat?.clear()
-                        
-                        for(i in 0 until overlapSize * channels) {
-                            // Buffer overlap lưu mẫu thô, vì vậy đoạn cuối có thể
-                            // được xả trực tiếp mà không khuếch đại nghịch đảo cửa sổ.
-                            val v_val = outVocalsOverlap[i]
-                            val m_val = outBeatOverlap[i]
-                            
-                            vocalsMergedFloat.put(v_val)
-                            musicMergedFloat.put(m_val)
-                            
-                            if (is4StemMode) {
-                                val d_val = outDrumsOverlap!![i]
-                                val b_val = outBassOverlap!![i]
-                                val o_val = outOtherOverlap!![i]
-                                drumsMergedFloat!!.put(d_val)
-                                bassMergedFloat!!.put(b_val)
-                                otherMergedFloat!!.put(o_val)
-                            }
-                        }
-                        vocalsOut.write(vocalsMerged.array(), 0, overlapSize * bytesPerFrame)
-                        musicOut.write(musicMerged.array(), 0, overlapSize * bytesPerFrame)
-                        if (is4StemMode) {
-                            drumsOut!!.write(drumsMerged!!.array(), 0, overlapSize * bytesPerFrame)
-                            bassOut!!.write(bassMerged!!.array(), 0, overlapSize * bytesPerFrame)
-                            otherOut!!.write(otherMerged!!.array(), 0, overlapSize * bytesPerFrame)
-                        }
-                        break
-                    }
-                    if (actualFramesRead == 0 && isFirstChunk) break // File rỗng
-
-                    if (!isFirstChunk) {
-                        // Giữ overlap của chunk trước, còn vùng mới phải luôn bắt đầu bằng im lặng.
-                        System.arraycopy(chunkBufferFloat, stepSize * channels, chunkBufferFloat, 0, overlapSize * channels)
-                        java.util.Arrays.fill(chunkBufferFloat, overlapSize * channels, chunkBufferFloat.size, 0f)
-                    } else {
-                        java.util.Arrays.fill(chunkBufferFloat, 0f)
-                    }
-
-                    val floatBuffer = ByteBuffer.wrap(chunkBufferBytes, 0, bytesRead)
-                        .order(ByteOrder.LITTLE_ENDIAN)
-                        .asFloatBuffer()
-
-                    val offset = if (isFirstChunk) 0 else overlapSize * channels
-                    for (i in 0 until actualFramesRead * channels) {
-                        chunkBufferFloat[offset + i] = floatBuffer.get(i)
-                    }
-
-                    val validFramesInChunk = if (isFirstChunk) actualFramesRead else (overlapSize + actualFramesRead)
-
-                    val isFullRead = (isFirstChunk && actualFramesRead == chunkFrames) || (!isFirstChunk && actualFramesRead == stepSize)
-                    val framesToWrite = if (isFullRead) stepSize else validFramesInChunk
-
-                    for (ch in 0 until channels) {
-                        for (f in 0 until chunkFrames) {
-                            val idx = ch * inStrides[inCAxis] + f * inStrides[inFAxis]
-                            val rawVal = chunkBufferFloat[f * channels + ch]
-                            val normVal = (rawVal - mean) / std
-                            sharedInputBufferDirect.put(idx.toInt(), normVal)
-                        }
-                    }
-                    sharedInputBufferDirect.rewind()
-
-                    val inputTensor = OnnxTensor.createTensor(env, sharedInputBufferDirect, inShape)
-                    var result: ai.onnxruntime.OrtSession.Result? = null
-                    
-                    try {
-                        val inputMap = mapOf(inputName to inputTensor)
-
-                        // Inference
-                        val inferenceStartedAt = SystemClock.elapsedRealtime()
-                        val chunkProgress = if (totalFrames > 0L) {
-                            (0.12f + 0.78f * (processedFrames.toFloat() / totalFrames.toFloat()))
-                                .coerceIn(0.12f, 0.88f)
-                        } else {
-                            0.12f
-                        }
-                        checkpoint("inference_chunk_${chunkIndex}_start", chunkProgress)
-                        logInfo(
-                            event = "inference_chunk_start",
+                            event = "chunk_read",
                             fields = mapOf(
                                 "chunk_index" to chunkIndex,
-                                "valid_frames" to validFramesInChunk,
-                                "frames_to_write" to framesToWrite,
-                            ) + memoryFields(),
-                        )
-                        result = session.run(inputMap, setOf(outputName), runOptions)
-                        checkpoint("inference_chunk_${chunkIndex}_complete", chunkProgress)
-                        logInfo(
-                            event = "inference_chunk_complete",
-                            fields = mapOf(
-                                "chunk_index" to chunkIndex,
-                                "elapsed_ms" to SystemClock.elapsedRealtime() - inferenceStartedAt,
-                            ) + memoryFields(),
-                        )
-                        
-                        val outOnnxTensor = result.get(0) as? OnnxTensor
-                            ?: error("Model không trả về tensor âm thanh")
-                        val outShape = (outOnnxTensor.info as? ai.onnxruntime.TensorInfo)?.shape
-                            ?: error("Không đọc được shape đầu ra của model")
-                        require(outShape.size == 4 && outShape[0] == 1L) {
-                            "Shape đầu ra không được hỗ trợ: ${outShape.joinToString(" x ")}"
-                        }
-
-                        val sAxis = 1
-                        val (cAxis, fAxis) = when (model.tensor.outputLayout) {
-                            TensorSourceLayout.BATCH_SOURCE_CHANNEL_FRAME -> 2 to 3
-                            TensorSourceLayout.BATCH_SOURCE_FRAME_CHANNEL -> 3 to 2
-                        }
-
-                        val outStrides = LongArray(outShape.size)
-                        var currentStr = 1L
-                        for(i in outShape.indices.reversed()) {
-                            outStrides[i] = currentStr
-                            currentStr *= outShape[i]
-                        }
-
-                        val outBuffer = outOnnxTensor.floatBuffer
-                            ?: error("Tensor đầu ra không chứa dữ liệu float")
-                        val sourceCount = outShape[sAxis].toInt()
-                        val outputChannels = outShape[cAxis].toInt()
-                        val outputFrames = outShape[fAxis].toInt()
-                        require(
-                            sourceCount == model.tensor.sourceCount &&
-                                outputChannels == channels &&
-                                outputFrames >= chunkFrames
-                        ) {
-                            "Model không tương thích: sources=$sourceCount, channels=$outputChannels, frames=$outputFrames"
-                        }
-                        val expectedElements = outShape.fold(1L) { total, value -> total * value }
-                        require(expectedElements <= outBuffer.capacity().toLong()) { "Tensor đầu ra bị thiếu dữ liệu" }
-                        if (chunkIndex == 0) {
-                            logInfo(
-                                event = "output_tensor_validated",
-                                fields = mapOf(
-                                    "shape" to outShape.joinToString("x"),
-                                    "buffer_capacity" to outBuffer.capacity(),
-                                    "sources" to sourceCount,
-                                    "channels" to outputChannels,
-                                    "frames" to outputFrames,
-                                ),
-                            )
-                        }
-
-                        fun sourceValue(source: Int, channel: Int, frame: Int): Float {
-                            val offset = source * outStrides[sAxis] +
-                                channel * outStrides[cAxis] +
-                                frame * outStrides[fAxis]
-                            return outBuffer.get(offset.toInt())
-                        }
-
-                        fun mixValue(mix: SourceMix, channel: Int, frame: Int): Float {
-                            var value = 0f
-                            mix.sourceIndices.forEach { source -> value += sourceValue(source, channel, frame) }
-                            val denormalized = value * std + mean
-                            return if (denormalized.isFinite()) denormalized else 0f
-                        }
-                        
-                        vocalsMergedFloat.clear()
-                        musicMergedFloat.clear()
-                        drumsMergedFloat?.clear()
-                        bassMergedFloat?.clear()
-                        otherMergedFloat?.clear()
-
-                        for (f in 0 until framesToWrite) {
-                            for (ch in 0 until channels) {
-                                var v_val = mixValue(model.sources.vocals, ch, f)
-                                var m_val = mixValue(model.sources.music, ch, f)
-                                var d_val = model.sources.drums?.let { mixValue(it, ch, f) } ?: 0f
-                                var b_val = model.sources.bass?.let { mixValue(it, ch, f) } ?: 0f
-                                var o_val = model.sources.other?.let { mixValue(it, ch, f) } ?: 0f
-                                
-                                // Crossfade với hai trọng số bổ sung có tổng bằng 1.
-                                // Điều này tránh tăng tới khoảng +3 dB khi hai dự
-                                // đoán ở vùng overlap có tương quan cao.
-                                if (f < overlapSize && !isFirstChunk) {
-                                    val weights = OverlapWindow.weights(f, model.chunking)
-                                    v_val = v_val * weights.current + outVocalsOverlap[f * channels + ch] * weights.previous
-                                    m_val = m_val * weights.current + outBeatOverlap[f * channels + ch] * weights.previous
-                                    
-                                    if (is4StemMode) {
-                                        d_val = d_val * weights.current + outDrumsOverlap!![f * channels + ch] * weights.previous
-                                        b_val = b_val * weights.current + outBassOverlap!![f * channels + ch] * weights.previous
-                                        o_val = o_val * weights.current + outOtherOverlap!![f * channels + ch] * weights.previous
-                                    }
-                                }
-
-                                vocalsMergedFloat.put(v_val)
-                                musicMergedFloat.put(m_val)
-                                
-                                if (is4StemMode) {
-                                    drumsMergedFloat!!.put(d_val)
-                                    bassMergedFloat!!.put(b_val)
-                                    otherMergedFloat!!.put(o_val)
-                                }
-                            }
-                        }
-
-                        vocalsOut.write(vocalsMerged.array(), 0, framesToWrite * bytesPerFrame)
-                        musicOut.write(musicMerged.array(), 0, framesToWrite * bytesPerFrame)
-                        if (is4StemMode) {
-                            drumsOut!!.write(drumsMerged!!.array(), 0, framesToWrite * bytesPerFrame)
-                            bassOut!!.write(bassMerged!!.array(), 0, framesToWrite * bytesPerFrame)
-                            otherOut!!.write(otherMerged!!.array(), 0, framesToWrite * bytesPerFrame)
-                        }
-                        logInfo(
-                            event = "chunk_output_written",
-                            fields = mapOf(
-                                "chunk_index" to chunkIndex,
-                                "frames" to framesToWrite,
-                                "full_read" to isFullRead,
-                                "elapsed_ms" to SystemClock.elapsedRealtime() - chunkStartedAt,
+                                "frames" to actualFramesRead,
+                                "bytes" to bytesRead,
+                                "first_chunk" to isFirstChunk,
                             ),
                         )
-                        
-                        // Lưu Overlap cho chunk kế tiếp
-                        if (isFullRead) {
-                            for (f in framesToWrite until chunkFrames) {
-                                for (ch in 0 until channels) {
-                                    val v_val = mixValue(model.sources.vocals, ch, f)
-                                    val m_val = mixValue(model.sources.music, ch, f)
-                                    val d_val = model.sources.drums?.let { mixValue(it, ch, f) } ?: 0f
-                                    val b_val = model.sources.bass?.let { mixValue(it, ch, f) } ?: 0f
-                                    val o_val = model.sources.other?.let { mixValue(it, ch, f) } ?: 0f
 
-                                    val overIdx = f - framesToWrite
-                                    outVocalsOverlap[overIdx * channels + ch] = v_val
-                                    outBeatOverlap[overIdx * channels + ch] = m_val
+                        if (actualFramesRead == 0 && !isFirstChunk) {
+                            logInfo(
+                                event = "overlap_tail_flush",
+                                fields = mapOf("chunk_index" to chunkIndex, "frames" to overlapSize),
+                            )
+                            vocalsMergedFloat.clear()
+                            musicMergedFloat.clear()
+                            drumsMergedFloat?.clear()
+                            bassMergedFloat?.clear()
+                            otherMergedFloat?.clear()
+                            
+                            for (i in 0 until overlapSize * channels) {
+                                vocalsMergedFloat.put(outVocalsOverlap[i])
+                                musicMergedFloat.put(outBeatOverlap[i])
+                                if (is4StemMode) {
+                                    drumsMergedFloat!!.put(outDrumsOverlap!![i])
+                                    bassMergedFloat!!.put(outBassOverlap!![i])
+                                    otherMergedFloat!!.put(outOtherOverlap!![i])
+                                }
+                            }
+                            vocalsOut.write(vocalsMerged.array(), 0, overlapSize * bytesPerFrame)
+                            musicOut.write(musicMerged.array(), 0, overlapSize * bytesPerFrame)
+                            if (is4StemMode) {
+                                drumsOut!!.write(drumsMerged!!.array(), 0, overlapSize * bytesPerFrame)
+                                bassOut!!.write(bassMerged!!.array(), 0, overlapSize * bytesPerFrame)
+                                otherOut!!.write(otherMerged!!.array(), 0, overlapSize * bytesPerFrame)
+                            }
+                            break
+                        }
+                        if (actualFramesRead == 0 && isFirstChunk) break
+
+                        if (!isFirstChunk) {
+                            System.arraycopy(chunkBufferFloat, stepSize * channels, chunkBufferFloat, 0, overlapSize * channels)
+                            java.util.Arrays.fill(chunkBufferFloat, overlapSize * channels, chunkBufferFloat.size, 0f)
+                        } else {
+                            java.util.Arrays.fill(chunkBufferFloat, 0f)
+                        }
+
+                        val floatBuffer = ByteBuffer.wrap(chunkBufferBytes, 0, bytesRead)
+                            .order(ByteOrder.LITTLE_ENDIAN)
+                            .asFloatBuffer()
+
+                        val offset = if (isFirstChunk) 0 else overlapSize * channels
+                        for (i in 0 until actualFramesRead * channels) {
+                            chunkBufferFloat[offset + i] = floatBuffer.get(i)
+                        }
+
+                        val validFramesInChunk = if (isFirstChunk) actualFramesRead else overlapSize + actualFramesRead
+                        val isFullRead = (isFirstChunk && actualFramesRead == chunkFrames) || (!isFirstChunk && actualFramesRead == stepSize)
+                        val framesToWrite = if (isFullRead) stepSize else validFramesInChunk
+
+                        for (ch in 0 until channels) {
+                            for (f in 0 until chunkFrames) {
+                                val idx = ch * inStrides[inCAxis] + f * inStrides[inFAxis]
+                                val rawVal = chunkBufferFloat[f * channels + ch]
+                                sharedInputBufferDirect.put(idx.toInt(), (rawVal - mean) / std)
+                            }
+                        }
+                        sharedInputBufferDirect.rewind()
+
+                        val inputTensor = OnnxTensor.createTensor(env, sharedInputBufferDirect, inShape)
+                        var result: ai.onnxruntime.OrtSession.Result? = null
+                        
+                        try {
+                            val inputMap = mapOf(inputName to inputTensor)
+                            val inferenceStartedAt = SystemClock.elapsedRealtime()
+                            val chunkProgress = if (totalFrames > 0L) {
+                                (0.12f + 0.78f * (processedFrames.toFloat() / totalFrames.toFloat()))
+                                    .coerceIn(0.12f, 0.88f)
+                            } else {
+                                0.12f
+                            }
+                            checkpoint("inference_chunk_${chunkIndex}_start", chunkProgress)
+                            logInfo(
+                                event = "inference_chunk_start",
+                                fields = mapOf(
+                                    "chunk_index" to chunkIndex,
+                                    "valid_frames" to validFramesInChunk,
+                                    "frames_to_write" to framesToWrite,
+                                ) + memoryFields(),
+                            )
+                            result = session.run(inputMap, setOf(outputName), runOptions)
+                            checkpoint("inference_chunk_${chunkIndex}_complete", chunkProgress)
+                            logInfo(
+                                event = "inference_chunk_complete",
+                                fields = mapOf(
+                                    "chunk_index" to chunkIndex,
+                                    "elapsed_ms" to SystemClock.elapsedRealtime() - inferenceStartedAt,
+                                ) + memoryFields(),
+                            )
+                            
+                            val outOnnxTensor = result.get(0) as? OnnxTensor
+                                ?: error("Model không trả về tensor âm thanh")
+                            val outShape = (outOnnxTensor.info as? ai.onnxruntime.TensorInfo)?.shape
+                                ?: error("Không đọc được shape đầu ra của model")
+                            require(outShape.size == 4 && outShape[0] == 1L) {
+                                "Shape đầu ra không được hỗ trợ: ${outShape.joinToString(" x ")}"
+                            }
+
+                            val sAxis = 1
+                            val (cAxis, fAxis) = when (model.tensor.outputLayout) {
+                                TensorSourceLayout.BATCH_SOURCE_CHANNEL_FRAME -> 2 to 3
+                                TensorSourceLayout.BATCH_SOURCE_FRAME_CHANNEL -> 3 to 2
+                            }
+
+                            val outStrides = LongArray(outShape.size)
+                            var currentStr = 1L
+                            for (i in outShape.indices.reversed()) {
+                                outStrides[i] = currentStr
+                                currentStr *= outShape[i]
+                            }
+
+                            val outBuffer = outOnnxTensor.floatBuffer
+                                ?: error("Tensor đầu ra không chứa dữ liệu float")
+                            val sourceCount = outShape[sAxis].toInt()
+                            val outputChannels = outShape[cAxis].toInt()
+                            val outputFrames = outShape[fAxis].toInt()
+                            require(
+                                sourceCount == model.tensor.sourceCount &&
+                                    outputChannels == channels &&
+                                    outputFrames >= chunkFrames
+                            ) {
+                                "Model không tương thích: sources=$sourceCount, channels=$outputChannels, frames=$outputFrames"
+                            }
+                            val expectedElements = outShape.fold(1L) { total, value -> total * value }
+                            require(expectedElements <= outBuffer.capacity().toLong()) { "Tensor đầu ra bị thiếu dữ liệu" }
+                            if (chunkIndex == 0) {
+                                logInfo(
+                                    event = "output_tensor_validated",
+                                    fields = mapOf(
+                                        "shape" to outShape.joinToString("x"),
+                                        "buffer_capacity" to outBuffer.capacity(),
+                                        "sources" to sourceCount,
+                                        "channels" to outputChannels,
+                                        "frames" to outputFrames,
+                                    ),
+                                )
+                            }
+
+                            fun sourceValue(source: Int, channel: Int, frame: Int): Float {
+                                val tensorOffset = source * outStrides[sAxis] +
+                                    channel * outStrides[cAxis] +
+                                    frame * outStrides[fAxis]
+                                return outBuffer.get(tensorOffset.toInt())
+                            }
+
+                            fun mixValue(mix: SourceMix, channel: Int, frame: Int): Float {
+                                var value = 0f
+                                mix.sourceIndices.forEach { source -> value += sourceValue(source, channel, frame) }
+                                val denormalized = value * std + mean
+                                return if (denormalized.isFinite()) denormalized else 0f
+                            }
+                            
+                            vocalsMergedFloat.clear()
+                            musicMergedFloat.clear()
+                            drumsMergedFloat?.clear()
+                            bassMergedFloat?.clear()
+                            otherMergedFloat?.clear()
+
+                            for (f in 0 until framesToWrite) {
+                                for (ch in 0 until channels) {
+                                    var vocals = mixValue(model.sources.vocals, ch, f)
+                                    var music = mixValue(model.sources.music, ch, f)
+                                    var drums = model.sources.drums?.let { mixValue(it, ch, f) } ?: 0f
+                                    var bass = model.sources.bass?.let { mixValue(it, ch, f) } ?: 0f
+                                    var other = model.sources.other?.let { mixValue(it, ch, f) } ?: 0f
                                     
+                                    if (f < overlapSize && !isFirstChunk) {
+                                        val weights = OverlapWindow.weights(f, model.chunking)
+                                        vocals = vocals * weights.current + outVocalsOverlap[f * channels + ch] * weights.previous
+                                        music = music * weights.current + outBeatOverlap[f * channels + ch] * weights.previous
+                                        if (is4StemMode) {
+                                            drums = drums * weights.current + outDrumsOverlap!![f * channels + ch] * weights.previous
+                                            bass = bass * weights.current + outBassOverlap!![f * channels + ch] * weights.previous
+                                            other = other * weights.current + outOtherOverlap!![f * channels + ch] * weights.previous
+                                        }
+                                    }
+
+                                    vocalsMergedFloat.put(vocals)
+                                    musicMergedFloat.put(music)
                                     if (is4StemMode) {
-                                        outDrumsOverlap!![overIdx * channels + ch] = d_val
-                                        outBassOverlap!![overIdx * channels + ch] = b_val
-                                        outOtherOverlap!![overIdx * channels + ch] = o_val
+                                        drumsMergedFloat!!.put(drums)
+                                        bassMergedFloat!!.put(bass)
+                                        otherMergedFloat!!.put(other)
                                     }
                                 }
                             }
-                        }
-                    } finally {
-                        runCatching { result?.close() }.onFailure { closeError ->
-                            DiagnosticLogger.warn(
-                                component = TAG,
-                                event = "onnx_result_close_failed",
-                                sessionId = taskId,
-                                fields = mapOf("chunk_index" to chunkIndex),
-                                error = closeError,
-                            )
-                        }
-                        runCatching { inputTensor.close() }.onFailure { closeError ->
-                            DiagnosticLogger.warn(
-                                component = TAG,
-                                event = "onnx_tensor_close_failed",
-                                sessionId = taskId,
-                                fields = mapOf("chunk_index" to chunkIndex),
-                                error = closeError,
-                            )
-                        }
-                    }
 
-                    processedFrames += actualFramesRead
-                    val progressRatio = if (totalFrames > 0) processedFrames.toFloat() / totalFrames.toFloat() else 1.0f
-                    val progress = 0.12f + 0.78f * progressRatio
-                    emit(SeparationState.Progress(progress.coerceAtMost(0.88f)))
-                    
-                    isFirstChunk = false
-                    chunkIndex++
-                    
-                    if (!isFullRead) {
-                        logInfo(
-                            event = "inference_eof",
-                            fields = mapOf("chunks" to chunkIndex, "processed_frames" to processedFrames),
-                        )
-                        break
+                            vocalsOut.write(vocalsMerged.array(), 0, framesToWrite * bytesPerFrame)
+                            musicOut.write(musicMerged.array(), 0, framesToWrite * bytesPerFrame)
+                            if (is4StemMode) {
+                                drumsOut!!.write(drumsMerged!!.array(), 0, framesToWrite * bytesPerFrame)
+                                bassOut!!.write(bassMerged!!.array(), 0, framesToWrite * bytesPerFrame)
+                                otherOut!!.write(otherMerged!!.array(), 0, framesToWrite * bytesPerFrame)
+                            }
+                            logInfo(
+                                event = "chunk_output_written",
+                                fields = mapOf(
+                                    "chunk_index" to chunkIndex,
+                                    "frames" to framesToWrite,
+                                    "full_read" to isFullRead,
+                                    "elapsed_ms" to SystemClock.elapsedRealtime() - chunkStartedAt,
+                                ),
+                            )
+                            
+                            if (isFullRead) {
+                                for (f in framesToWrite until chunkFrames) {
+                                    for (ch in 0 until channels) {
+                                        val vocals = mixValue(model.sources.vocals, ch, f)
+                                        val music = mixValue(model.sources.music, ch, f)
+                                        val drums = model.sources.drums?.let { mixValue(it, ch, f) } ?: 0f
+                                        val bass = model.sources.bass?.let { mixValue(it, ch, f) } ?: 0f
+                                        val other = model.sources.other?.let { mixValue(it, ch, f) } ?: 0f
+
+                                        val overlapIndex = f - framesToWrite
+                                        outVocalsOverlap[overlapIndex * channels + ch] = vocals
+                                        outBeatOverlap[overlapIndex * channels + ch] = music
+                                        if (is4StemMode) {
+                                            outDrumsOverlap!![overlapIndex * channels + ch] = drums
+                                            outBassOverlap!![overlapIndex * channels + ch] = bass
+                                            outOtherOverlap!![overlapIndex * channels + ch] = other
+                                        }
+                                    }
+                                }
+                            }
+                        } finally {
+                            runCatching { result?.close() }.onFailure { closeError ->
+                                DiagnosticLogger.warn(
+                                    component = TAG,
+                                    event = "onnx_result_close_failed",
+                                    sessionId = taskId,
+                                    fields = mapOf("chunk_index" to chunkIndex),
+                                    error = closeError,
+                                )
+                            }
+                            runCatching { inputTensor.close() }.onFailure { closeError ->
+                                DiagnosticLogger.warn(
+                                    component = TAG,
+                                    event = "onnx_tensor_close_failed",
+                                    sessionId = taskId,
+                                    fields = mapOf("chunk_index" to chunkIndex),
+                                    error = closeError,
+                                )
+                            }
+                        }
+
+                        processedFrames += actualFramesRead
+                        val progressRatio = if (totalFrames > 0) processedFrames.toFloat() / totalFrames.toFloat() else 1.0f
+                        val progress = 0.12f + 0.78f * progressRatio
+                        emit(SeparationState.Progress(progress.coerceAtMost(0.88f)))
+                        
+                        isFirstChunk = false
+                        chunkIndex++
+                        
+                        if (!isFullRead) {
+                            logInfo(
+                                event = "inference_eof",
+                                fields = mapOf("chunks" to chunkIndex, "processed_frames" to processedFrames),
+                            )
+                            break
+                        }
                     }
-                }
                 } catch (error: Throwable) {
                     streamFailure = error
                     throw error
@@ -1027,9 +981,8 @@ class AudioSeparator(
             }
 
             checkpoint("encoding", 0.90f)
-            emit(SeparationState.Progress(0.9f)) // Encoding 
+            emit(SeparationState.Progress(0.9f))
 
-            // 4. Encode raw PCM back to selected format
             val ext = SettingsManager.getAudioFormatExt(context)
             val encodingArgs = SettingsManager.getAudioEncodingArgs(context)
             val trimArgs = if (boundaryPaddingFrames > 0) {
@@ -1128,7 +1081,6 @@ class AudioSeparator(
             if (!outputsCommitted) {
                 createdOutputs.forEach { if (it.exists() && !it.delete()) outputDeleteFailures++ }
             }
-            // 5. Cleanup
             var tempDeleteFailures = 0
             listOf(
                 tempRawMix,

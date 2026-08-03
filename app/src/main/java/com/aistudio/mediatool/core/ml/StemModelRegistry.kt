@@ -95,7 +95,7 @@ object StemModelRegistry {
             vocals = SourceMix(listOf(3)),
             music = SourceMix(listOf(0, 1, 2)),
         ),
-        allowedAccelerators = setOf(OnnxAcceleration.CPU, OnnxAcceleration.XNNPACK),
+        allowedAccelerators = setOf(OnnxAcceleration.CPU),
         deviceRequirements = DeviceRequirements(
             minimumTotalRamBytes = 3L * GIB,
             minimumAvailableRamBytes = 1L * GIB,
@@ -134,7 +134,7 @@ object StemModelRegistry {
             bass = SourceMix(listOf(1)),
             other = SourceMix(listOf(2)),
         ),
-        allowedAccelerators = setOf(OnnxAcceleration.CPU, OnnxAcceleration.XNNPACK),
+        allowedAccelerators = setOf(OnnxAcceleration.CPU),
         deviceRequirements = DeviceRequirements(
             minimumTotalRamBytes = 3L * GIB,
             minimumAvailableRamBytes = 1L * GIB,

@@ -9,6 +9,7 @@ sealed class Route(val path: String) {
     object Img2Vid : Route("img2vid")
     object Sub : Route("sub")
     object Stem : Route("stem")
+    object VoiceCleanup : Route("voice_cleanup")
     object Other : Route("other")
     object Settings : Route("settings")
 }

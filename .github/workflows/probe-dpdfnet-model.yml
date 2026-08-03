@@ -1,0 +1,28 @@
+name: Probe DPDFNet model
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/probe-dpdfnet-model.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download pinned model metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://huggingface.co/Ceva-IP/DPDFNet/resolve/main/dpdfnet8_48khz_hr.tflite?download=true'
+          curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 30 --max-time 900 \
+            --output dpdfnet8_48khz_hr.tflite "$url"
+          echo "DPDFNET_BYTES=$(stat -c '%s' dpdfnet8_48khz_hr.tflite)"
+          echo "DPDFNET_SHA256=$(sha256sum dpdfnet8_48khz_hr.tflite | cut -d' ' -f1)"
+          curl --silent --show-error --head --location "$url" \
+            | tr -d '\r' \
+            | grep -Ei '^(etag|x-repo-commit|content-length|location):' \
+            | tail -n 20 || true

@@ -1,6 +1,7 @@
 package com.aistudio.mediatool.core.ml
 
 import kotlin.math.abs
+import kotlin.math.ln
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,6 +43,19 @@ class MossFormer2DspTest {
         val expected = floatArrayOf(0.5f, 0.8f, 0.8f, 0.5f)
         actual.indices.forEach { index ->
             assertTrue(abs(actual[index] - expected[index]) < 1e-6f)
+        }
+    }
+
+    @Test
+    fun silenceUsesKaldiFloat32EpsilonBeforeLog() {
+        val features = MossFormer2Dsp().buildFeatures(FloatArray(MossFormer2Dsp.SEGMENT_SAMPLES))
+        val expectedLogFloor = ln(Math.ulp(1.0f).toDouble()).toFloat()
+
+        for (mel in 0 until MossFormer2Dsp.MEL_BINS) {
+            assertEquals(expectedLogFloor, features[mel], 1e-5f)
+        }
+        for (feature in MossFormer2Dsp.MEL_BINS until MossFormer2Dsp.FEATURES) {
+            assertEquals(0f, features[feature], 1e-6f)
         }
     }
 

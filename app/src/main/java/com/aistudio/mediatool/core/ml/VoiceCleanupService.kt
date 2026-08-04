@@ -27,6 +27,7 @@ import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -38,11 +39,12 @@ import kotlinx.coroutines.launch
 
 class VoiceCleanupService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val taskGate = VoiceCleanupTaskGate()
     private var processingJob: Job? = null
     private var processor: VoiceCleanupProcessor? = null
     private var currentTaskId: String? = null
+    private var currentTaskToken: Long? = null
     private var processingWakeLock: PowerManager.WakeLock? = null
-    @Volatile private var stopping = false
 
     override fun onCreate() {
         super.onCreate()
@@ -61,7 +63,7 @@ class VoiceCleanupService : Service() {
     }
 
     private fun startProcessing(intent: Intent) {
-        if (processingJob?.isActive == true) {
+        if (currentTaskToken != null || processingJob != null) {
             DiagnosticLogger.warn(TAG, "duplicate_start_ignored", sessionId = currentTaskId)
             return
         }
@@ -85,15 +87,23 @@ class VoiceCleanupService : Service() {
             failAndStop(error.message ?: "Thiết lập âm lượng không hợp lệ")
             return
         }
+        val taskToken = taskGate.tryStart()
+        if (taskToken == null) {
+            DiagnosticLogger.warn(TAG, "duplicate_start_ignored", sessionId = currentTaskId)
+            return
+        }
+        currentTaskToken = taskToken
         currentTaskId = UUID.randomUUID().toString()
-        stopping = false
 
         try {
             startAsForeground()
             acquireProcessingWakeLock()
         } catch (error: Exception) {
             DiagnosticLogger.error(TAG, "foreground_start_failed", currentTaskId, error.message, error = error)
-            failAndStop("Android không cho phép bắt đầu xử lý nền: ${error.message ?: "không xác định"}")
+            failAndStop(
+                "Android không cho phép bắt đầu xử lý nền: ${error.message ?: "không xác định"}",
+                taskToken,
+            )
             return
         }
 
@@ -113,7 +123,7 @@ class VoiceCleanupService : Service() {
             modelId = VoiceCleanupModelRegistry.MOSSFORMER2_ID,
         )
 
-        processingJob = serviceScope.launch {
+        val job = serviceScope.launch(start = CoroutineStart.LAZY) {
             try {
                 val durationMs = runPreflight(uri)
                 val descriptor = VoiceCleanupModelRegistry.mossFormer2
@@ -140,6 +150,7 @@ class VoiceCleanupService : Service() {
                 processor = activeProcessor
                 var lastProgressBucket = -1
                 activeProcessor.cleanup(uri).collect { state ->
+                    if (!taskGate.isCurrent(taskToken)) return@collect
                     _cleanupState.value = state
                     when (state) {
                         is VoiceCleanupState.Progress -> {
@@ -180,38 +191,42 @@ class VoiceCleanupService : Service() {
                                     "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
                                 ),
                             )
-                            finishService()
+                            finishService(taskToken)
                         }
                     }
                 }
             } catch (_: CancellationException) {
-                if (!stopping) {
+                if (taskGate.isRunning(taskToken)) {
                     _errorMsg.value = "Đã hủy làm sạch giọng"
                     saveTask(PersistentTaskStatus.CANCELLED, message = _errorMsg.value)
-                    finishService()
+                    finishService(taskToken)
                 }
             } catch (error: Throwable) {
-                val message = error.message ?: "Không thể làm sạch giọng"
-                DiagnosticLogger.error(
-                    TAG,
-                    "task_failed",
-                    taskId,
-                    message,
-                    fields = mapOf(
-                        "source_id" to sourceId,
-                        "model_id" to VoiceCleanupModelRegistry.MOSSFORMER2_ID,
-                        "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
-                        "out_of_memory" to (error is OutOfMemoryError),
-                    ),
-                    error = error,
-                )
-                _errorMsg.value = message
-                saveTask(PersistentTaskStatus.FAILED, message = message)
-                finishService()
+                if (taskGate.isCurrent(taskToken)) {
+                    val message = error.message ?: "Không thể làm sạch giọng"
+                    DiagnosticLogger.error(
+                        TAG,
+                        "task_failed",
+                        taskId,
+                        message,
+                        fields = mapOf(
+                            "source_id" to sourceId,
+                            "model_id" to VoiceCleanupModelRegistry.MOSSFORMER2_ID,
+                            "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
+                            "out_of_memory" to (error is OutOfMemoryError),
+                        ),
+                        error = error,
+                    )
+                    _errorMsg.value = message
+                    saveTask(PersistentTaskStatus.FAILED, message = message)
+                    finishService(taskToken)
+                }
             } finally {
-                processor = null
+                releaseTask(taskToken)
             }
         }
+        processingJob = job
+        job.start()
     }
 
     private fun runPreflight(uri: Uri): Long {
@@ -273,29 +288,45 @@ class VoiceCleanupService : Service() {
     }
 
     private fun stopProcessing(message: String, status: PersistentTaskStatus) {
-        if (stopping) return
-        stopping = true
+        val taskToken = currentTaskToken ?: return
+        if (!taskGate.beginStop(taskToken)) return
         processor?.cancel()
         processingJob?.cancel()
-        processingJob = null
         _errorMsg.value = message
         saveTask(status, message = message)
-        finishService()
+        finishService(taskToken)
     }
 
-    private fun failAndStop(message: String) {
+    private fun failAndStop(message: String, taskToken: Long? = currentTaskToken) {
         _errorMsg.value = message
         saveTask(PersistentTaskStatus.FAILED, message = message)
-        finishService()
+        if (taskToken != null) {
+            finishService(taskToken)
+            if (processingJob == null) releaseTask(taskToken)
+        } else {
+            releaseProcessingWakeLock()
+            _isProcessing.value = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
-    private fun finishService() {
+    private fun finishService(taskToken: Long) {
+        if (!taskGate.isCurrent(taskToken)) return
+        taskGate.beginStop(taskToken)
         currentTaskId?.let { ProcessExitDiagnostics.finish(this, VoiceCleanupTask.TYPE, it) }
         releaseProcessingWakeLock()
         _isProcessing.value = false
-        processingJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun releaseTask(taskToken: Long) {
+        if (!taskGate.finish(taskToken)) return
+        processor = null
+        processingJob = null
+        currentTaskId = null
+        currentTaskToken = null
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {

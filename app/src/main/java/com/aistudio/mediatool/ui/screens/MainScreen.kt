@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -52,6 +53,7 @@ fun MainScreen(
     onNavigateToImg2Vid: () -> Unit,
     onNavigateToSub: () -> Unit,
     onNavigateToStem: () -> Unit,
+    onNavigateToVoiceCleanup: () -> Unit,
     onNavigateToOther: () -> Unit,
     onNavigateToSettings: () -> Unit,
 ) {
@@ -64,6 +66,7 @@ fun MainScreen(
         ToolEntry("Tạo video", Icons.Default.Image, onNavigateToImg2Vid),
         ToolEntry("Phụ đề", Icons.Default.Subtitles, onNavigateToSub),
         ToolEntry("Tách nhạc", Icons.Default.GraphicEq, onNavigateToStem),
+        ToolEntry("Làm sạch giọng", Icons.Default.VolumeUp, onNavigateToVoiceCleanup),
     )
 
     Scaffold(

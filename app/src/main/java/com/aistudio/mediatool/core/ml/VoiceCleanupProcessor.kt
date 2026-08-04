@@ -13,17 +13,24 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.ReturnCode
+import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Arrays
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.coroutineContext
+import kotlin.math.abs
+import kotlin.math.log10
 import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sqrt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -36,6 +43,7 @@ class VoiceCleanupProcessor(
     private val context: Context,
     private val modelFile: File,
     private val taskId: String,
+    private val config: VoiceCleanupConfig,
 ) {
     private val activeFfmpegSessionId = AtomicLong(-1L)
     private val cancelRequested = AtomicBoolean(false)
@@ -58,12 +66,14 @@ class VoiceCleanupProcessor(
         var outputFile: File? = null
         var outputCommitted = false
 
+        logInfo("cleanup_config", config.diagnosticFields())
         try {
             checkpoint("decode", 0.02f)
             emit(VoiceCleanupState.Progress(0.02f, "Đang giải mã âm thanh"))
             val inputPath = FFmpegKitConfig.getSafParameterForRead(context, inputUri)
             val decode = executeFfmpeg(
-                "-y -i \"$inputPath\" -vn -f f32le -ac 1 -ar ${MossFormer2Dsp.SAMPLE_RATE} \"${rawInput.absolutePath}\"",
+                "-y -i \"$inputPath\" -vn -f f32le -ac 1 -ar ${MossFormer2Dsp.SAMPLE_RATE} " +
+                    "\"${rawInput.absolutePath}\"",
                 "voice_decode",
             )
             require(ReturnCode.isSuccess(decode.returnCode)) { "Không thể giải mã tệp đầu vào" }
@@ -76,9 +86,14 @@ class VoiceCleanupProcessor(
                 mapOf("source_id" to sourceId, "samples" to totalSamples, "pcm_bytes" to rawInput.length()),
             )
 
+            checkpoint("source_metrics", 0.05f)
+            emit(VoiceCleanupState.Progress(0.05f, "Đang đo âm lượng bản gốc"))
+            val sourceMetrics = analyzeRawPcm(rawInput, "source")
+            logAudioMetrics("source", sourceMetrics)
+
             checkpoint("model_opening", 0.08f)
             emit(VoiceCleanupState.Progress(0.08f, "Đang mở MossFormer2"))
-            val metrics = enhancePcm(rawInput, rawEnhanced, totalSamples) { value, phase ->
+            val inference = enhancePcm(rawInput, rawEnhanced, totalSamples) { value, phase ->
                 emit(VoiceCleanupState.Progress(value, phase))
             }
             require(rawEnhanced.length() == totalSamples * Float.SIZE_BYTES) {
@@ -87,20 +102,33 @@ class VoiceCleanupProcessor(
             logInfo(
                 "ai_complete",
                 mapOf(
-                    "segments" to metrics.segmentCount,
-                    "inference_ms" to metrics.inferenceMs,
-                    "rtf" to metrics.realTimeFactor,
-                    "peak_pss_kb" to metrics.peakPssKb,
+                    "segments" to inference.segmentCount,
+                    "inference_ms" to inference.inferenceMs,
+                    "rtf" to inference.realTimeFactor,
+                    "peak_pss_kb" to inference.peakPssKb,
+                ) + inference.maskMetrics.diagnosticFields(),
+            )
+
+            checkpoint("ai_metrics", 0.89f)
+            emit(VoiceCleanupState.Progress(0.89f, "Đang đo đầu ra AI"))
+            val afterAiMetrics = analyzeRawPcm(rawEnhanced, "after_ai")
+            logAudioMetrics("after_ai", afterAiMetrics)
+
+            val appliedGainDb = resolveGainDb(sourceMetrics, afterAiMetrics)
+            val filter = buildOutputFilter(appliedGainDb)
+            logInfo(
+                "output_filter_resolved",
+                config.diagnosticFields() + mapOf(
+                    "applied_gain_db" to appliedGainDb,
+                    "filter_count" to filter.split(',').size,
                 ),
             )
 
-            checkpoint("encode", 0.92f)
-            emit(VoiceCleanupState.Progress(0.92f, "Đang chuẩn hóa và mã hóa kết quả"))
+            checkpoint("encode", 0.93f)
+            emit(VoiceCleanupState.Progress(0.93f, "Đang áp dụng âm lượng và mã hóa"))
             val extension = SettingsManager.getAudioFormatExt(context)
             val target = FileExportManager.resultFile(context, "giong_noi_da_lam_sach", extension)
             outputFile = target
-            val filter = "loudnorm=I=-16:LRA=11:TP=-1.0,aresample=${MossFormer2Dsp.SAMPLE_RATE}," +
-                "alimiter=limit=0.891251:level=0:latency=1"
             val encode = executeFfmpeg(
                 "-y -f f32le -ar ${MossFormer2Dsp.SAMPLE_RATE} -ac 1 " +
                     "-i \"${rawEnhanced.absolutePath}\" -af \"$filter\" " +
@@ -109,6 +137,21 @@ class VoiceCleanupProcessor(
             )
             require(ReturnCode.isSuccess(encode.returnCode)) { "Không thể mã hóa kết quả" }
             require(target.isFile && target.length() > 0L) { "Tệp kết quả bị rỗng" }
+
+            checkpoint("final_metrics", 0.97f)
+            emit(VoiceCleanupState.Progress(0.97f, "Đang đo kết quả cuối"))
+            val finalMetrics = analyzeEncodedAudio(target, "final_output")
+            logAudioMetrics("final_output", finalMetrics)
+
+            val report = VoiceCleanupReport(
+                source = sourceMetrics,
+                afterAi = afterAiMetrics,
+                finalOutput = finalMetrics,
+                mask = inference.maskMetrics,
+                appliedGainDb = appliedGainDb,
+                segmentCount = inference.segmentCount,
+                inferenceRealTimeFactor = inference.realTimeFactor,
+            )
             outputCommitted = true
             checkpoint("complete", 1f)
             logInfo(
@@ -118,10 +161,11 @@ class VoiceCleanupProcessor(
                     "output_bytes" to target.length(),
                     "format" to extension,
                     "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
-                ),
+                    "applied_gain_db" to appliedGainDb,
+                ) + finalMetrics.diagnosticFields("final"),
             )
             emit(VoiceCleanupState.Progress(1f, "Hoàn tất"))
-            emit(VoiceCleanupState.Success(target))
+            emit(VoiceCleanupState.Success(target, report))
         } catch (cancelled: CancellationException) {
             logInfo("pipeline_cancelled", mapOf("elapsed_ms" to SystemClock.elapsedRealtime() - startedAt))
             throw cancelled
@@ -161,6 +205,7 @@ class VoiceCleanupProcessor(
             .allocate((MossFormer2Dsp.SEGMENT_SAMPLES - MossFormer2Dsp.EDGE_DISCARD_SAMPLES) * Float.SIZE_BYTES)
             .order(ByteOrder.LITTLE_ENDIAN)
         val dsp = MossFormer2Dsp()
+        val aggregateMask = VoiceCleanupMaskAccumulator()
         var inferenceMs = 0L
         var writtenSamples = 0L
         var peakPssKb = Debug.getPss()
@@ -193,7 +238,7 @@ class VoiceCleanupProcessor(
                         }
                         for (index in segment.indices) segment[index] *= PCM_SCALE
 
-                        val progressStart = 0.10f + 0.78f * segmentIndex / segmentCount.toFloat()
+                        val progressStart = 0.10f + 0.76f * segmentIndex / segmentCount.toFloat()
                         checkpoint("segment_${segmentIndex}_frontend", progressStart)
                         onProgress(progressStart, "Đang phân tích đoạn ${segmentIndex + 1}/$segmentCount")
                         val features = dsp.buildFeatures(segment)
@@ -202,6 +247,13 @@ class VoiceCleanupProcessor(
                         checkpoint("segment_${segmentIndex}_inference", progressStart)
                         val mask = openedEngine.process(features)
                         inferenceMs += SystemClock.elapsedRealtime() - inferenceStartedAt
+
+                        val segmentMask = VoiceCleanupMaskAccumulator().apply { add(mask) }.snapshot()
+                        aggregateMask.add(mask)
+                        logInfo(
+                            "segment_mask_metrics",
+                            mapOf("segment_index" to segmentIndex) + segmentMask.diagnosticFields("mask"),
+                        )
 
                         val enhanced = dsp.applyMask(segment, mask)
                         val retained = MossFormer2Dsp.retainedRange(segmentIndex)
@@ -216,7 +268,7 @@ class VoiceCleanupProcessor(
                         writtenSamples += count
                         peakPssKb = maxOf(peakPssKb, Debug.getPss())
 
-                        val progressEnd = 0.10f + 0.78f * (segmentIndex + 1) / segmentCount.toFloat()
+                        val progressEnd = 0.10f + 0.76f * (segmentIndex + 1) / segmentCount.toFloat()
                         checkpoint("segment_${segmentIndex}_complete", progressEnd)
                         onProgress(progressEnd, "Đã xử lý đoạn ${segmentIndex + 1}/$segmentCount")
                         logInfo(
@@ -246,7 +298,139 @@ class VoiceCleanupProcessor(
             inferenceMs = inferenceMs,
             realTimeFactor = if (audioSeconds > 0.0) inferenceMs / 1000.0 / audioSeconds else 0.0,
             peakPssKb = peakPssKb,
+            maskMetrics = aggregateMask.snapshot(),
         )
+    }
+
+    private suspend fun analyzeRawPcm(file: File, stage: String): VoiceCleanupAudioMetrics {
+        val waveform = scanRawPcm(file)
+        val loudness = measureAudio(
+            command = "-hide_banner -nostats -f f32le -ar ${MossFormer2Dsp.SAMPLE_RATE} -ac 1 " +
+                "-i \"${file.absolutePath}\" -af \"$METRICS_FILTER\" -f null -",
+            phase = "metrics_$stage",
+        )
+        return loudness.copy(
+            rmsDbfs = waveform.rmsDbfs ?: loudness.rmsDbfs,
+            samplePeakDbfs = waveform.samplePeakDbfs ?: loudness.samplePeakDbfs,
+        )
+    }
+
+    private suspend fun analyzeEncodedAudio(file: File, stage: String): VoiceCleanupAudioMetrics =
+        measureAudio(
+            command = "-hide_banner -nostats -i \"${file.absolutePath}\" -vn " +
+                "-af \"volumedetect,$METRICS_FILTER\" -f null -",
+            phase = "metrics_$stage",
+        )
+
+    private suspend fun measureAudio(command: String, phase: String): VoiceCleanupAudioMetrics {
+        return try {
+            val session = executeFfmpeg(command, phase)
+            if (!ReturnCode.isSuccess(session.returnCode)) {
+                DiagnosticLogger.warn(
+                    TAG,
+                    "audio_metrics_failed",
+                    taskId,
+                    fields = mapOf("phase" to phase, "return_code" to session.returnCode.toString()),
+                )
+                EMPTY_AUDIO_METRICS
+            } else {
+                VoiceCleanupMetricsParser.parse(session.allLogsAsString)
+            }
+        } catch (error: Throwable) {
+            DiagnosticLogger.warn(
+                TAG,
+                "audio_metrics_failed",
+                taskId,
+                message = error.message,
+                fields = mapOf("phase" to phase),
+            )
+            EMPTY_AUDIO_METRICS
+        }
+    }
+
+    private suspend fun scanRawPcm(file: File): VoiceCleanupAudioMetrics {
+        var sampleCount = 0L
+        var sumSquares = 0.0
+        var peak = 0.0
+        val bytes = ByteArray(256 * 1024)
+        BufferedInputStream(FileInputStream(file), bytes.size).use { input ->
+            while (true) {
+                coroutineContext.ensureActive()
+                val read = input.read(bytes)
+                if (read < 0) break
+                require(read % Float.SIZE_BYTES == 0) { "PCM float32 bị lệch byte" }
+                val floats = ByteBuffer.wrap(bytes, 0, read)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .asFloatBuffer()
+                while (floats.hasRemaining()) {
+                    val sample = floats.get().toDouble()
+                    require(sample.isFinite()) { "PCM chứa giá trị không hữu hạn" }
+                    sampleCount++
+                    sumSquares += sample * sample
+                    peak = maxOf(peak, abs(sample))
+                }
+            }
+        }
+        val rms = if (sampleCount > 0L) sqrt(sumSquares / sampleCount.toDouble()) else 0.0
+        return VoiceCleanupAudioMetrics(
+            integratedLufs = null,
+            rmsDbfs = amplitudeToDb(rms),
+            samplePeakDbfs = amplitudeToDb(peak),
+            truePeakDbfs = null,
+        )
+    }
+
+    private fun resolveGainDb(
+        source: VoiceCleanupAudioMetrics,
+        afterAi: VoiceCleanupAudioMetrics,
+    ): Float {
+        val automatic = when (config.loudnessMode) {
+            VoiceCleanupLoudnessMode.RAW -> 0.0
+            VoiceCleanupLoudnessMode.MATCH_SOURCE -> {
+                when {
+                    source.integratedLufs != null && afterAi.integratedLufs != null ->
+                        source.integratedLufs - afterAi.integratedLufs
+                    source.rmsDbfs != null && afterAi.rmsDbfs != null ->
+                        source.rmsDbfs - afterAi.rmsDbfs
+                    else -> 0.0
+                }
+            }
+            VoiceCleanupLoudnessMode.TARGET_LUFS -> {
+                afterAi.integratedLufs?.let { config.targetLufs - it } ?: 0.0
+            }
+        }
+        val requested = automatic + config.outputGainDb
+        val applied = requested.coerceIn(MIN_APPLIED_GAIN_DB, MAX_APPLIED_GAIN_DB)
+        if (abs(requested - applied) > 0.01) {
+            DiagnosticLogger.warn(
+                TAG,
+                "output_gain_clamped",
+                taskId,
+                fields = mapOf("requested_gain_db" to requested, "applied_gain_db" to applied),
+            )
+        }
+        if (config.loudnessMode != VoiceCleanupLoudnessMode.RAW && automatic == 0.0) {
+            DiagnosticLogger.warn(
+                TAG,
+                "automatic_loudness_unavailable",
+                taskId,
+                fields = mapOf("loudness_mode" to config.loudnessMode.name),
+            )
+        }
+        return applied.toFloat()
+    }
+
+    private fun buildOutputFilter(appliedGainDb: Float): String {
+        val filters = mutableListOf<String>()
+        if (abs(appliedGainDb) >= 0.01f) {
+            filters += "volume=${formatDecimal(appliedGainDb.toDouble())}dB"
+        }
+        if (config.limiterEnabled) {
+            val linearCeiling = 10.0.pow(config.limiterCeilingDb.toDouble() / 20.0)
+            filters += "alimiter=limit=${formatDecimal(linearCeiling)}:level=0:latency=1"
+        }
+        filters += "aresample=${MossFormer2Dsp.SAMPLE_RATE}"
+        return filters.joinToString(",")
     }
 
     private suspend fun executeFfmpeg(command: String, phase: String): FFmpegSession =
@@ -311,19 +495,33 @@ class VoiceCleanupProcessor(
         )
     }
 
+    private fun logAudioMetrics(stage: String, metrics: VoiceCleanupAudioMetrics) {
+        logInfo("audio_metrics", mapOf("stage" to stage) + metrics.diagnosticFields(stage))
+    }
+
     private fun logInfo(event: String, fields: Map<String, Any?> = emptyMap()) {
         DiagnosticLogger.info(TAG, event, taskId, fields = fields)
     }
+
+    private fun amplitudeToDb(amplitude: Double): Double? =
+        amplitude.takeIf { it > 0.0 && it.isFinite() }?.let { 20.0 * log10(it) }
+
+    private fun formatDecimal(value: Double): String = String.format(Locale.US, "%.6f", value)
 
     private data class InferenceMetrics(
         val segmentCount: Int,
         val inferenceMs: Long,
         val realTimeFactor: Double,
         val peakPssKb: Long,
+        val maskMetrics: VoiceCleanupMaskMetrics,
     )
 
     private companion object {
         const val TAG = "VoiceCleanupProcessor"
         const val PCM_SCALE = 32_768f
+        const val MIN_APPLIED_GAIN_DB = -24.0
+        const val MAX_APPLIED_GAIN_DB = 24.0
+        const val METRICS_FILTER = "loudnorm=I=-16:LRA=11:TP=-1:print_format=json"
+        val EMPTY_AUDIO_METRICS = VoiceCleanupAudioMetrics(null, null, null, null)
     }
 }

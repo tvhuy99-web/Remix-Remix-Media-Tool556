@@ -11,13 +11,20 @@ import kotlin.math.ln
  * This class is single-threaded. Returned feature and audio arrays are borrowed workspace buffers and
  * remain valid only until the next call that produces the same kind of output.
  */
-internal class MossFormer2Dsp {
+internal class MossFormer2Dsp(
+    val windowMode: VoiceCleanupWindowMode = VoiceCleanupWindowMode.BALANCED_10S,
+) {
+    val segmentSamples: Int = windowMode.segmentSamples
+    val strideSamples: Int = windowMode.strideSamples
+    val edgeDiscardSamples: Int = windowMode.edgeDiscardSamples
+    val frames: Int = windowMode.frames
+
     private val maskFft = BluesteinFft(FFT_SIZE)
     private val fbankFft = MixedRadixFft(FBANK_FFT_SIZE)
     private val maskWindow = symmetricHamming(FFT_SIZE)
     private val fbankWindow = symmetricHamming(FRAME_LENGTH)
     private val melWeights = buildMelWeights()
-    private val workspace = MossFormer2Workspace()
+    private val workspace = MossFormer2Workspace(segmentSamples, frames)
 
     private val fbankReal = FloatArray(FBANK_FFT_SIZE)
     private val fbankImag = FloatArray(FBANK_FFT_SIZE)
@@ -25,11 +32,11 @@ internal class MossFormer2Dsp {
     private val stftImag = FloatArray(FFT_SIZE)
 
     fun buildFeatures(samples: FloatArray): FloatArray {
-        require(samples.size == SEGMENT_SAMPLES) {
-            "MossFormer2 cần đúng $SEGMENT_SAMPLES mẫu cho mỗi đoạn"
+        require(samples.size == segmentSamples) {
+            "MossFormer2 cần đúng $segmentSamples mẫu cho mỗi đoạn ${windowMode.seconds} giây"
         }
         val base = workspace.featureBase
-        for (frame in 0 until FRAMES) {
+        for (frame in 0 until frames) {
             val start = frame * HOP_SIZE
             var mean = 0.0
             for (index in 0 until FRAME_LENGTH) mean += samples[start + index]
@@ -64,10 +71,10 @@ internal class MossFormer2Dsp {
 
         val delta = workspace.featureDelta
         val deltaDelta = workspace.featureDeltaDelta
-        computeDeltas(base, FRAMES, MEL_BINS, delta)
-        computeDeltas(delta, FRAMES, MEL_BINS, deltaDelta)
+        computeDeltas(base, frames, MEL_BINS, delta)
+        computeDeltas(delta, frames, MEL_BINS, deltaDelta)
         val features = workspace.features
-        for (frame in 0 until FRAMES) {
+        for (frame in 0 until frames) {
             val source = frame * MEL_BINS
             val target = frame * FEATURES
             base.copyInto(features, target, source, source + MEL_BINS)
@@ -79,15 +86,15 @@ internal class MossFormer2Dsp {
     }
 
     fun applyMask(samples: FloatArray, mask: FloatArray): FloatArray {
-        require(samples.size == SEGMENT_SAMPLES)
-        require(mask.size == FRAMES * BINS) {
-            "Mask MossFormer2 có ${mask.size} phần tử, cần ${FRAMES * BINS}"
+        require(samples.size == segmentSamples)
+        require(mask.size == frames * BINS) {
+            "Mask MossFormer2 có ${mask.size} phần tử, cần ${frames * BINS}"
         }
         workspace.clearSynthesis()
         val output = workspace.output
         val envelope = workspace.envelope
 
-        for (frame in 0 until FRAMES) {
+        for (frame in 0 until frames) {
             val start = frame * HOP_SIZE
             for (index in 0 until FFT_SIZE) {
                 stftReal[index] = samples[start + index] * maskWindow[index]
@@ -122,19 +129,41 @@ internal class MossFormer2Dsp {
         return output
     }
 
+    fun paddedLength(inputSamples: Long): Long {
+        require(inputSamples >= 0L)
+        if (inputSamples <= segmentSamples) return segmentSamples.toLong()
+        val extra = inputSamples - segmentSamples
+        val strides = (extra + strideSamples - 1L) / strideSamples
+        return segmentSamples + strides * strideSamples.toLong()
+    }
+
+    fun segmentCount(inputSamples: Long): Int {
+        val padded = paddedLength(inputSamples)
+        val count = 1L + (padded - segmentSamples) / strideSamples
+        require(count <= Int.MAX_VALUE)
+        return count.toInt()
+    }
+
+    fun retainedRange(segmentIndex: Int): IntRange {
+        require(segmentIndex >= 0)
+        return if (segmentIndex == 0) {
+            0 until segmentSamples - edgeDiscardSamples
+        } else {
+            edgeDiscardSamples until segmentSamples - edgeDiscardSamples
+        }
+    }
+
     internal fun windowSnapshot(): FloatArray = maskWindow.copyOf()
 
     companion object {
         const val SAMPLE_RATE = 48_000
-        const val SEGMENT_SAMPLES = 192_000
-        const val STRIDE_SAMPLES = 144_000
-        const val EDGE_DISCARD_SAMPLES = 24_000
         const val FFT_SIZE = 1_920
         const val HOP_SIZE = 384
-        const val FRAMES = 496
         const val BINS = FFT_SIZE / 2 + 1
         const val MEL_BINS = 60
         const val FEATURES = MEL_BINS * 3
+        const val REFERENCE_SEGMENT_SAMPLES = 4 * SAMPLE_RATE
+        const val REFERENCE_FRAMES = 496
 
         private const val FRAME_LENGTH = FFT_SIZE
         private const val FBANK_FFT_SIZE = 2_048
@@ -144,28 +173,12 @@ internal class MossFormer2Dsp {
         private const val FLOAT32_EPSILON = 1.1920928955078125e-7
         private const val MIN_ENVELOPE = 1.0e-8f
 
-        fun paddedLength(inputSamples: Long): Long {
-            require(inputSamples >= 0L)
-            if (inputSamples <= SEGMENT_SAMPLES) return SEGMENT_SAMPLES.toLong()
-            val extra = inputSamples - SEGMENT_SAMPLES
-            val strides = (extra + STRIDE_SAMPLES - 1L) / STRIDE_SAMPLES
-            return SEGMENT_SAMPLES + strides * STRIDE_SAMPLES
-        }
-
-        fun segmentCount(inputSamples: Long): Int {
-            val padded = paddedLength(inputSamples)
-            val count = 1L + (padded - SEGMENT_SAMPLES) / STRIDE_SAMPLES
-            require(count <= Int.MAX_VALUE)
-            return count.toInt()
-        }
-
-        fun retainedRange(segmentIndex: Int): IntRange {
-            require(segmentIndex >= 0)
-            return if (segmentIndex == 0) {
-                0 until SEGMENT_SAMPLES - EDGE_DISCARD_SAMPLES
-            } else {
-                EDGE_DISCARD_SAMPLES until SEGMENT_SAMPLES - EDGE_DISCARD_SAMPLES
+        fun frameCount(segmentSamples: Int): Int {
+            require(segmentSamples >= FFT_SIZE) { "Cửa sổ MossFormer2 quá ngắn" }
+            require((segmentSamples - FFT_SIZE) % HOP_SIZE == 0) {
+                "Cửa sổ MossFormer2 phải khớp hop $HOP_SIZE mẫu"
             }
+            return 1 + (segmentSamples - FFT_SIZE) / HOP_SIZE
         }
 
         internal fun computeDeltas(input: FloatArray, frames: Int, bins: Int): FloatArray =

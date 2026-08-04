@@ -1,7 +1,5 @@
 package com.aistudio.mediatool.core.ml
 
-import kotlin.math.ceil
-
 /** Resolves the actual model context after the decoded sample count is known. */
 internal data class VoiceCleanupWindowPlan(
     val mode: VoiceCleanupWindowMode,
@@ -35,7 +33,7 @@ internal data class VoiceCleanupWindowPlan(
                     strideSamples = aligned,
                     edgeDiscardSamples = 0,
                     fullContext = true,
-                    minimumAvailableRamBytes = scaledRam(mode, aligned),
+                    minimumAvailableRamBytes = mode.minimumAvailableRamBytes,
                 )
             }
             return fixed(mode)
@@ -49,10 +47,5 @@ internal data class VoiceCleanupWindowPlan(
             fullContext = false,
             minimumAvailableRamBytes = mode.minimumAvailableRamBytes,
         )
-
-        private fun scaledRam(mode: VoiceCleanupWindowMode, actualSamples: Int): Long {
-            val ratio = actualSamples.toDouble() / mode.segmentSamples.toDouble()
-            return ceil(mode.minimumAvailableRamBytes * maxOf(1.0, ratio)).toLong()
-        }
     }
 }

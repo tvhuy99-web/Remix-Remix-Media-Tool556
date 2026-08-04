@@ -10,7 +10,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,46 +17,30 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.SettingsManager
@@ -79,12 +62,7 @@ import com.aistudio.mediatool.ui.components.StickyProcessBar
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.ToolSectionCard
 import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
-import com.aistudio.mediatool.ui.components.formatDuration
 import java.io.File
-import kotlin.math.abs
-import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 
 private data class PendingStemStart(
     val uriText: String,
@@ -376,184 +354,6 @@ private fun StemDownloadSection(
             Text(state.message, color = MaterialTheme.colorScheme.error)
             Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
                 Text("Thử tải lại")
-            }
-        }
-    }
-}
-
-@Composable
-private fun StemMixerCard(items: List<StemMixerItem>) {
-    if (items.isEmpty()) return
-    val context = LocalContext.current
-    val players = remember(items.map { it.file.absolutePath }) {
-        items.associate { item ->
-            item.id to ExoPlayer.Builder(context).build().apply {
-                setMediaItem(MediaItem.fromUri(Uri.fromFile(item.file)))
-                prepare()
-            }
-        }
-    }
-    val volumes = remember(items.map { it.id }) {
-        mutableStateMapOf<String, Float>().apply { items.forEach { put(it.id, 1f) } }
-    }
-    val muted = remember(items.map { it.id }) {
-        mutableStateMapOf<String, Boolean>().apply { items.forEach { put(it.id, false) } }
-    }
-    var soloId by rememberSaveable(items.map { it.id }) { mutableStateOf<String?>(null) }
-    var isPlaying by remember { mutableStateOf(false) }
-    var positionMs by remember { mutableLongStateOf(0L) }
-    var durationMs by remember { mutableLongStateOf(1L) }
-    val referencePlayer = players[items.first().id]
-
-    fun applyVolumes() {
-        players.forEach { (id, player) ->
-            val audible = soloId?.let { it == id } ?: (muted[id] != true)
-            player.volume = if (audible) volumes[id]?.coerceIn(0f, 1f) ?: 1f else 0f
-        }
-    }
-
-    DisposableEffect(players) {
-        val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY) {
-                    durationMs = referencePlayer?.duration?.takeIf { it > 0L } ?: durationMs
-                } else if (state == Player.STATE_ENDED) {
-                    isPlaying = false
-                    positionMs = 0L
-                    players.values.forEach {
-                        it.pause()
-                        it.seekTo(0L)
-                    }
-                }
-            }
-        }
-        referencePlayer?.addListener(listener)
-        applyVolumes()
-        onDispose {
-            referencePlayer?.removeListener(listener)
-            players.values.forEach(ExoPlayer::release)
-        }
-    }
-
-    LaunchedEffect(soloId, muted.toMap(), volumes.toMap()) {
-        applyVolumes()
-    }
-
-    LaunchedEffect(isPlaying, players) {
-        while (isActive) {
-            if (isPlaying) {
-                val referencePosition = referencePlayer?.currentPosition ?: positionMs
-                positionMs = referencePosition.coerceAtLeast(0L)
-                val currentDuration = referencePlayer?.duration ?: 0L
-                if (currentDuration > 0L) durationMs = currentDuration
-                players.values.forEach { player ->
-                    if (abs(player.currentPosition - referencePosition) > 180L) {
-                        player.seekTo(referencePosition)
-                    }
-                }
-            }
-            delay(120L)
-        }
-    }
-
-    ToolSectionCard(title = "Nghe kết quả") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            IconButton(
-                onClick = {
-                    if (isPlaying) {
-                        players.values.forEach(ExoPlayer::pause)
-                        isPlaying = false
-                    } else {
-                        applyVolumes()
-                        players.values.forEach { player ->
-                            player.seekTo(positionMs)
-                            player.play()
-                        }
-                        isPlaying = true
-                    }
-                },
-            ) {
-                Icon(
-                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) {
-                        "Tạm dừng các phần âm thanh"
-                    } else {
-                        "Phát các phần âm thanh"
-                    },
-                )
-            }
-            Slider(
-                value = positionMs.coerceAtMost(durationMs).toFloat(),
-                onValueChange = {
-                    positionMs = it.toLong()
-                    players.values.forEach { player -> player.seekTo(positionMs) }
-                },
-                valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                modifier = Modifier
-                    .weight(1f)
-                    .semantics {
-                        contentDescription = "Vị trí nghe kết quả"
-                        stateDescription = "${formatDuration(positionMs)} trên ${formatDuration(durationMs)}"
-                    },
-            )
-        }
-        Text(
-            "${formatDuration(positionMs)} / ${formatDuration(durationMs)}",
-            modifier = Modifier.clearAndSetSemantics { },
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        items.forEach { item ->
-            val isSolo = soloId == item.id
-            val isMuted = muted[item.id] == true
-            val volume = volumes[item.id] ?: 1f
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    item.label,
-                    modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
-                    fontWeight = FontWeight.Medium,
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    FilterChip(
-                        selected = isSolo,
-                        onClick = { soloId = if (isSolo) null else item.id },
-                        label = { Text("Solo") },
-                        modifier = Modifier
-                            .weight(1f)
-                            .semantics {
-                                contentDescription = "Solo ${item.label.lowercase()}"
-                                stateDescription = if (isSolo) "Đang bật" else "Đang tắt"
-                            },
-                    )
-                    FilterChip(
-                        selected = isMuted,
-                        onClick = { muted[item.id] = !isMuted },
-                        label = { Text("Tắt tiếng") },
-                        modifier = Modifier
-                            .weight(1f)
-                            .semantics {
-                                contentDescription = "Tắt tiếng ${item.label.lowercase()}"
-                                stateDescription = if (isMuted) "Đang bật" else "Đang tắt"
-                            },
-                    )
-                }
-                Slider(
-                    value = volume,
-                    onValueChange = { volumes[item.id] = it },
-                    valueRange = 0f..1f,
-                    modifier = Modifier.semantics {
-                        contentDescription = "Âm lượng ${item.label.lowercase()}"
-                        stateDescription = "${(volume * 100f).roundToInt()} phần trăm"
-                    },
-                )
             }
         }
     }

@@ -239,9 +239,8 @@ internal class SynchronizedStemMixerController(
                 )
             }
         } finally {
-            if (sessionId >= 0L) {
-                activeSessionId.compareAndSet(sessionId, -1L)
-                if (!isCurrent(currentGeneration)) FFmpegKit.cancel(sessionId)
+            if (sessionId >= 0L && activeSessionId.compareAndSet(sessionId, -1L)) {
+                FFmpegKit.cancel(sessionId)
             }
             if (pipe != null) {
                 activePipe.compareAndSet(pipe, null)
@@ -254,7 +253,7 @@ internal class SynchronizedStemMixerController(
             if (isCurrent(currentGeneration)) {
                 _isPlaying.value = false
                 synchronized(lock) {
-                    if (worker?.isActive != true) worker = null
+                    worker = null
                 }
             }
         }

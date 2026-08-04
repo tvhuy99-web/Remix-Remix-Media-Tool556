@@ -60,4 +60,21 @@ class VoiceCleanupMetricsTest {
         assertEquals(6L, metrics.valueCount)
         assertEquals(0.6, metrics.maximum, 1e-5)
     }
+
+    @Test
+    fun effectiveMaskMetricsReflectSelectedStrength() {
+        val accumulator = VoiceCleanupMaskAccumulator()
+        accumulator.addEffectiveFrames(
+            values = floatArrayOf(0.2f, 0.4f, 1.2f),
+            frameRange = 0..0,
+            bins = 3,
+            cleanupStrength = 0.5f,
+        )
+
+        val metrics = accumulator.snapshot()
+
+        assertEquals(0.6, metrics.minimum, 1e-5)
+        assertEquals(1.1, metrics.maximum, 1e-5)
+        assertEquals(0.8, metrics.mean, 1e-5)
+    }
 }

@@ -78,6 +78,7 @@ class VoiceCleanupService : Service() {
                 windowMode = VoiceCleanupWindowMode.fromName(
                     intent.getStringExtra(EXTRA_WINDOW_MODE),
                 ),
+                cleanupStrengthPercent = intent.getIntExtra(EXTRA_CLEANUP_STRENGTH, 65),
                 loudnessMode = VoiceCleanupLoudnessMode.fromName(
                     intent.getStringExtra(EXTRA_LOUDNESS_MODE),
                 ),
@@ -444,6 +445,7 @@ class VoiceCleanupService : Service() {
         const val EXTRA_URI = "extra_uri"
         const val EXTRA_MODEL_FILE = "extra_model_file"
         const val EXTRA_WINDOW_MODE = "extra_window_mode"
+        const val EXTRA_CLEANUP_STRENGTH = "extra_cleanup_strength"
         const val EXTRA_LOUDNESS_MODE = "extra_loudness_mode"
         const val EXTRA_TARGET_LUFS = "extra_target_lufs"
         const val EXTRA_OUTPUT_GAIN_DB = "extra_output_gain_db"

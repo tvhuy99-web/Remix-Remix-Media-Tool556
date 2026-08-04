@@ -2,7 +2,7 @@
 
 ## Phạm vi
 
-Ứng dụng cung cấp tính năng **Làm sạch giọng** chạy ngoại tuyến bằng ONNX Runtime CPU. Người dùng chọn độ dài ngữ cảnh AI, cách giữ âm lượng và limiter; mọi xử lý vẫn dùng cùng một model MossFormer2 có trục thời gian động.
+Ứng dụng cung cấp tính năng **Làm sạch giọng** chạy ngoại tuyến bằng ONNX Runtime CPU. Người dùng chọn độ dài ngữ cảnh AI, mức làm sạch, cách giữ âm lượng và limiter; mọi xử lý vẫn dùng cùng một model MossFormer2 có trục thời gian động.
 
 ## Model đã ghim
 
@@ -18,18 +18,40 @@ Model không nằm trong APK. Downloader hỗ trợ tiếp tục tải và chỉ
 
 ## Ba chế độ ngữ cảnh
 
-- **Tương thích, 4 giây:** hàng rào RAM khả dụng 768 MiB.
 - **Cân bằng, 10 giây:** mặc định, hàng rào RAM khả dụng 1,5 GiB.
-- **Tối đa, 15 giây:** dành cho thiết bị rất mạnh, hàng rào RAM khả dụng 3 GiB.
+- **Chất lượng cao, 20 giây:** hàng rào RAM khả dụng 2,5 GiB.
+- **Tối đa, 30 giây:** dành cho thiết bị rất mạnh, hàng rào RAM khả dụng 4 GiB.
 
-Tệp ngắn hơn giới hạn của chế độ được chạy một lượt với toàn bộ ngữ cảnh và không bỏ mép. Chế độ Tối đa cho phép one-pass tới 20 giây. Tệp dài hơn được chia theo cửa sổ đã chọn với stride 75% và bỏ 1/8 cửa sổ ở mỗi mép nối.
+Chế độ 4 giây đã bị loại khỏi giao diện. Hình học 4 giây chỉ còn được giữ làm fixture tham chiếu cho golden parity test và metadata model.
 
-Kích thước model được tính động:
+Tệp ngắn hơn giới hạn của chế độ được chạy một lượt với toàn bộ ngữ cảnh và không bỏ mép. Tệp dài hơn được chia theo cửa sổ đã chọn với stride 75% và bỏ 1/8 cửa sổ ở mỗi mép nối.
 
-- 4 giây: `[1, 496, 180]` → `[1, 496, 961]`.
+Kích thước model theo cửa sổ cố định:
+
 - 10 giây: `[1, 1246, 180]` → `[1, 1246, 961]`.
-- 15 giây: `[1, 1871, 180]` → `[1, 1871, 961]`.
-- One-pass 20 giây dùng số frame được căn theo hop 384 mẫu.
+- 20 giây: `[1, 2496, 180]` → `[1, 2496, 961]`.
+- 30 giây: `[1, 3746, 180]` → `[1, 3746, 961]`.
+
+One-pass cho tệp ngắn dùng số frame được căn theo hop 384 mẫu, nên không cấp phát toàn bộ cửa sổ đã chọn khi tệp ngắn hơn.
+
+## Mức làm sạch 1–100
+
+Thanh **Mức làm sạch** điều chỉnh trực tiếp gain phổ được tạo từ mask MossFormer2. Nó không phải thanh âm lượng.
+
+Công thức:
+
+```text
+effective_mask = 1 + strength × (model_mask - 1)
+strength = cleanup_strength_percent / 100
+```
+
+- `1%` gần passthrough và chỉ áp một phần rất nhỏ tác động của model.
+- `65%` là mặc định cân bằng.
+- `100%` áp toàn bộ mask MossFormer2 và là mức lọc mạnh nhất có thể trong pipeline hiện tại.
+
+Mask không bị clamp về khoảng 0–1. Giá trị lớn hơn 1 do model tạo ra vẫn được nội suy đúng, tránh làm thay đổi contract của model.
+
+Diagnostics và thẻ phân tích hiển thị mask hiệu dụng đã thực sự áp lên âm thanh, cùng `cleanup_strength_percent` và `cleanup_strength`.
 
 ## Contract DSP
 
@@ -58,8 +80,8 @@ Unit test golden đối chiếu các frame đại diện với `torchaudio.compl
 1. FFmpeg giải mã audio hoặc video thành PCM float32 mono 48 kHz.
 2. Đo RMS, sample peak, true peak và integrated LUFS của bản gốc.
 3. Chọn kế hoạch one-pass hoặc chia đoạn sau khi biết chính xác số mẫu.
-4. Tạo fbank, chạy ONNX Runtime CPU và áp mask lên phổ của waveform gốc.
-5. Chỉ thống kê mask trên frame có dữ liệu thật và có tâm nằm trong vùng đầu ra được giữ lại; frame padding bị loại.
+4. Tạo fbank, chạy ONNX Runtime CPU, nội suy mask theo mức làm sạch và áp lên phổ waveform gốc.
+5. Chỉ thống kê mask hiệu dụng trên frame có dữ liệu thật và có tâm nằm trong vùng đầu ra được giữ lại; frame padding bị loại.
 6. Đo sample jump và chênh RMS ở mỗi điểm nối, ghi cảnh báo khi vượt ngưỡng.
 7. Ghi PCM kết quả theo luồng và xác minh đúng số mẫu nguồn.
 8. Đo lại PCM sau AI, tính gain cố định, áp limiter khi được bật, mã hóa và đo file cuối.
@@ -91,8 +113,9 @@ Mỗi tác vụ ghi:
 
 - Audio metrics cho `source`, `after_ai` và `final_output`.
 - Kế hoạch cửa sổ thực tế, số frame, stride, edge discard, full-context và RAM yêu cầu.
-- Mask min, max, mean, p10, p50, p90, số frame và số giá trị hợp lệ.
-- Tỷ lệ mask dưới 0,9, dưới 0,5, gần 1 và ngoài khoảng 0 đến 1.
+- `cleanup_strength_percent` và `cleanup_strength`.
+- Effective mask min, max, mean, p10, p50, p90, số frame và số giá trị hợp lệ.
+- Tỷ lệ effective mask dưới 0,9, dưới 0,5, gần 1 và ngoài khoảng 0 đến 1.
 - Số frame padding đã bị loại khỏi thống kê.
 - Dither A/B trên segment đầu.
 - Seam count, sample jump, relative jump dB và RMS delta dB.
@@ -124,8 +147,8 @@ Workflow pull request phải đạt toàn bộ:
 - Kiểm tra APK và ABI arm64-v8a.
 - Xác minh chữ ký APK.
 - Android Lint.
-- Toàn bộ unit test, gồm parity frontend, dither tái lập, hình học one-pass/chia đoạn, mask bỏ padding, seam metrics và hủy tác vụ.
+- Toàn bộ unit test, gồm parity frontend, dither tái lập, nội suy strength, hình học one-pass/chia đoạn, mask bỏ padding, seam metrics và hủy tác vụ.
 
 ## Xác minh còn cần trên thiết bị
 
-CI không nghe được âm thanh và không mô phỏng được nhiệt hoặc áp lực RAM của điện thoại. Trước khi gộp cần chạy cùng một bộ audio thật trên điện thoại cao cấp ở cả ba chế độ để kiểm tra peak PSS, nhiệt, tốc độ, chất lượng phụ âm và các điểm nối.
+CI không nghe được âm thanh và không mô phỏng được nhiệt hoặc áp lực RAM của điện thoại. Cửa sổ 30 giây vượt xa dải thời gian đã được kiểm tra công khai của bản ONNX, nên PR tiếp tục ở trạng thái draft cho tới khi chạy cùng một bộ audio thật trên điện thoại cao cấp ở cả ba chế độ và nhiều mức strength để kiểm tra peak PSS, nhiệt, tốc độ, chất lượng phụ âm và các điểm nối.

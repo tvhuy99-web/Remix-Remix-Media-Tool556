@@ -71,6 +71,20 @@ class VoiceCleanupService : Service() {
             failAndStop("Thiếu tệp đầu vào hoặc model MossFormer2")
             return
         }
+        val config = runCatching {
+            VoiceCleanupConfig(
+                loudnessMode = VoiceCleanupLoudnessMode.fromName(
+                    intent.getStringExtra(EXTRA_LOUDNESS_MODE),
+                ),
+                targetLufs = intent.getFloatExtra(EXTRA_TARGET_LUFS, -16f),
+                outputGainDb = intent.getFloatExtra(EXTRA_OUTPUT_GAIN_DB, 0f),
+                limiterEnabled = intent.getBooleanExtra(EXTRA_LIMITER_ENABLED, true),
+                limiterCeilingDb = intent.getFloatExtra(EXTRA_LIMITER_CEILING_DB, -1f),
+            )
+        }.getOrElse { error ->
+            failAndStop(error.message ?: "Thiết lập âm lượng không hợp lệ")
+            return
+        }
         currentTaskId = UUID.randomUUID().toString()
         stopping = false
 
@@ -115,9 +129,14 @@ class VoiceCleanupService : Service() {
                         "duration_ms" to durationMs,
                         "model_bytes" to modelFile.length(),
                         "source_id" to sourceId,
-                    ),
+                    ) + config.diagnosticFields(),
                 )
-                val activeProcessor = VoiceCleanupProcessor(this@VoiceCleanupService, modelFile, taskId)
+                val activeProcessor = VoiceCleanupProcessor(
+                    context = this@VoiceCleanupService,
+                    modelFile = modelFile,
+                    taskId = taskId,
+                    config = config,
+                )
                 processor = activeProcessor
                 var lastProgressBucket = -1
                 activeProcessor.cleanup(uri).collect { state ->
@@ -245,10 +264,12 @@ class VoiceCleanupService : Service() {
     }
 
     private fun releaseProcessingWakeLock() {
-        val lock = processingWakeLock
+        val lock = processingWakeLock ?: return
         processingWakeLock = null
-        if (lock?.isHeld == true) runCatching(lock::release)
-        DiagnosticLogger.info(TAG, "wake_lock_released", currentTaskId)
+        if (lock.isHeld) {
+            runCatching(lock::release)
+            DiagnosticLogger.info(TAG, "wake_lock_released", currentTaskId)
+        }
     }
 
     private fun stopProcessing(message: String, status: PersistentTaskStatus) {
@@ -383,6 +404,11 @@ class VoiceCleanupService : Service() {
         const val ACTION_STOP = "com.aistudio.mediatool.action.STOP_VOICE_CLEANUP"
         const val EXTRA_URI = "extra_uri"
         const val EXTRA_MODEL_FILE = "extra_model_file"
+        const val EXTRA_LOUDNESS_MODE = "extra_loudness_mode"
+        const val EXTRA_TARGET_LUFS = "extra_target_lufs"
+        const val EXTRA_OUTPUT_GAIN_DB = "extra_output_gain_db"
+        const val EXTRA_LIMITER_ENABLED = "extra_limiter_enabled"
+        const val EXTRA_LIMITER_CEILING_DB = "extra_limiter_ceiling_db"
         private const val MAX_DURATION_MS = 3L * 60L * 60L * 1_000L
         private const val STORAGE_RESERVE_BYTES = 256L * 1024L * 1024L
         private const val MIN_AVAILABLE_RAM_BYTES = 768L * 1024L * 1024L

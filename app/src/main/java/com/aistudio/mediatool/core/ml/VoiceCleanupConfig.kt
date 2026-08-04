@@ -12,24 +12,34 @@ enum class VoiceCleanupLoudnessMode {
     }
 }
 
+enum class VoiceCleanupDitherMode(val amplitudeLsb: Float) {
+    OFF(0f),
+    KALDI_1_LSB(1f),
+    ;
+}
+
 enum class VoiceCleanupWindowMode(
     val seconds: Int,
     val segmentSamples: Int,
+    val onePassLimitSamples: Int,
     val minimumAvailableRamBytes: Long,
 ) {
     COMPATIBILITY_4S(
         seconds = 4,
         segmentSamples = 4 * MossFormer2Dsp.SAMPLE_RATE,
+        onePassLimitSamples = 4 * MossFormer2Dsp.SAMPLE_RATE,
         minimumAvailableRamBytes = 768L * 1024L * 1024L,
     ),
     BALANCED_10S(
         seconds = 10,
         segmentSamples = 10 * MossFormer2Dsp.SAMPLE_RATE,
+        onePassLimitSamples = 10 * MossFormer2Dsp.SAMPLE_RATE,
         minimumAvailableRamBytes = 1_536L * 1024L * 1024L,
     ),
     MAXIMUM_15S(
         seconds = 15,
         segmentSamples = 15 * MossFormer2Dsp.SAMPLE_RATE,
+        onePassLimitSamples = 20 * MossFormer2Dsp.SAMPLE_RATE,
         minimumAvailableRamBytes = 2_304L * 1024L * 1024L,
     ),
     ;
@@ -51,6 +61,7 @@ enum class VoiceCleanupWindowMode(
 
 data class VoiceCleanupConfig(
     val windowMode: VoiceCleanupWindowMode = VoiceCleanupWindowMode.BALANCED_10S,
+    val ditherMode: VoiceCleanupDitherMode = VoiceCleanupDitherMode.KALDI_1_LSB,
     val loudnessMode: VoiceCleanupLoudnessMode = VoiceCleanupLoudnessMode.MATCH_SOURCE,
     val targetLufs: Float = -16f,
     val outputGainDb: Float = 0f,
@@ -68,9 +79,12 @@ data class VoiceCleanupConfig(
     internal fun diagnosticFields(): Map<String, Any?> = mapOf(
         "window_mode" to windowMode.name,
         "window_seconds" to windowMode.seconds,
-        "segment_samples" to windowMode.segmentSamples,
-        "stride_samples" to windowMode.strideSamples,
-        "feature_frames" to windowMode.frames,
+        "configured_segment_samples" to windowMode.segmentSamples,
+        "configured_stride_samples" to windowMode.strideSamples,
+        "configured_feature_frames" to windowMode.frames,
+        "one_pass_limit_samples" to windowMode.onePassLimitSamples,
+        "dither_mode" to ditherMode.name,
+        "dither_amplitude_lsb" to ditherMode.amplitudeLsb,
         "loudness_mode" to loudnessMode.name,
         "target_lufs" to targetLufs,
         "output_gain_db" to outputGainDb,

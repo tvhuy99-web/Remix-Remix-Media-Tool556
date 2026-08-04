@@ -130,16 +130,17 @@ internal class MossFormer2Dsp(
     }
 
     fun paddedLength(inputSamples: Long): Long {
-        require(inputSamples >= 0L)
-        if (inputSamples <= segmentSamples) return segmentSamples.toLong()
-        val extra = inputSamples - segmentSamples
-        val strides = (extra + strideSamples - 1L) / strideSamples
-        return segmentSamples + strides * strideSamples.toLong()
+        val count = segmentCount(inputSamples)
+        return segmentSamples + (count - 1L) * strideSamples
     }
 
     fun segmentCount(inputSamples: Long): Int {
-        val padded = paddedLength(inputSamples)
-        val count = 1L + (padded - segmentSamples) / strideSamples
+        require(inputSamples >= 0L)
+        val firstRetainedSamples = segmentSamples - edgeDiscardSamples
+        if (inputSamples <= firstRetainedSamples) return 1
+        val remaining = inputSamples - firstRetainedSamples
+        val additional = (remaining + strideSamples - 1L) / strideSamples
+        val count = 1L + additional
         require(count <= Int.MAX_VALUE)
         return count.toInt()
     }

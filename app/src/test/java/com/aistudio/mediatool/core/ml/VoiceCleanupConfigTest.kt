@@ -6,10 +6,11 @@ import org.junit.Test
 
 class VoiceCleanupConfigTest {
     @Test
-    fun defaultsUseBalancedWindowAndProtectClipping() {
+    fun defaultsUseBalancedWindowUpstreamDitherAndProtectClipping() {
         val config = VoiceCleanupConfig()
 
         assertEquals(VoiceCleanupWindowMode.BALANCED_10S, config.windowMode)
+        assertEquals(VoiceCleanupDitherMode.KALDI_1_LSB, config.ditherMode)
         assertEquals(VoiceCleanupLoudnessMode.MATCH_SOURCE, config.loudnessMode)
         assertEquals(0f, config.outputGainDb)
         assertTrue(config.limiterEnabled)
@@ -39,6 +40,7 @@ class VoiceCleanupConfigTest {
                 left.minimumAvailableRamBytes < right.minimumAvailableRamBytes
             },
         )
+        assertEquals(20 * MossFormer2Dsp.SAMPLE_RATE, VoiceCleanupWindowMode.MAXIMUM_15S.onePassLimitSamples)
     }
 
     @Test

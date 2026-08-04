@@ -28,6 +28,7 @@ class MossFormer2WorkspaceTest {
         for (mode in VoiceCleanupWindowMode.entries) {
             val workspace = MossFormer2Workspace(mode.segmentSamples, mode.frames)
 
+            assertEquals(mode.segmentSamples, workspace.ditheredInput.size)
             assertEquals(mode.frames * MossFormer2Dsp.MEL_BINS, workspace.featureBase.size)
             assertEquals(workspace.featureBase.size, workspace.featureDelta.size)
             assertEquals(workspace.featureBase.size, workspace.featureDeltaDelta.size)

@@ -12,5 +12,8 @@ sealed class VoiceCleanupState {
         val phase: String,
     ) : VoiceCleanupState()
 
-    data class Success(val outputFile: File) : VoiceCleanupState()
+    data class Success(
+        val outputFile: File,
+        val report: VoiceCleanupReport? = null,
+    ) : VoiceCleanupState()
 }

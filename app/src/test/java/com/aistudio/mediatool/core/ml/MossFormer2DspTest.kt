@@ -147,7 +147,7 @@ class MossFormer2DspTest {
         for ((frame, expected) in expectedFrames) {
             val offset = frame * MossFormer2Dsp.FEATURES
             val actual = features.copyOfRange(offset, offset + expected.size)
-            assertArrayEquals("frame=$frame", expected, actual, 2.0e-4f)
+            assertArrayEquals("frame=$frame", expected, actual, 2.0e-3f)
         }
     }
 

@@ -15,6 +15,7 @@ object SettingsManager {
     private const val KEY_STEM_MODEL_TWO = "stem_model_two"
     private const val KEY_STEM_MODEL_FOUR = "stem_model_four"
     private const val KEY_STEM_LOW_MEMORY_FALLBACK_TASK = "stem_low_memory_fallback_task"
+    private const val KEY_STEM_MDX_DENOISE = "stem_mdx_denoise"
 
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -42,6 +43,12 @@ object SettingsManager {
 
     fun setStemLowMemoryFallbackTaskId(context: Context, taskId: String) =
         prefs(context).edit().putString(KEY_STEM_LOW_MEMORY_FALLBACK_TASK, taskId).apply()
+
+    fun isStemMdxDenoiseEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_STEM_MDX_DENOISE, false)
+
+    fun setStemMdxDenoiseEnabled(context: Context, enabled: Boolean) =
+        prefs(context).edit().putBoolean(KEY_STEM_MDX_DENOISE, enabled).apply()
 
     fun getFadeDurationSec(context: Context): Int = prefs(context).getInt(KEY_FADE_DURATION, 3).coerceIn(0, 10)
     fun setFadeDurationSec(context: Context, value: Int) = prefs(context).edit().putInt(KEY_FADE_DURATION, value.coerceIn(0, 10)).apply()

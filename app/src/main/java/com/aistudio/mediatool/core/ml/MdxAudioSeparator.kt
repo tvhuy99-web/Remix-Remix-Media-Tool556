@@ -78,6 +78,8 @@ class MdxAudioSeparator(
         val temporaryFiles = listOf(tempRawMix, tempRawVocals, tempRawMusic)
         val createdOutputs = mutableListOf<File>()
         var outputsCommitted = false
+        val denoiseEnabled = SettingsManager.isStemMdxDenoiseEnabled(context)
+        var seamFrames: List<Long> = emptyList()
 
         logInfo(
             event = "mdx_pipeline_start",
@@ -94,6 +96,7 @@ class MdxAudioSeparator(
                 "generated_frames" to contract.generatedFrames,
                 "stride_frames" to contract.strideFrames,
                 "overlap_frames" to contract.overlapFrames,
+                "denoise_enabled" to denoiseEnabled,
             ),
         )
 
@@ -160,6 +163,7 @@ class MdxAudioSeparator(
                 }
                 require(chunksLong in 1..Int.MAX_VALUE.toLong()) { "Tệp quá dài cho pipeline MDX" }
                 val chunkCount = chunksLong.toInt()
+                seamFrames = (1 until chunkCount).map { index -> index.toLong() * strideFrames }
                 val window = MdxDsp.buildCrossfadeWindow(generatedFrames, contract.overlapFrames)
                 val dsp = MdxDsp(contract)
                 val chunkLeft = FloatArray(contract.chunkFrames)
@@ -212,13 +216,24 @@ class MdxAudioSeparator(
                             val stftElapsed = SystemClock.elapsedRealtime() - stftStartedAt
                             val inferenceStartedAt = SystemClock.elapsedRealtime()
 
-                            // LiteRT copies the input during writeInput. Drop the Java reference before
-                            // native inference so the previous ~12 MiB tensor can be reclaimed before
-                            // readOutput materializes the next one.
-                            engine.writeInput(tensorSlot.borrow())
-                            tensorSlot.release()
-                            engine.execute()
-                            val outputTensor = engine.readOutput()
+                            val modelInput = tensorSlot.borrow()
+                            engine.writeInput(modelInput)
+                            val outputTensor = if (denoiseEnabled) {
+                                engine.execute()
+                                val positiveOutput = engine.readOutput()
+                                coroutineContext.ensureActive()
+                                check(!cancelRequested.get()) { "Đã hủy xử lý" }
+                                for (index in modelInput.indices) modelInput[index] = -modelInput[index]
+                                engine.writeInput(modelInput)
+                                tensorSlot.release()
+                                engine.execute()
+                                val negativeOutput = engine.readOutput()
+                                MdxDenoise.combineInPlace(positiveOutput, negativeOutput)
+                            } else {
+                                tensorSlot.release()
+                                engine.execute()
+                                engine.readOutput()
+                            }
                             val inferenceElapsed = SystemClock.elapsedRealtime() - inferenceStartedAt
                             coroutineContext.ensureActive()
                             check(!cancelRequested.get()) { "Đã hủy xử lý" }
@@ -249,6 +264,7 @@ class MdxAudioSeparator(
                                     "write_ms" to writeElapsed,
                                     "elapsed_ms" to SystemClock.elapsedRealtime() - chunkStartedAt,
                                     "effective_backend" to engine.backend,
+                                    "inference_passes" to if (denoiseEnabled) 2 else 1,
                                 ) + memoryFields(),
                             )
                         }
@@ -262,13 +278,43 @@ class MdxAudioSeparator(
             checkpoint("mdx_residual", 0.82f)
             emit(SeparationState.Progress(0.82f))
             val residualStartedAt = SystemClock.elapsedRealtime()
-            createResidualInstrumental(tempRawMix, tempRawVocals, tempRawMusic, totalFrames)
+            StemPcmToolkit.createResidual(
+                mixFile = tempRawMix,
+                vocalsFile = tempRawVocals,
+                destination = tempRawMusic,
+                channels = channels,
+                cancellationCheck = {
+                    if (cancelRequested.get()) throw CancellationException("Đã hủy xử lý")
+                },
+            )
             require(tempRawMusic.length() == totalFrames * bytesPerFrame) {
                 "Đầu ra instrumental PCM sai độ dài"
             }
             logInfo(
                 event = "mdx_residual_complete",
                 fields = mapOf("elapsed_ms" to SystemClock.elapsedRealtime() - residualStartedAt),
+            )
+
+            val qualityStartedAt = SystemClock.elapsedRealtime()
+            val qualityReport = StemPcmToolkit.analyze(
+                referenceMix = tempRawMix,
+                stemFiles = linkedMapOf(
+                    "vocals" to tempRawVocals,
+                    "music" to tempRawMusic,
+                ),
+                reconstructionStemNames = setOf("vocals", "music"),
+                channels = channels,
+                seamFrames = seamFrames,
+            )
+            StemPcmToolkit.logDiagnostics(
+                component = TAG,
+                taskId = taskId,
+                modelId = model.id,
+                report = qualityReport,
+                analysisElapsedMs = SystemClock.elapsedRealtime() - qualityStartedAt,
+            )
+            val outputFilterArguments = StemPcmToolkit.buildOutputFilterArguments(
+                sharedGainDb = qualityReport.sharedGainDb,
             )
 
             checkpoint("mdx_encoding", 0.88f)
@@ -279,10 +325,10 @@ class MdxAudioSeparator(
             val musicOutput = FileExportManager.resultFile(context, "music", extension).also(createdOutputs::add)
             val vocalsCommand =
                 "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawVocals.absolutePath}\" " +
-                    "$encodingArguments \"${vocalsOutput.absolutePath}\""
+                    "$outputFilterArguments $encodingArguments \"${vocalsOutput.absolutePath}\""
             val musicCommand =
                 "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawMusic.absolutePath}\" " +
-                    "$encodingArguments \"${musicOutput.absolutePath}\""
+                    "$outputFilterArguments $encodingArguments \"${musicOutput.absolutePath}\""
             val vocalsEncode = executeFfmpeg(vocalsCommand, "mdx_encode_vocals")
             val musicEncode = executeFfmpeg(musicCommand, "mdx_encode_music")
             require(ReturnCode.isSuccess(vocalsEncode.returnCode) && ReturnCode.isSuccess(musicEncode.returnCode)) {
@@ -298,6 +344,8 @@ class MdxAudioSeparator(
                     "output_count" to createdOutputs.size,
                     "output_bytes" to createdOutputs.sumOf(File::length),
                     "format" to extension,
+                    "denoise_enabled" to denoiseEnabled,
+                    "shared_output_gain_db" to qualityReport.sharedGainDb,
                     "elapsed_ms" to SystemClock.elapsedRealtime() - pipelineStartedAt,
                 ) + memoryFields(),
             )

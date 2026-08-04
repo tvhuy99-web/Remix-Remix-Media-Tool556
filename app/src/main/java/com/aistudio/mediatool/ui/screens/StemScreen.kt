@@ -65,6 +65,7 @@ import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
 import com.aistudio.mediatool.core.ml.DownloadState
 import com.aistudio.mediatool.core.ml.SeparationState
+import com.aistudio.mediatool.core.ml.StemInferenceBackend
 import com.aistudio.mediatool.core.ml.StemMode
 import com.aistudio.mediatool.core.ml.StemModelDescriptor
 import com.aistudio.mediatool.core.ml.StemModelRegistry
@@ -110,6 +111,9 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     var selectedAudioUriText by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedAudioName by rememberSaveable { mutableStateOf<String?>(null) }
     var modeIndex by rememberSaveable { mutableStateOf(SettingsManager.getStemModeIndex(context)) }
+    var mdxDenoiseEnabled by rememberSaveable {
+        mutableStateOf(SettingsManager.isStemMdxDenoiseEnabled(context))
+    }
     var separationProgress by remember { mutableFloatStateOf(0f) }
     var result by remember { mutableStateOf<SeparationState.Success?>(null) }
 
@@ -278,6 +282,29 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                     },
                     modifier = Modifier.fillMaxWidth(),
                 )
+
+                if (selectedModel.backend == StemInferenceBackend.MDX_LITERT) {
+                    CompactDropdown(
+                        label = "Chất lượng UVR",
+                        values = listOf("Tiêu chuẩn", "Làm sạch kỹ"),
+                        selectedIndex = if (mdxDenoiseEnabled) 1 else 0,
+                        onSelected = { index ->
+                            mdxDenoiseEnabled = index == 1
+                            SettingsManager.setStemMdxDenoiseEnabled(context, mdxDenoiseEnabled)
+                            resetResult()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        if (mdxDenoiseEnabled) {
+                            "Chạy hai lượt đối xứng để giảm nhiễu, thời gian xử lý gần gấp đôi."
+                        } else {
+                            "Một lượt xử lý, nhanh hơn và dùng ít điện hơn."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
 
                 StemDownloadSection(
                     selectedModel = selectedModel,

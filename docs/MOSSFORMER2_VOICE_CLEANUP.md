@@ -117,14 +117,14 @@ Mỗi tác vụ ghi:
 
 ## Xác minh
 
-GitHub Actions run #222 đã đạt toàn bộ trên nhánh `agent/voice-cleanup-window-modes`:
+GitHub Actions đã đạt toàn bộ trên nhánh `agent/voice-cleanup-window-modes`:
 
 - Xác minh cấu trúc dự án.
 - Build APK debug.
 - Kiểm tra APK và ABI arm64-v8a.
 - Xác minh chữ ký APK.
 - Android Lint.
-- 105 unit test, gồm parity frontend, dither tái lập, hình học one-pass/chia đoạn, mask bỏ padding, seam metrics và hủy tác vụ.
+- Toàn bộ unit test, gồm parity frontend, dither tái lập, hình học one-pass/chia đoạn, mask bỏ padding, seam metrics và hủy tác vụ.
 
 ## Xác minh còn cần trên thiết bị
 

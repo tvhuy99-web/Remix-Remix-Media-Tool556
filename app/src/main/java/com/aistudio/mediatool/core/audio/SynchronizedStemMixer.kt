@@ -3,7 +3,6 @@ package com.aistudio.mediatool.core.audio
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaMetadataRetriever
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
@@ -399,7 +398,6 @@ internal class SynchronizedStemMixerController(
             )
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setBufferSizeInBytes(bufferBytes)
-            .setSessionId(AudioManager.AUDIO_SESSION_ID_GENERATE)
             .build()
             .also { track -> require(track.state == AudioTrack.STATE_INITIALIZED) }
     }

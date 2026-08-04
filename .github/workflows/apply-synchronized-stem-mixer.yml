@@ -1,0 +1,47 @@
+name: Apply synchronized stem mixer
+
+on:
+  push:
+    branches:
+      - agent/stem-quality-hardening
+    paths:
+      - scripts/apply_synchronized_stem_mixer.py
+      - .github/workflows/apply-synchronized-stem-mixer.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/apply_synchronized_stem_mixer.py
+      - .github/workflows/apply-synchronized-stem-mixer.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/stem-quality-hardening
+          fetch-depth: 0
+
+      - name: Apply guarded mixer wiring
+        run: python3 scripts/apply_synchronized_stem_mixer.py
+
+      - name: Verify project structure
+        run: python3 scripts/verify_project.py
+
+      - name: Commit generated changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            app/src/main/java/com/aistudio/mediatool/core/audio/SynchronizedStemMixer.kt \
+            app/src/main/java/com/aistudio/mediatool/ui/screens/SynchronizedStemMixerCard.kt \
+            app/src/main/java/com/aistudio/mediatool/ui/screens/StemScreen.kt
+          git diff --cached --check
+          git commit -m "Nối mixer stem vào một clock phát"
+          git push origin HEAD:agent/stem-quality-hardening

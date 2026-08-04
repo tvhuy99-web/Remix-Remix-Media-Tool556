@@ -9,8 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
@@ -28,12 +28,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +43,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,7 +77,9 @@ fun ToolSectionCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clearAndSetSemantics { },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -102,30 +111,30 @@ fun ToolSectionCard(
 fun MediaInputCard(
     fileName: String?,
     modifier: Modifier = Modifier,
-    supportingText: String? = null,
-    chooseLabel: String = "Chọn tệp",
-    changeLabel: String = "Đổi tệp",
     onChoose: () -> Unit,
 ) {
-    ToolSectionCard(
-        title = "Tệp đầu vào",
-        subtitle = supportingText,
-        icon = Icons.Default.AudioFile,
-        modifier = modifier,
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        if (fileName != null) {
-            Text(
-                text = fileName,
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
         if (fileName == null) {
-            Button(onClick = onChoose, modifier = Modifier.fillMaxWidth()) { Text(chooseLabel) }
+            Button(
+                onClick = onChoose,
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+            ) {
+                Text("Chọn tệp âm thanh hoặc video")
+            }
         } else {
-            OutlinedButton(onClick = onChoose, modifier = Modifier.fillMaxWidth()) { Text(changeLabel) }
+            OutlinedButton(
+                onClick = onChoose,
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+            ) {
+                Text(
+                    text = "Tệp đã chọn: $fileName. Nhấn để đổi tệp",
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -208,6 +217,10 @@ fun UnifiedAudioPlayer(
                         selected = source.id == selected.id,
                         onClick = { selectedId = source.id },
                         label = { Text(source.label) },
+                        modifier = Modifier.semantics {
+                            contentDescription = source.label
+                            stateDescription = if (source.id == selected.id) "Đang chọn" else "Chưa chọn"
+                        },
                     )
                 }
             }
@@ -224,7 +237,11 @@ fun UnifiedAudioPlayer(
             ) {
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Tạm dừng" else "Phát",
+                    contentDescription = if (isPlaying) {
+                        "Tạm dừng ${selected.label.lowercase()}"
+                    } else {
+                        "Phát ${selected.label.lowercase()}"
+                    },
                 )
             }
             Slider(
@@ -234,14 +251,78 @@ fun UnifiedAudioPlayer(
                     player.seekTo(positionMs)
                 },
                 valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics {
+                        contentDescription = "Vị trí nghe ${selected.label.lowercase()}"
+                        stateDescription = "${formatDuration(positionMs)} trên ${formatDuration(durationMs)}"
+                    },
             )
         }
         Text(
             text = "${formatDuration(positionMs)} / ${formatDuration(durationMs)}",
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+fun AccessibleSwitchRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = label
+                stateDescription = if (checked) "Đang bật" else "Đang tắt"
+            }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(label, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null)
+    }
+}
+
+@Composable
+fun AccessibleValueSlider(
+    label: String,
+    valueDescription: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(label)
+            Text(valueDescription, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            steps = steps,
+            modifier = Modifier.semantics {
+                contentDescription = label
+                stateDescription = valueDescription
+            },
         )
     }
 }
@@ -262,24 +343,32 @@ fun StickyProcessBar(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (processing) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
+                    modifier = Modifier.semantics {
+                        liveRegion = LiveRegionMode.Polite
+                        contentDescription = "${phase ?: "Đang xử lý"}, ${(progress.coerceIn(0f, 1f) * 100f).toInt()} phần trăm"
+                    },
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(
-                        text = phase ?: "Đang xử lý",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.labelLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = phase ?: "Đang xử lý",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text("${(progress.coerceIn(0f, 1f) * 100f).toInt()}%")
+                    }
+                    LinearProgressIndicator(
+                        progress = { progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
                     )
-                    Text("${(progress.coerceIn(0f, 1f) * 100f).toInt()}%")
                 }
-                LinearProgressIndicator(
-                    progress = { progress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
                 OutlinedButton(
                     onClick = { onCancel?.invoke() },
                     modifier = Modifier.fillMaxWidth(),
@@ -334,8 +423,8 @@ fun CompactDropdown(
     }
 }
 
-private fun formatDuration(milliseconds: Long): String {
-    val totalSeconds = (milliseconds.coerceAtLeast(0L) / 1_000L)
+fun formatDuration(milliseconds: Long): String {
+    val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000L
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
     return "%d:%02d".format(minutes, seconds)

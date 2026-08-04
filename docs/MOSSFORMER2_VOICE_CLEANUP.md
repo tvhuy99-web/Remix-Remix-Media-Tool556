@@ -51,7 +51,7 @@ Upstream gọi Kaldi fbank với `dither=1.0`. Ứng dụng áp Gaussian dither 
 - Maximum absolute difference.
 - Tỷ lệ phần tử thay đổi.
 
-Unit test golden đối chiếu các frame đại diện với `torchaudio.compliance.kaldi.fbank` khi dither tắt. Script `scripts/generate_mossformer2_frontend_golden.py` tái tạo fixture bằng PyTorch/torchaudio.
+Unit test golden đối chiếu các frame đại diện với `torchaudio.compliance.kaldi.fbank` khi dither tắt. Dung sai chéo runtime là 0,002 log-mel, khóa sai số FFT float Android so với backend torchaudio nhưng vẫn nhỏ hơn nhiều mức có ý nghĩa âm thanh. Script `scripts/generate_mossformer2_frontend_golden.py` tái tạo fixture bằng PyTorch/torchaudio.
 
 ## Pipeline
 
@@ -115,6 +115,17 @@ Mỗi tác vụ ghi:
 - Mask và PCM có NaN hoặc vô cực bị từ chối ngay.
 - Đầu ra là audio mono kể cả khi đầu vào là video hoặc stereo.
 
+## Xác minh
+
+GitHub Actions run #222 đã đạt toàn bộ trên nhánh `agent/voice-cleanup-window-modes`:
+
+- Xác minh cấu trúc dự án.
+- Build APK debug.
+- Kiểm tra APK và ABI arm64-v8a.
+- Xác minh chữ ký APK.
+- Android Lint.
+- 105 unit test, gồm parity frontend, dither tái lập, hình học one-pass/chia đoạn, mask bỏ padding, seam metrics và hủy tác vụ.
+
 ## Xác minh còn cần trên thiết bị
 
-CI khóa cấu trúc DSP, parity frontend, dither tái lập, hình học one-pass/chia đoạn, mask bỏ padding, seam metrics, hủy tác vụ, build APK, lint và unit test. Trước khi gộp cần chạy cùng một bộ audio thật trên điện thoại cao cấp ở cả ba chế độ để kiểm tra peak PSS, nhiệt, tốc độ, chất lượng phụ âm và các điểm nối.
+CI không nghe được âm thanh và không mô phỏng được nhiệt hoặc áp lực RAM của điện thoại. Trước khi gộp cần chạy cùng một bộ audio thật trên điện thoại cao cấp ở cả ba chế độ để kiểm tra peak PSS, nhiệt, tốc độ, chất lượng phụ âm và các điểm nối.

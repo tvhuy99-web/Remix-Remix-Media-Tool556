@@ -7,5 +7,7 @@
 - Smart Exception Java/Common 0.2.1: BSD 3-Clause.
 - `jackjiangxinfa/demucs-onnx`: Apache License 2.0 theo metadata nguồn.
 - `gyoom-sa/UVR-MDX-LiteRT`: MIT theo metadata nguồn.
+- `modelscope/ClearerVoice-Studio`, model `MossFormer2_SE_48K`: Apache License 2.0.
+- Bản xuất ONNX `TigreGotico/audiosronnx-mossformer2`: Apache License 2.0, kế thừa từ ClearerVoice-Studio.
 
 Các model được tải khi chạy và không nằm trong APK.

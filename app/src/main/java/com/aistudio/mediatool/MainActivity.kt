@@ -8,12 +8,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import com.aistudio.mediatool.navigation.AppNavigation
-import com.aistudio.mediatool.ui.theme.MediaToolTheme
+import androidx.lifecycle.lifecycleScope
 import com.aistudio.mediatool.core.CacheUtils
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.RecordingManager
-import androidx.lifecycle.lifecycleScope
+import com.aistudio.mediatool.core.ml.VoiceCleanupService
+import com.aistudio.mediatool.navigation.AppNavigation
+import com.aistudio.mediatool.ui.theme.MediaToolTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -25,8 +26,9 @@ class MainActivity : ComponentActivity() {
       fields = mapOf("restored_instance" to (savedInstanceState != null)),
     )
     enableEdgeToEdge()
-    
+
     RecordingManager.restore(this)
+    VoiceCleanupService.restorePersistedState(this)
 
     // Dọn dẹp cache rác lúc khởi động, giữ lại file đang ghi hoặc vừa ghi xong nếu có
     lifecycleScope.launch {
@@ -56,8 +58,8 @@ class MainActivity : ComponentActivity() {
     setContent {
       MediaToolTheme {
         Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
+          modifier = Modifier.fillMaxSize(),
+          color = MaterialTheme.colorScheme.background,
         ) {
           AppNavigation()
         }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 
+# Guarded one-shot compiler fix for the current stem hardening branch.
 path = Path("app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt")
 text = path.read_text(encoding="utf-8")
 

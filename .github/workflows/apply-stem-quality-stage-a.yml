@@ -7,6 +7,13 @@ on:
     paths:
       - scripts/apply_stem_quality_stage_a.py
       - .github/workflows/apply-stem-quality-stage-a.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/apply_stem_quality_stage_a.py
+      - .github/workflows/apply-stem-quality-stage-a.yml
+  workflow_dispatch:
 
 permissions:
   contents: write

@@ -19,13 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -33,7 +28,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -51,6 +45,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -80,7 +78,10 @@ import com.aistudio.mediatool.ui.components.StickyProcessBar
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.ToolSectionCard
 import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
+import com.aistudio.mediatool.ui.components.formatDuration
 import java.io.File
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -109,10 +110,6 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     var selectedAudioUriText by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedAudioName by rememberSaveable { mutableStateOf<String?>(null) }
     var modeIndex by rememberSaveable { mutableStateOf(SettingsManager.getStemModeIndex(context)) }
-    var formatIndex by rememberSaveable { mutableStateOf(SettingsManager.getAudFormatIndex(context)) }
-    var bitrateIndex by rememberSaveable { mutableStateOf(SettingsManager.getAudBitrateIndex(context)) }
-    var threadsIndex by rememberSaveable { mutableStateOf(SettingsManager.getNumThreadsIndex(context)) }
-    var advancedExpanded by rememberSaveable { mutableStateOf(false) }
     var separationProgress by remember { mutableFloatStateOf(0f) }
     var result by remember { mutableStateOf<SeparationState.Success?>(null) }
 
@@ -179,7 +176,7 @@ fun StemScreen(onNavigateBack: () -> Unit) {
             )
             Toast.makeText(
                 context,
-                "Không thể bắt đầu xử lý: ${error.message ?: "không xác định"}",
+                "Không thể bắt đầu: ${error.message ?: "không xác định"}",
                 Toast.LENGTH_LONG,
             ).show()
         }
@@ -217,7 +214,7 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                 enabled = selectedAudioUri != null && downloadedModel != null,
                 processing = serviceIsProcessing,
                 progress = separationProgress,
-                phase = "Đang tách bằng ${selectedModel.displayName}",
+                phase = "Đang tách",
                 onClick = ::startWithPermission,
                 onCancel = {
                     context.startService(
@@ -237,7 +234,6 @@ fun StemScreen(onNavigateBack: () -> Unit) {
         ) {
             MediaInputCard(
                 fileName = selectedAudioName,
-                supportingText = "Audio hoặc video",
                 onChoose = { audioPicker.launch(arrayOf("audio/*", "video/*")) },
             )
 
@@ -248,45 +244,40 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                 title = "Nghe bản gốc",
             )
 
-            ToolSectionCard(title = "Cấu hình tách", icon = Icons.Default.GraphicEq) {
-                Text("Số stem", fontWeight = FontWeight.SemiBold)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    listOf("2 stem", "4 stem").forEachIndexed { index, label ->
-                        FilterChip(
-                            selected = modeIndex == index,
-                            onClick = {
-                                if (modeIndex != index) {
-                                    modeIndex = index
-                                    SettingsManager.setStemModeIndex(context, index)
-                                    val mode = StemMode.fromSettingsIndex(index)
-                                    val model = StemModelRegistry.resolve(
-                                        mode,
-                                        SettingsManager.getStemModelId(context, index),
-                                    )
-                                    stemViewModel.selectModel(model.id)
-                                    resetResult()
-                                }
-                            },
-                            label = { Text(label) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-
-                Text("Mô hình", fontWeight = FontWeight.SemiBold)
-                modeModels.forEach { model ->
-                    StemModelChoice(
-                        model = model,
-                        selected = selectedModel.id == model.id,
-                        onSelect = {
+            ToolSectionCard(title = "Thiết lập") {
+                CompactDropdown(
+                    label = "Kết quả",
+                    values = listOf(
+                        "Giọng hát và nhạc nền",
+                        "Giọng, trống, bass và phần khác",
+                    ),
+                    selectedIndex = modeIndex,
+                    onSelected = { index ->
+                        if (modeIndex != index) {
+                            modeIndex = index
+                            SettingsManager.setStemModeIndex(context, index)
+                            val mode = StemMode.fromSettingsIndex(index)
+                            val model = StemModelRegistry.resolve(
+                                mode,
+                                SettingsManager.getStemModelId(context, index),
+                            )
                             stemViewModel.selectModel(model.id)
                             resetResult()
-                        },
-                    )
-                }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                CompactDropdown(
+                    label = "Mô hình",
+                    values = modeModels.map(::shortModelName),
+                    selectedIndex = modeModels.indexOfFirst { it.id == selectedModel.id }.coerceAtLeast(0),
+                    onSelected = { index ->
+                        stemViewModel.selectModel(modeModels[index].id)
+                        resetResult()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
 
                 StemDownloadSection(
                     selectedModel = selectedModel,
@@ -297,71 +288,16 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                 )
             }
 
-            ToolSectionCard(title = "Xuất file", icon = Icons.Default.Settings) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    CompactDropdown(
-                        label = "Định dạng",
-                        values = listOf("M4A", "MP3", "WAV", "FLAC"),
-                        selectedIndex = formatIndex,
-                        onSelected = {
-                            formatIndex = it
-                            SettingsManager.setAudFormatIndex(context, it)
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                    CompactDropdown(
-                        label = "Chất lượng",
-                        values = listOf("128 kbps", "192 kbps", "256 kbps", "320 kbps", "Lossless"),
-                        selectedIndex = bitrateIndex,
-                        onSelected = {
-                            bitrateIndex = it
-                            SettingsManager.setAudBitrateIndex(context, it)
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-
-            ToolSectionCard(title = "Nâng cao", icon = Icons.Default.Tune) {
-                TextButton(onClick = { advancedExpanded = !advancedExpanded }) {
-                    Text(if (advancedExpanded) "Thu gọn" else "Mở thông số nâng cao")
-                }
-                if (advancedExpanded) {
-                    CompactDropdown(
-                        label = "Luồng CPU",
-                        values = listOf("1 luồng", "2 luồng", "4 luồng", "8 luồng"),
-                        selectedIndex = threadsIndex,
-                        onSelected = {
-                            threadsIndex = it
-                            SettingsManager.setNumThreadsIndex(context, it)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        "${selectedModel.sampleRate / 1_000} kHz • ${selectedModel.channels} kênh • ${selectedModel.backend}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        selectedModel.deviceRequirements.userFacingSummary,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
             result?.let { success ->
                 val items = buildStemItems(success)
                 StemMixerCard(items)
-                ToolSectionCard(title = "Tệp kết quả", icon = Icons.Default.MusicNote) {
+                ToolSectionCard(title = "Lưu kết quả") {
                     items.forEach { item ->
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(item.label, fontWeight = FontWeight.SemiBold)
-                            ResultFileActions(file = item.file)
-                        }
+                        ResultFileActions(
+                            file = item.file,
+                            saveLabel = "Lưu ${item.label.lowercase()}",
+                            shareLabel = "Chia sẻ ${item.label.lowercase()}",
+                        )
                     }
                 }
             }
@@ -376,29 +312,6 @@ fun StemScreen(onNavigateBack: () -> Unit) {
 }
 
 @Composable
-private fun StemModelChoice(
-    model: StemModelDescriptor,
-    selected: Boolean,
-    onSelect: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        RadioButton(selected = selected, onClick = onSelect)
-        Column(modifier = Modifier.weight(1f)) {
-            Text(model.displayName, fontWeight = FontWeight.Medium)
-            Text(
-                "${model.description} • ${model.downloadSizeMiB} MiB • ${model.licenseName}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
 private fun StemDownloadSection(
     selectedModel: StemModelDescriptor,
     state: DownloadState,
@@ -407,34 +320,37 @@ private fun StemDownloadSection(
     onDiscard: () -> Unit,
 ) {
     when (state) {
+        is DownloadState.Success -> Unit
         DownloadState.Idle -> Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.Memory, contentDescription = null)
-            Text("Tải ${selectedModel.displayName}")
+            Text("Tải ${shortModelName(selectedModel)}")
         }
         is DownloadState.Downloading -> {
+            val percent = (state.progress.coerceIn(0f, 1f) * 100f).toInt()
             LinearProgressIndicator(
                 progress = { state.progress.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics {
+                        contentDescription = "Tiến trình tải ${shortModelName(selectedModel)}"
+                        stateDescription = "$percent phần trăm"
+                    },
             )
-            Text("Đang tải ${selectedModel.displayName}: ${(state.progress * 100f).toInt()}%")
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(onClick = onPause, modifier = Modifier.weight(1f)) { Text("Tạm dừng") }
-                Button(onClick = onDownload, modifier = Modifier.weight(1f)) { Text("Tiếp tục") }
+            OutlinedButton(onClick = onPause, modifier = Modifier.fillMaxWidth()) {
+                Text("Tạm dừng tải")
             }
-            TextButton(onClick = onDiscard, modifier = Modifier.fillMaxWidth()) { Text("Xóa phần đã tải") }
+            Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
+                Text("Tiếp tục tải")
+            }
+            TextButton(onClick = onDiscard, modifier = Modifier.fillMaxWidth()) {
+                Text("Xóa phần đã tải")
+            }
         }
         is DownloadState.Error -> {
             Text(state.message, color = MaterialTheme.colorScheme.error)
-            Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) { Text("Thử tải lại") }
+            Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
+                Text("Thử tải lại")
+            }
         }
-        is DownloadState.Success -> Text(
-            "Model đã sẵn sàng",
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.Medium,
-        )
     }
 }
 
@@ -477,7 +393,10 @@ private fun StemMixerCard(items: List<StemMixerItem>) {
                 } else if (state == Player.STATE_ENDED) {
                     isPlaying = false
                     positionMs = 0L
-                    players.values.forEach { it.pause(); it.seekTo(0L) }
+                    players.values.forEach {
+                        it.pause()
+                        it.seekTo(0L)
+                    }
                 }
             }
         }
@@ -501,7 +420,7 @@ private fun StemMixerCard(items: List<StemMixerItem>) {
                 val currentDuration = referencePlayer?.duration ?: 0L
                 if (currentDuration > 0L) durationMs = currentDuration
                 players.values.forEach { player ->
-                    if (kotlin.math.abs(player.currentPosition - referencePosition) > 180L) {
+                    if (abs(player.currentPosition - referencePosition) > 180L) {
                         player.seekTo(referencePosition)
                     }
                 }
@@ -510,11 +429,7 @@ private fun StemMixerCard(items: List<StemMixerItem>) {
         }
     }
 
-    ToolSectionCard(
-        title = "Mixer nghe thử",
-        subtitle = "Solo, mute và âm lượng chỉ tác động khi nghe thử",
-        icon = Icons.Default.GraphicEq,
-    ) {
+    ToolSectionCard(title = "Nghe kết quả") {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -537,7 +452,11 @@ private fun StemMixerCard(items: List<StemMixerItem>) {
             ) {
                 Icon(
                     if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Tạm dừng mixer" else "Phát mixer",
+                    contentDescription = if (isPlaying) {
+                        "Tạm dừng các phần âm thanh"
+                    } else {
+                        "Phát các phần âm thanh"
+                    },
                 )
             }
             Slider(
@@ -547,53 +466,81 @@ private fun StemMixerCard(items: List<StemMixerItem>) {
                     players.values.forEach { player -> player.seekTo(positionMs) }
                 },
                 valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics {
+                        contentDescription = "Vị trí nghe kết quả"
+                        stateDescription = "${formatDuration(positionMs)} trên ${formatDuration(durationMs)}"
+                    },
             )
         }
         Text(
-            "${formatStemDuration(positionMs)} / ${formatStemDuration(durationMs)}",
+            "${formatDuration(positionMs)} / ${formatDuration(durationMs)}",
+            modifier = Modifier.clearAndSetSemantics { },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         items.forEach { item ->
+            val isSolo = soloId == item.id
+            val isMuted = muted[item.id] == true
+            val volume = volumes[item.id] ?: 1f
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    item.label,
+                    modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
+                    fontWeight = FontWeight.Medium,
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(item.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
                     FilterChip(
-                        selected = soloId == item.id,
-                        onClick = { soloId = if (soloId == item.id) null else item.id },
-                        label = { Text("S") },
+                        selected = isSolo,
+                        onClick = { soloId = if (isSolo) null else item.id },
+                        label = { Text("Solo") },
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics {
+                                contentDescription = "Solo ${item.label.lowercase()}"
+                                stateDescription = if (isSolo) "Đang bật" else "Đang tắt"
+                            },
                     )
                     FilterChip(
-                        selected = muted[item.id] == true,
-                        onClick = { muted[item.id] = !(muted[item.id] ?: false) },
-                        label = { Text("M") },
+                        selected = isMuted,
+                        onClick = { muted[item.id] = !isMuted },
+                        label = { Text("Tắt tiếng") },
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics {
+                                contentDescription = "Tắt tiếng ${item.label.lowercase()}"
+                                stateDescription = if (isMuted) "Đang bật" else "Đang tắt"
+                            },
                     )
                 }
                 Slider(
-                    value = volumes[item.id] ?: 1f,
+                    value = volume,
                     onValueChange = { volumes[item.id] = it },
                     valueRange = 0f..1f,
+                    modifier = Modifier.semantics {
+                        contentDescription = "Âm lượng ${item.label.lowercase()}"
+                        stateDescription = "${(volume * 100f).roundToInt()} phần trăm"
+                    },
                 )
             }
         }
     }
 }
 
+private fun shortModelName(model: StemModelDescriptor): String = when (model.id) {
+    StemModelRegistry.UVR_MDX_VOC_FT_LITERT_ID -> "UVR MDX-Net"
+    else -> "Demucs"
+}
+
 private fun buildStemItems(success: SeparationState.Success): List<StemMixerItem> = listOfNotNull(
     StemMixerItem("vocals", "Giọng hát", success.vocalsFile),
-    StemMixerItem("music", if (success.drumsFile == null) "Nhạc nền" else "Nhạc nền tổng hợp", success.musicFile),
+    StemMixerItem("music", "Nhạc nền", success.musicFile),
     success.drumsFile?.let { StemMixerItem("drums", "Trống", it) },
     success.bassFile?.let { StemMixerItem("bass", "Bass", it) },
-    success.otherFile?.let { StemMixerItem("other", "Khác", it) },
+    success.otherFile?.let { StemMixerItem("other", "Phần khác", it) },
 ).distinctBy { it.file.absolutePath }
-
-private fun formatStemDuration(milliseconds: Long): String {
-    val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000L
-    return "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
-}

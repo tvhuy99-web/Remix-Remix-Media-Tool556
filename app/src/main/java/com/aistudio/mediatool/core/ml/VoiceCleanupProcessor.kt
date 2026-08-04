@@ -319,7 +319,7 @@ class VoiceCleanupProcessor(
         val segmentCount: Int,
         val inferenceMs: Long,
         val realTimeFactor: Double,
-        val peakPssKb: Int,
+        val peakPssKb: Long,
     )
 
     private companion object {

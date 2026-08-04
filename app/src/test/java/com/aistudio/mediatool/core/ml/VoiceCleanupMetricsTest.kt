@@ -41,4 +41,23 @@ class VoiceCleanupMetricsTest {
         assertTrue(metrics.p10 <= metrics.p50)
         assertTrue(metrics.p50 <= metrics.p90)
     }
+
+    @Test
+    fun frameSelectionExcludesPaddingValues() {
+        val bins = 3
+        val mask = floatArrayOf(
+            0.1f, 0.2f, 0.3f,
+            0.4f, 0.5f, 0.6f,
+            9f, 9f, 9f,
+            9f, 9f, 9f,
+        )
+        val accumulator = VoiceCleanupMaskAccumulator()
+        accumulator.addFrames(mask, 0..1, bins)
+
+        val metrics = accumulator.snapshot()
+
+        assertEquals(2L, metrics.frameCount)
+        assertEquals(6L, metrics.valueCount)
+        assertEquals(0.6, metrics.maximum, 1e-5)
+    }
 }

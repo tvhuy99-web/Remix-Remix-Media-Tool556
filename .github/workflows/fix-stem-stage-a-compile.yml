@@ -7,6 +7,12 @@ on:
     paths:
       - scripts/fix_stem_stage_a_compile.py
       - .github/workflows/fix-stem-stage-a-compile.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/fix_stem_stage_a_compile.py
+      - .github/workflows/fix-stem-stage-a-compile.yml
 
 permissions:
   contents: write

@@ -334,9 +334,19 @@ class VoiceCleanupProcessor(
                             )
                         }
                         val segmentMaskAccumulator = VoiceCleanupMaskAccumulator().apply {
-                            addFrames(mask, selectedFrames, MossFormer2Dsp.BINS)
+                            addEffectiveFrames(
+                                mask,
+                                selectedFrames,
+                                MossFormer2Dsp.BINS,
+                                config.cleanupStrength,
+                            )
                         }
-                        aggregateMask.addFrames(mask, selectedFrames, MossFormer2Dsp.BINS)
+                        aggregateMask.addEffectiveFrames(
+                            mask,
+                            selectedFrames,
+                            MossFormer2Dsp.BINS,
+                            config.cleanupStrength,
+                        )
                         val segmentMask = segmentMaskAccumulator.snapshot()
                         logInfo(
                             "segment_mask_metrics",
@@ -347,11 +357,11 @@ class VoiceCleanupProcessor(
                                 "valid_frame_first" to selectedFrames.first,
                                 "valid_frame_last" to selectedFrames.last,
                                 "padding_frames_excluded" to (dsp.frames - selectedFrames.count()),
-                            ) + segmentMask.diagnosticFields("mask"),
+                            ) + config.diagnosticFields() + segmentMask.diagnosticFields("effective_mask"),
                         )
 
                         val maskStartedAt = SystemClock.elapsedRealtime()
-                        val enhanced = dsp.applyMask(segment, mask)
+                        val enhanced = dsp.applyMask(segment, mask, config.cleanupStrength)
                         maskApplyMs += SystemClock.elapsedRealtime() - maskStartedAt
                         val retained = dsp.retainedRange(segmentIndex)
                         val remaining = (totalSamples - writtenSamples).coerceAtLeast(0L)

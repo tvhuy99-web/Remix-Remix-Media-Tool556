@@ -1,0 +1,44 @@
+name: Harden synchronized mixer pause state
+
+on:
+  push:
+    branches:
+      - agent/stem-quality-hardening
+    paths:
+      - scripts/harden_synchronized_mixer_pause_state.py
+      - .github/workflows/harden-synchronized-mixer-pause-state.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/harden_synchronized_mixer_pause_state.py
+      - .github/workflows/harden-synchronized-mixer-pause-state.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/stem-quality-hardening
+          fetch-depth: 0
+
+      - name: Apply guarded pause-state fix
+        run: python3 scripts/harden_synchronized_mixer_pause_state.py
+
+      - name: Verify project structure
+        run: python3 scripts/verify_project.py
+
+      - name: Commit pause-state fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/aistudio/mediatool/core/audio/SynchronizedStemMixer.kt
+          git diff --cached --check
+          git commit -m "Giữ đúng trạng thái pause khi mixer retry"
+          git push origin HEAD:agent/stem-quality-hardening

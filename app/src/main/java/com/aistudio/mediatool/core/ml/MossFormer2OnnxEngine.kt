@@ -55,7 +55,12 @@ internal class MossFormer2OnnxEngine private constructor(
                     ?: error("Tensor MossFormer2 không chứa float")
                 val expected = MossFormer2Dsp.FRAMES * MossFormer2Dsp.BINS
                 require(source.remaining() >= expected) { "Tensor MossFormer2 bị thiếu dữ liệu" }
-                return FloatArray(expected).also(source::get)
+                return FloatArray(expected).also { mask ->
+                    source.get(mask)
+                    require(mask.all(Float::isFinite)) {
+                        "Mask MossFormer2 chứa giá trị không hữu hạn"
+                    }
+                }
             }
         }
     }

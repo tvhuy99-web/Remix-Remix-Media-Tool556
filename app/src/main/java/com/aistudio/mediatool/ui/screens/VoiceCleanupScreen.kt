@@ -87,6 +87,7 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
     var selectedUriText by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedName by rememberSaveable { mutableStateOf<String?>(null) }
     var windowModeName by rememberSaveable { mutableStateOf(VoiceCleanupWindowMode.BALANCED_10S.name) }
+    var cleanupStrength by rememberSaveable { mutableFloatStateOf(65f) }
     var loudnessModeName by rememberSaveable { mutableStateOf(VoiceCleanupLoudnessMode.MATCH_SOURCE.name) }
     var targetLufs by rememberSaveable { mutableFloatStateOf(-16f) }
     var outputGainDb by rememberSaveable { mutableFloatStateOf(0f) }
@@ -101,8 +102,10 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
     val selectedUri = selectedUriText?.let(Uri::parse)
     val windowMode = VoiceCleanupWindowMode.fromName(windowModeName)
     val loudnessMode = VoiceCleanupLoudnessMode.fromName(loudnessModeName)
+    val cleanupStrengthPercent = cleanupStrength.roundToInt().coerceIn(1, 100)
     val config = VoiceCleanupConfig(
         windowMode = windowMode,
+        cleanupStrengthPercent = cleanupStrengthPercent,
         loudnessMode = loudnessMode,
         targetLufs = targetLufs,
         outputGainDb = outputGainDb,
@@ -155,6 +158,7 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
             putExtra(VoiceCleanupService.EXTRA_URI, start.uriText)
             putExtra(VoiceCleanupService.EXTRA_MODEL_FILE, start.modelPath)
             putExtra(VoiceCleanupService.EXTRA_WINDOW_MODE, start.config.windowMode.name)
+            putExtra(VoiceCleanupService.EXTRA_CLEANUP_STRENGTH, start.config.cleanupStrengthPercent)
             putExtra(VoiceCleanupService.EXTRA_LOUDNESS_MODE, start.config.loudnessMode.name)
             putExtra(VoiceCleanupService.EXTRA_TARGET_LUFS, start.config.targetLufs)
             putExtra(VoiceCleanupService.EXTRA_OUTPUT_GAIN_DB, start.config.outputGainDb)
@@ -207,22 +211,28 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
 
     val downloadedModel = (downloadState as? DownloadState.Success)?.file
     val windowOptions = listOf(
-        "Tương thích – 4 giây",
         "Cân bằng – 10 giây (mặc định)",
-        "Tối đa – 15 giây",
+        "Chất lượng cao – 20 giây",
+        "Tối đa – 30 giây",
     )
     val windowIndex = when (windowMode) {
-        VoiceCleanupWindowMode.COMPATIBILITY_4S -> 0
-        VoiceCleanupWindowMode.BALANCED_10S -> 1
-        VoiceCleanupWindowMode.MAXIMUM_15S -> 2
+        VoiceCleanupWindowMode.BALANCED_10S -> 0
+        VoiceCleanupWindowMode.QUALITY_20S -> 1
+        VoiceCleanupWindowMode.MAXIMUM_30S -> 2
     }
     val windowHint = when (windowMode) {
-        VoiceCleanupWindowMode.COMPATIBILITY_4S ->
-            "Dùng ít RAM nhất và phù hợp khi chế độ dài hơn không chạy ổn định."
         VoiceCleanupWindowMode.BALANCED_10S ->
-            "Cân bằng giữa ngữ cảnh giọng nói, tốc độ và bộ nhớ trên điện thoại cao cấp."
-        VoiceCleanupWindowMode.MAXIMUM_15S ->
-            "Cho ngữ cảnh dài nhất, cần nhiều RAM và chỉ nên dùng trên điện thoại rất mạnh."
+            "Cân bằng giữa ngữ cảnh, tốc độ và bộ nhớ; phù hợp cho phần lớn điện thoại cao cấp."
+        VoiceCleanupWindowMode.QUALITY_20S ->
+            "Ngữ cảnh dài hơn để giữ câu nói liền mạch, cần nhiều RAM và thời gian xử lý hơn."
+        VoiceCleanupWindowMode.MAXIMUM_30S ->
+            "Ngữ cảnh dài nhất, dành cho điện thoại rất mạnh; cần theo dõi nhiệt và bộ nhớ."
+    }
+    val strengthHint = when (cleanupStrengthPercent) {
+        in 1..35 -> "Tự nhiên"
+        in 36..70 -> "Cân bằng"
+        in 71..90 -> "Làm sạch mạnh"
+        else -> "Mạnh nhất"
     }
     val loudnessOptions = listOf(
         "Giống bản gốc",
@@ -288,8 +298,8 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
                     selectedIndex = windowIndex,
                     onSelected = { index ->
                         windowModeName = when (index) {
-                            0 -> VoiceCleanupWindowMode.COMPATIBILITY_4S.name
-                            2 -> VoiceCleanupWindowMode.MAXIMUM_15S.name
+                            1 -> VoiceCleanupWindowMode.QUALITY_20S.name
+                            2 -> VoiceCleanupWindowMode.MAXIMUM_30S.name
                             else -> VoiceCleanupWindowMode.BALANCED_10S.name
                         }
                     },
@@ -297,6 +307,19 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
                 )
                 Text(
                     windowHint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                AccessibleValueSlider(
+                    label = "Mức làm sạch",
+                    valueDescription = "$cleanupStrengthPercent% • $strengthHint",
+                    value = cleanupStrength,
+                    valueRange = 1f..100f,
+                    steps = 98,
+                    onValueChange = { cleanupStrength = it.roundToInt().toFloat() },
+                )
+                Text(
+                    "100% dùng toàn bộ sức lọc của MossFormer2; mức thấp hơn giữ lại nhiều chi tiết giọng và âm nền hơn.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

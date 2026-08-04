@@ -36,32 +36,36 @@ internal class MossFormer2OnnxEngine private constructor(
         inputBuffer.put(features)
         inputBuffer.rewind()
 
-        OnnxTensor.createTensor(
-            environment,
-            inputBuffer,
-            longArrayOf(1L, MossFormer2Dsp.FRAMES.toLong(), MossFormer2Dsp.FEATURES.toLong()),
-        ).use { inputTensor ->
-            session.run(mapOf(inputName to inputTensor), setOf(outputName), runOptions).use { result ->
-                val output = result.get(0) as? OnnxTensor
-                    ?: error("MossFormer2 không trả về tensor float")
-                val shape = (output.info as? TensorInfo)?.shape
-                    ?: error("Không đọc được shape đầu ra MossFormer2")
-                require(
-                    shape.size == 3 && shape[0] == 1L &&
-                        shape[1] == MossFormer2Dsp.FRAMES.toLong() &&
-                        shape[2] == MossFormer2Dsp.BINS.toLong()
-                ) { "Shape đầu ra MossFormer2 không đúng: ${shape.joinToString(" x ")}" }
-                val source = output.floatBuffer
-                    ?: error("Tensor MossFormer2 không chứa float")
-                val expected = MossFormer2Dsp.FRAMES * MossFormer2Dsp.BINS
-                require(source.remaining() >= expected) { "Tensor MossFormer2 bị thiếu dữ liệu" }
-                return FloatArray(expected).also { mask ->
-                    source.get(mask)
-                    require(mask.all(Float::isFinite)) {
-                        "Mask MossFormer2 chứa giá trị không hữu hạn"
+        return try {
+            OnnxTensor.createTensor(
+                environment,
+                inputBuffer,
+                longArrayOf(1L, MossFormer2Dsp.FRAMES.toLong(), MossFormer2Dsp.FEATURES.toLong()),
+            ).use { inputTensor ->
+                session.run(mapOf(inputName to inputTensor), setOf(outputName), runOptions).use { result ->
+                    val output = result.get(0) as? OnnxTensor
+                        ?: error("MossFormer2 không trả về tensor float")
+                    val shape = (output.info as? TensorInfo)?.shape
+                        ?: error("Không đọc được shape đầu ra MossFormer2")
+                    require(
+                        shape.size == 3 && shape[0] == 1L &&
+                            shape[1] == MossFormer2Dsp.FRAMES.toLong() &&
+                            shape[2] == MossFormer2Dsp.BINS.toLong()
+                    ) { "Shape đầu ra MossFormer2 không đúng: ${shape.joinToString(" x ")}" }
+                    val source = output.floatBuffer
+                        ?: error("Tensor MossFormer2 không chứa float")
+                    val expected = MossFormer2Dsp.FRAMES * MossFormer2Dsp.BINS
+                    require(source.remaining() >= expected) { "Tensor MossFormer2 bị thiếu dữ liệu" }
+                    FloatArray(expected).also { mask ->
+                        source.get(mask)
+                        require(mask.all(Float::isFinite)) {
+                            "Mask MossFormer2 chứa giá trị không hữu hạn"
+                        }
                     }
                 }
             }
+        } catch (error: Throwable) {
+            throw VoiceCleanupCancellation.translate(cancelled, error)
         }
     }
 

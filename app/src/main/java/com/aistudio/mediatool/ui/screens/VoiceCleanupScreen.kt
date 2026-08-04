@@ -79,7 +79,7 @@ private data class PendingVoiceCleanupStart(
     val config: VoiceCleanupConfig,
 )
 
-private enum class PreviewTrack {
+private enum class VoiceCleanupPreviewChoice {
     ORIGINAL,
     RESULT,
 }
@@ -522,14 +522,22 @@ private fun VoiceCleanupProgressCard(
 private fun VoiceCleanupPreview(originalUri: Uri, resultFile: File?) {
     val context = LocalContext.current
     var selectedTrack by remember(resultFile?.absolutePath) {
-        mutableStateOf(if (resultFile == null) PreviewTrack.ORIGINAL else PreviewTrack.RESULT)
+        mutableStateOf(
+            if (resultFile == null) {
+                VoiceCleanupPreviewChoice.ORIGINAL
+            } else {
+                VoiceCleanupPreviewChoice.RESULT
+            },
+        )
     }
-    if (resultFile == null && selectedTrack == PreviewTrack.RESULT) {
-        selectedTrack = PreviewTrack.ORIGINAL
+    LaunchedEffect(resultFile) {
+        if (resultFile == null && selectedTrack == VoiceCleanupPreviewChoice.RESULT) {
+            selectedTrack = VoiceCleanupPreviewChoice.ORIGINAL
+        }
     }
     val activeUri = when (selectedTrack) {
-        PreviewTrack.ORIGINAL -> originalUri
-        PreviewTrack.RESULT -> resultFile?.let(Uri::fromFile) ?: originalUri
+        VoiceCleanupPreviewChoice.ORIGINAL -> originalUri
+        VoiceCleanupPreviewChoice.RESULT -> resultFile?.let(Uri::fromFile) ?: originalUri
     }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var prepared by remember { mutableStateOf(false) }
@@ -590,24 +598,26 @@ private fun VoiceCleanupPreview(originalUri: Uri, resultFile: File?) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (selectedTrack == PreviewTrack.ORIGINAL) {
-                    Button(onClick = { selectedTrack = PreviewTrack.ORIGINAL }, modifier = Modifier.weight(1f)) {
-                        Text("Bản gốc")
-                    }
+                if (selectedTrack == VoiceCleanupPreviewChoice.ORIGINAL) {
+                    Button(
+                        onClick = { selectedTrack = VoiceCleanupPreviewChoice.ORIGINAL },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Bản gốc") }
                 } else {
                     OutlinedButton(
-                        onClick = { selectedTrack = PreviewTrack.ORIGINAL },
+                        onClick = { selectedTrack = VoiceCleanupPreviewChoice.ORIGINAL },
                         modifier = Modifier.weight(1f),
                     ) { Text("Bản gốc") }
                 }
                 if (resultFile != null) {
-                    if (selectedTrack == PreviewTrack.RESULT) {
-                        Button(onClick = { selectedTrack = PreviewTrack.RESULT }, modifier = Modifier.weight(1f)) {
-                            Text("Kết quả")
-                        }
+                    if (selectedTrack == VoiceCleanupPreviewChoice.RESULT) {
+                        Button(
+                            onClick = { selectedTrack = VoiceCleanupPreviewChoice.RESULT },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Kết quả") }
                     } else {
                         OutlinedButton(
-                            onClick = { selectedTrack = PreviewTrack.RESULT },
+                            onClick = { selectedTrack = VoiceCleanupPreviewChoice.RESULT },
                             modifier = Modifier.weight(1f),
                         ) { Text("Kết quả") }
                     }

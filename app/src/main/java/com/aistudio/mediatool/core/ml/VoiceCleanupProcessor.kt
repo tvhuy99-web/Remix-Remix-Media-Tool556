@@ -262,7 +262,7 @@ class VoiceCleanupProcessor(
                         writeBuffer.clear()
                         for (offset in 0 until count) {
                             val sample = enhanced[retained.first + offset] / PCM_SCALE
-                            writeBuffer.putFloat(sample.coerceIn(-1.5f, 1.5f))
+                            writeBuffer.putFloat(VoiceCleanupPcmOutput.validatedSample(sample))
                         }
                         output.write(writeBuffer.array(), 0, count * Float.SIZE_BYTES)
                         writtenSamples += count

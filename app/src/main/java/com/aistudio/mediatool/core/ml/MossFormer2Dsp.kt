@@ -52,7 +52,7 @@ internal class MossFormer2Dsp {
                     val imag = fbankImag[bin]
                     energy += weight * (real * real + imag * imag)
                 }
-                base[targetOffset + mel] = ln(energy.coerceAtLeast(ENERGY_FLOOR)).toFloat()
+                base[targetOffset + mel] = ln(energy.coerceAtLeast(FLOAT32_EPSILON)).toFloat()
             }
         }
 
@@ -132,7 +132,7 @@ internal class MossFormer2Dsp {
         private const val FBANK_BINS = FBANK_FFT_SIZE / 2 + 1
         private const val PREEMPHASIS = 0.97f
         private const val LOW_FREQUENCY_HZ = 20.0
-        private const val ENERGY_FLOOR = 1.0e-10
+        private const val FLOAT32_EPSILON = 1.1920928955078125e-7
         private const val MIN_ENVELOPE = 1.0e-8f
 
         fun paddedLength(inputSamples: Long): Long {

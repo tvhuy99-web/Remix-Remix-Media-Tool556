@@ -40,7 +40,7 @@ enum class VoiceCleanupWindowMode(
         seconds = 15,
         segmentSamples = 15 * MossFormer2Dsp.SAMPLE_RATE,
         onePassLimitSamples = 20 * MossFormer2Dsp.SAMPLE_RATE,
-        minimumAvailableRamBytes = 2_304L * 1024L * 1024L,
+        minimumAvailableRamBytes = 3_072L * 1024L * 1024L,
     ),
     ;
 

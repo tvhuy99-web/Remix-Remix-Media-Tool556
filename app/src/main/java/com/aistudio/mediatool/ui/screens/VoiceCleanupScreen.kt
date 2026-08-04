@@ -3,7 +3,6 @@ package com.aistudio.mediatool.ui.screens
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
@@ -20,27 +19,24 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -56,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.GetContentWithMimeTypes
+import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
 import com.aistudio.mediatool.core.ml.DownloadState
@@ -65,24 +62,24 @@ import com.aistudio.mediatool.core.ml.VoiceCleanupLoudnessMode
 import com.aistudio.mediatool.core.ml.VoiceCleanupReport
 import com.aistudio.mediatool.core.ml.VoiceCleanupService
 import com.aistudio.mediatool.core.ml.VoiceCleanupState
+import com.aistudio.mediatool.ui.components.AudioPreviewSource
+import com.aistudio.mediatool.ui.components.CompactDropdown
 import com.aistudio.mediatool.ui.components.DiagnosticReportCard
+import com.aistudio.mediatool.ui.components.MediaInputCard
 import com.aistudio.mediatool.ui.components.ResultFileActions
+import com.aistudio.mediatool.ui.components.StickyProcessBar
 import com.aistudio.mediatool.ui.components.ToolScaffold
+import com.aistudio.mediatool.ui.components.ToolSectionCard
+import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
 import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
 
 private data class PendingVoiceCleanupStart(
     val uriText: String,
     val modelPath: String,
     val config: VoiceCleanupConfig,
 )
-
-private enum class VoiceCleanupPreviewChoice {
-    ORIGINAL,
-    RESULT,
-}
 
 @Composable
 fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
@@ -94,25 +91,26 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
     val serviceError by VoiceCleanupService.errorMsg.collectAsStateWithLifecycle()
 
     var selectedUriText by rememberSaveable { mutableStateOf<String?>(null) }
-    var selectedName by rememberSaveable { mutableStateOf("Chọn file") }
-    var matchSourceLoudness by rememberSaveable { mutableStateOf(true) }
-    var targetLoudnessEnabled by rememberSaveable { mutableStateOf(false) }
+    var selectedName by rememberSaveable { mutableStateOf<String?>(null) }
+    var loudnessModeName by rememberSaveable { mutableStateOf(VoiceCleanupLoudnessMode.MATCH_SOURCE.name) }
     var targetLufs by rememberSaveable { mutableFloatStateOf(-16f) }
     var outputGainDb by rememberSaveable { mutableFloatStateOf(0f) }
     var limiterEnabled by rememberSaveable { mutableStateOf(true) }
     var limiterCeilingDb by rememberSaveable { mutableFloatStateOf(-1f) }
+    var formatIndex by rememberSaveable { mutableStateOf(SettingsManager.getAudFormatIndex(context)) }
+    var bitrateIndex by rememberSaveable { mutableStateOf(SettingsManager.getAudBitrateIndex(context)) }
+    var threadsIndex by rememberSaveable { mutableStateOf(SettingsManager.getNumThreadsIndex(context)) }
+    var advancedExpanded by rememberSaveable { mutableStateOf(false) }
+    var showAnalysis by rememberSaveable { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
     var phase by remember { mutableStateOf("Sẵn sàng") }
     var resultFile by remember { mutableStateOf<File?>(null) }
     var resultReport by remember { mutableStateOf<VoiceCleanupReport?>(null) }
-    val selectedUri = selectedUriText?.let(Uri::parse)
 
+    val selectedUri = selectedUriText?.let(Uri::parse)
+    val loudnessMode = VoiceCleanupLoudnessMode.fromName(loudnessModeName)
     val config = VoiceCleanupConfig(
-        loudnessMode = when {
-            targetLoudnessEnabled -> VoiceCleanupLoudnessMode.TARGET_LUFS
-            matchSourceLoudness -> VoiceCleanupLoudnessMode.MATCH_SOURCE
-            else -> VoiceCleanupLoudnessMode.RAW
-        },
+        loudnessMode = loudnessMode,
         targetLufs = targetLufs,
         outputGainDb = outputGainDb,
         limiterEnabled = limiterEnabled,
@@ -198,7 +196,8 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
         pendingStart = null
     }
 
-    fun startWithPermission(uri: Uri, modelPath: String) {
+    fun startWithPermission(modelPath: String) {
+        val uri = selectedUri ?: return
         val start = PendingVoiceCleanupStart(uri.toString(), modelPath, config)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -211,246 +210,278 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
         }
     }
 
-    ToolScaffold(title = "Làm sạch giọng", onNavigateBack = onNavigateBack) { innerPadding ->
+    val downloadedModel = (downloadState as? DownloadState.Success)?.file
+
+    ToolScaffold(
+        title = "Làm sạch giọng",
+        onNavigateBack = onNavigateBack,
+        bottomBar = {
+            StickyProcessBar(
+                label = if (resultFile == null) "Bắt đầu làm sạch" else "Xử lý lại",
+                enabled = selectedUri != null && downloadedModel != null,
+                processing = serviceIsProcessing,
+                progress = progress,
+                phase = phase,
+                onClick = { downloadedModel?.let { startWithPermission(it.absolutePath) } },
+                onCancel = {
+                    context.startService(
+                        Intent(context, VoiceCleanupService::class.java)
+                            .setAction(VoiceCleanupService.ACTION_STOP),
+                    )
+                },
+            )
+        },
+    ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(viewModel.model.displayName, fontWeight = FontWeight.Bold)
-                        Text(
-                            "${viewModel.model.downloadSizeMiB} MiB • ${viewModel.model.licenseName}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Text("48 kHz", style = MaterialTheme.typography.labelLarge)
-                }
-            }
-
-            when (val state = downloadState) {
-                DownloadState.Idle -> Button(
-                    onClick = viewModel::downloadModel,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Tải model MossFormer2") }
-
-                is DownloadState.Downloading -> {
-                    Text("Đang tải model")
-                    LinearProgressIndicator(
-                        progress = { state.progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text("${(state.progress.coerceIn(0f, 1f) * 100f).toInt()}%")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = viewModel::pauseDownload, modifier = Modifier.weight(1f)) {
-                            Text("Tạm dừng")
-                        }
-                        Button(onClick = viewModel::downloadModel, modifier = Modifier.weight(1f)) {
-                            Text("Tiếp tục")
-                        }
-                    }
-                    OutlinedButton(
-                        onClick = viewModel::discardPartialDownload,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Xóa phần đã tải") }
-                }
-
-                is DownloadState.Error -> {
-                    Text(state.message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                    Button(onClick = viewModel::downloadModel, modifier = Modifier.fillMaxWidth()) {
-                        Text("Thử tải lại")
-                    }
-                }
-
-                is DownloadState.Success -> {
-                    VoiceCleanupSourceCard(
-                        selectedName = selectedName,
-                        originalUri = selectedUri,
-                        resultFile = resultFile,
-                        onChoose = { picker.launch(arrayOf("audio/*", "video/*")) },
-                    )
-
-                    VoiceCleanupControlsCard(
-                        matchSourceLoudness = matchSourceLoudness,
-                        onMatchSourceLoudnessChange = { checked ->
-                            matchSourceLoudness = checked
-                            if (checked) targetLoudnessEnabled = false
-                        },
-                        targetLoudnessEnabled = targetLoudnessEnabled,
-                        onTargetLoudnessEnabledChange = { checked ->
-                            targetLoudnessEnabled = checked
-                            if (checked) matchSourceLoudness = false
-                        },
-                        targetLufs = targetLufs,
-                        onTargetLufsChange = { targetLufs = it.roundToInt().toFloat() },
-                        outputGainDb = outputGainDb,
-                        onOutputGainDbChange = { outputGainDb = (it * 2f).roundToInt() / 2f },
-                        limiterEnabled = limiterEnabled,
-                        onLimiterEnabledChange = { limiterEnabled = it },
-                        limiterCeilingDb = limiterCeilingDb,
-                        onLimiterCeilingDbChange = {
-                            limiterCeilingDb = (it * 2f).roundToInt() / 2f
-                        },
-                    )
-
-                    Button(
-                        onClick = {
-                            selectedUri?.let { uri -> startWithPermission(uri, state.file.absolutePath) }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = selectedUri != null && !serviceIsProcessing,
-                    ) {
-                        Text(if (resultFile == null) "Bắt đầu làm sạch" else "Xử lý lại")
-                    }
-
-                    if (serviceIsProcessing) {
-                        VoiceCleanupProgressCard(
-                            progress = progress,
-                            phase = phase,
-                            onCancel = {
-                                context.startService(
-                                    Intent(context, VoiceCleanupService::class.java)
-                                        .setAction(VoiceCleanupService.ACTION_STOP),
-                                )
-                            },
-                        )
-                    }
-
-                    resultFile?.let { file ->
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Text("Kết quả", style = MaterialTheme.typography.titleMedium)
-                                ResultFileActions(file = file)
-                            }
-                        }
-                    }
-
-                    resultReport?.let { VoiceCleanupMetricsCard(it) }
-                    serviceError?.let { error ->
-                        Text(error, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                    }
-                }
-            }
-
-            val diagnosticReason = when {
-                downloadState is DownloadState.Error -> (downloadState as DownloadState.Error).message
-                serviceError != null -> serviceError
-                else -> null
-            }
-            diagnosticReason?.let { DiagnosticReportCard(errorContext = it) }
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-    }
-}
-
-@Composable
-private fun VoiceCleanupSourceCard(
-    selectedName: String,
-    originalUri: Uri?,
-    resultFile: File?,
-    onChoose: () -> Unit,
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Tệp và nghe thử", style = MaterialTheme.typography.titleMedium)
-            Button(onClick = onChoose, modifier = Modifier.fillMaxWidth()) {
-                Text(if (originalUri == null) "Chọn audio hoặc video" else "Đổi tệp")
-            }
-            if (originalUri != null) {
-                Text(selectedName, style = MaterialTheme.typography.bodyMedium)
-                VoiceCleanupPreview(originalUri, resultFile)
-            }
-        }
-    }
-}
+            MediaInputCard(
+                fileName = selectedName,
+                supportingText = "Audio hoặc video, đầu ra mono 48 kHz",
+                onChoose = { picker.launch(arrayOf("audio/*", "video/*")) },
+            )
 
-@Composable
-private fun VoiceCleanupControlsCard(
-    matchSourceLoudness: Boolean,
-    onMatchSourceLoudnessChange: (Boolean) -> Unit,
-    targetLoudnessEnabled: Boolean,
-    onTargetLoudnessEnabledChange: (Boolean) -> Unit,
-    targetLufs: Float,
-    onTargetLufsChange: (Float) -> Unit,
-    outputGainDb: Float,
-    onOutputGainDbChange: (Float) -> Unit,
-    limiterEnabled: Boolean,
-    onLimiterEnabledChange: (Boolean) -> Unit,
-    limiterCeilingDb: Float,
-    onLimiterCeilingDbChange: (Float) -> Unit,
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text("Tinh chỉnh đầu ra", style = MaterialTheme.typography.titleMedium)
-            SettingSwitchRow(
-                title = "Khớp âm lượng bản gốc",
-                checked = matchSourceLoudness,
-                onCheckedChange = onMatchSourceLoudnessChange,
+            val previewSources = buildList {
+                selectedUri?.let { add(AudioPreviewSource("source", "Bản gốc", it)) }
+                resultFile?.let { add(AudioPreviewSource("result", "Kết quả", Uri.fromFile(it))) }
+            }
+            UnifiedAudioPlayer(sources = previewSources, title = "Nghe so sánh")
+
+            VoiceCleanupModelCard(
+                modelName = viewModel.model.displayName,
+                modelSizeMiB = viewModel.model.downloadSizeMiB,
+                downloadState = downloadState,
+                onDownload = viewModel::downloadModel,
+                onPause = viewModel::pauseDownload,
+                onDiscard = viewModel::discardPartialDownload,
             )
-            SettingSwitchRow(
-                title = "Chuẩn hóa tới LUFS mục tiêu",
-                checked = targetLoudnessEnabled,
-                onCheckedChange = onTargetLoudnessEnabledChange,
-            )
-            if (targetLoudnessEnabled) {
-                ValueSlider(
-                    label = "Mục tiêu: ${targetLufs.roundToInt()} LUFS",
-                    value = targetLufs,
-                    onValueChange = onTargetLufsChange,
-                    valueRange = -24f..-10f,
-                    steps = 13,
+
+            ToolSectionCard(title = "Âm lượng đầu ra", icon = Icons.Default.GraphicEq) {
+                LoudnessModeRow(
+                    title = "Khớp âm lượng bản gốc",
+                    subtitle = "Phù hợp nhất để nghe A/B công bằng",
+                    selected = loudnessMode == VoiceCleanupLoudnessMode.MATCH_SOURCE,
+                    onClick = { loudnessModeName = VoiceCleanupLoudnessMode.MATCH_SOURCE.name },
                 )
+                LoudnessModeRow(
+                    title = "Giữ nguyên sau AI",
+                    subtitle = "Không tự thay đổi loudness",
+                    selected = loudnessMode == VoiceCleanupLoudnessMode.RAW,
+                    onClick = { loudnessModeName = VoiceCleanupLoudnessMode.RAW.name },
+                )
+                LoudnessModeRow(
+                    title = "Chuẩn hóa theo LUFS",
+                    subtitle = "Đưa file tới mức âm lượng mục tiêu",
+                    selected = loudnessMode == VoiceCleanupLoudnessMode.TARGET_LUFS,
+                    onClick = { loudnessModeName = VoiceCleanupLoudnessMode.TARGET_LUFS.name },
+                )
+                if (loudnessMode == VoiceCleanupLoudnessMode.TARGET_LUFS) {
+                    ParameterSlider(
+                        label = "LUFS mục tiêu",
+                        valueLabel = "${targetLufs.roundToInt()} LUFS",
+                        value = targetLufs,
+                        valueRange = -30f..-8f,
+                        steps = 21,
+                        onValueChange = { targetLufs = it.roundToInt().toFloat() },
+                    )
+                }
+                HorizontalDivider()
+                ParameterSlider(
+                    label = "Gain bổ sung",
+                    valueLabel = formatSigned(outputGainDb, "dB"),
+                    value = outputGainDb,
+                    valueRange = -12f..12f,
+                    steps = 47,
+                    onValueChange = { outputGainDb = (it * 2f).roundToInt() / 2f },
+                )
+                SettingSwitchRow(
+                    title = "Limiter bảo vệ clipping",
+                    subtitle = "Chỉ giới hạn đỉnh, không tự nâng loudness",
+                    checked = limiterEnabled,
+                    onCheckedChange = { limiterEnabled = it },
+                )
+                if (limiterEnabled) {
+                    ParameterSlider(
+                        label = "Trần limiter",
+                        valueLabel = String.format(Locale.US, "%.1f dBFS", limiterCeilingDb),
+                        value = limiterCeilingDb,
+                        valueRange = -6f..-0.5f,
+                        steps = 10,
+                        onValueChange = { limiterCeilingDb = (it * 2f).roundToInt() / 2f },
+                    )
+                }
             }
-            HorizontalDivider()
-            ValueSlider(
-                label = "Gain bổ sung: ${formatSigned(outputGainDb)} dB",
-                value = outputGainDb,
-                onValueChange = onOutputGainDbChange,
-                valueRange = -12f..12f,
-                steps = 47,
-            )
-            SettingSwitchRow(
-                title = "Limiter chống clipping",
-                checked = limiterEnabled,
-                onCheckedChange = onLimiterEnabledChange,
-            )
-            if (limiterEnabled) {
-                ValueSlider(
-                    label = "Trần limiter: ${formatOneDecimal(limiterCeilingDb)} dBFS",
-                    value = limiterCeilingDb,
-                    onValueChange = onLimiterCeilingDbChange,
-                    valueRange = -6f..-0.5f,
-                    steps = 10,
+
+            ToolSectionCard(title = "Xuất file", icon = Icons.Default.Settings) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    CompactDropdown(
+                        label = "Định dạng",
+                        values = listOf("M4A", "MP3", "WAV", "FLAC"),
+                        selectedIndex = formatIndex,
+                        onSelected = {
+                            formatIndex = it
+                            SettingsManager.setAudFormatIndex(context, it)
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    CompactDropdown(
+                        label = "Chất lượng",
+                        values = listOf("128 kbps", "192 kbps", "256 kbps", "320 kbps", "Lossless"),
+                        selectedIndex = bitrateIndex,
+                        onSelected = {
+                            bitrateIndex = it
+                            SettingsManager.setAudBitrateIndex(context, it)
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            ToolSectionCard(title = "Nâng cao", icon = Icons.Default.Tune) {
+                TextButton(onClick = { advancedExpanded = !advancedExpanded }) {
+                    Text(if (advancedExpanded) "Thu gọn" else "Mở thông số nâng cao")
+                }
+                if (advancedExpanded) {
+                    CompactDropdown(
+                        label = "Luồng CPU",
+                        values = listOf("1 luồng", "2 luồng", "4 luồng", "8 luồng"),
+                        selectedIndex = threadsIndex,
+                        onSelected = {
+                            threadsIndex = it
+                            SettingsManager.setNumThreadsIndex(context, it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    SettingSwitchRow(
+                        title = "Hiển thị phân tích chi tiết",
+                        subtitle = "LUFS, RMS, peak và thống kê mask",
+                        checked = showAnalysis,
+                        onCheckedChange = { showAnalysis = it },
+                    )
+                    Text(
+                        "Model cố định: MossFormer2 SE 48K • ONNX Runtime CPU",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            resultFile?.let { file ->
+                ToolSectionCard(title = "Kết quả") {
+                    resultReport?.let { report ->
+                        Text(
+                            "Gain đã áp: ${formatSigned(report.appliedGainDb, "dB")} • RTF ${formatNumber(report.inferenceRealTimeFactor)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    ResultFileActions(file = file)
+                }
+            }
+
+            if (showAnalysis) {
+                resultReport?.let { VoiceCleanupAnalysisCard(it) }
+            }
+
+            serviceError?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                DiagnosticReportCard(errorContext = it)
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun VoiceCleanupModelCard(
+    modelName: String,
+    modelSizeMiB: Long,
+    downloadState: DownloadState,
+    onDownload: () -> Unit,
+    onPause: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    ToolSectionCard(title = "Mô hình AI", icon = Icons.Default.Memory) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(modelName, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "$modelSizeMiB MiB • 48 kHz",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Text(
-                when {
-                    targetLoudnessEnabled -> "Chế độ: LUFS mục tiêu"
-                    matchSourceLoudness -> "Chế độ: khớp bản gốc"
-                    else -> "Chế độ: giữ mức sau AI"
+                when (downloadState) {
+                    is DownloadState.Success -> "Sẵn sàng"
+                    is DownloadState.Downloading -> "Đang tải"
+                    is DownloadState.Error -> "Có lỗi"
+                    DownloadState.Idle -> "Chưa tải"
                 },
-                style = MaterialTheme.typography.labelMedium,
+                color = if (downloadState is DownloadState.Success) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        when (downloadState) {
+            DownloadState.Idle -> Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
+                Text("Tải model")
+            }
+            is DownloadState.Downloading -> {
+                LinearProgressIndicator(
+                    progress = { downloadState.progress.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("${(downloadState.progress.coerceIn(0f, 1f) * 100f).toInt()}%")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(onClick = onPause, modifier = Modifier.weight(1f)) { Text("Tạm dừng") }
+                    Button(onClick = onDownload, modifier = Modifier.weight(1f)) { Text("Tiếp tục") }
+                }
+                TextButton(onClick = onDiscard, modifier = Modifier.fillMaxWidth()) { Text("Xóa phần đã tải") }
+            }
+            is DownloadState.Error -> {
+                Text(downloadState.message, color = MaterialTheme.colorScheme.error)
+                Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) { Text("Thử tải lại") }
+            }
+            is DownloadState.Success -> Unit
+        }
+    }
+}
+
+@Composable
+private fun LoudnessModeRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -460,29 +491,41 @@ private fun VoiceCleanupControlsCard(
 @Composable
 private fun SettingSwitchRow(
     title: String,
+    subtitle: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(title, modifier = Modifier.weight(1f))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
 @Composable
-private fun ValueSlider(
+private fun ParameterSlider(
     label: String,
+    valueLabel: String,
     value: Float,
-    onValueChange: (Float) -> Unit,
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int,
+    onValueChange: (Float) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label)
+            Text(valueLabel, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+        }
         Slider(
             value = value,
             onValueChange = onValueChange,
@@ -493,218 +536,47 @@ private fun ValueSlider(
 }
 
 @Composable
-private fun VoiceCleanupProgressCard(
-    progress: Float,
-    phase: String,
-    onCancel: () -> Unit,
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            CircularProgressIndicator()
-            Text(phase, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-            LinearProgressIndicator(
-                progress = { progress.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text("${(progress.coerceIn(0f, 1f) * 100f).toInt()}%")
-            OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
-                Text("Hủy xử lý")
-            }
-        }
-    }
-}
-
-@Composable
-private fun VoiceCleanupPreview(originalUri: Uri, resultFile: File?) {
-    val context = LocalContext.current
-    var selectedTrack by remember(resultFile?.absolutePath) {
-        mutableStateOf(
-            if (resultFile == null) {
-                VoiceCleanupPreviewChoice.ORIGINAL
-            } else {
-                VoiceCleanupPreviewChoice.RESULT
-            },
+private fun VoiceCleanupAnalysisCard(report: VoiceCleanupReport) {
+    ToolSectionCard(title = "Phân tích lần xử lý", icon = Icons.Default.GraphicEq) {
+        MetricsLine("Bản gốc", report.source)
+        MetricsLine("Sau AI", report.afterAi)
+        MetricsLine("File cuối", report.finalOutput)
+        HorizontalDivider()
+        Text(
+            "Mask: mean ${formatNumber(report.mask.mean)}, p10 ${formatNumber(report.mask.p10)}, " +
+                "p50 ${formatNumber(report.mask.p50)}, p90 ${formatNumber(report.mask.p90)}",
+        )
+        Text(
+            "Dưới 0,9: ${formatNumber(report.mask.belowPointNinePercent)}% • " +
+                "Dưới 0,5: ${formatNumber(report.mask.belowPointFivePercent)}% • " +
+                "Gần 1: ${formatNumber(report.mask.nearUnityPercent)}%",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "${report.segmentCount} đoạn • RTF ${formatNumber(report.inferenceRealTimeFactor)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-    LaunchedEffect(resultFile) {
-        if (resultFile == null && selectedTrack == VoiceCleanupPreviewChoice.RESULT) {
-            selectedTrack = VoiceCleanupPreviewChoice.ORIGINAL
-        }
-    }
-    val activeUri = when (selectedTrack) {
-        VoiceCleanupPreviewChoice.ORIGINAL -> originalUri
-        VoiceCleanupPreviewChoice.RESULT -> resultFile?.let(Uri::fromFile) ?: originalUri
-    }
-    var player by remember { mutableStateOf<MediaPlayer?>(null) }
-    var prepared by remember { mutableStateOf(false) }
-    var playing by remember { mutableStateOf(false) }
-    var positionMs by remember { mutableIntStateOf(0) }
-    var durationMs by remember { mutableIntStateOf(1) }
-
-    DisposableEffect(activeUri) {
-        prepared = false
-        playing = false
-        positionMs = 0
-        durationMs = 1
-        val mediaPlayer = MediaPlayer()
-        player = mediaPlayer
-        mediaPlayer.setOnPreparedListener {
-            prepared = true
-            durationMs = it.duration.coerceAtLeast(1)
-        }
-        mediaPlayer.setOnCompletionListener {
-            playing = false
-            positionMs = 0
-            it.seekTo(0)
-        }
-        mediaPlayer.setOnErrorListener { _, _, _ ->
-            prepared = false
-            playing = false
-            true
-        }
-        runCatching {
-            mediaPlayer.setDataSource(context, activeUri)
-            mediaPlayer.prepareAsync()
-        }.onFailure {
-            prepared = false
-            playing = false
-        }
-        onDispose {
-            runCatching { mediaPlayer.release() }
-            if (player === mediaPlayer) player = null
-        }
-    }
-
-    LaunchedEffect(playing, player) {
-        while (playing) {
-            val active = player
-            if (active != null && runCatching { active.isPlaying }.getOrDefault(false)) {
-                positionMs = active.currentPosition.coerceAtLeast(0)
-            }
-            delay(150L)
-        }
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (selectedTrack == VoiceCleanupPreviewChoice.ORIGINAL) {
-                    Button(
-                        onClick = { selectedTrack = VoiceCleanupPreviewChoice.ORIGINAL },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Bản gốc") }
-                } else {
-                    OutlinedButton(
-                        onClick = { selectedTrack = VoiceCleanupPreviewChoice.ORIGINAL },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Bản gốc") }
-                }
-                if (resultFile != null) {
-                    if (selectedTrack == VoiceCleanupPreviewChoice.RESULT) {
-                        Button(
-                            onClick = { selectedTrack = VoiceCleanupPreviewChoice.RESULT },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Kết quả") }
-                    } else {
-                        OutlinedButton(
-                            onClick = { selectedTrack = VoiceCleanupPreviewChoice.RESULT },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Kết quả") }
-                    }
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = {
-                        val active = player ?: return@IconButton
-                        if (playing) active.pause() else active.start()
-                        playing = !playing
-                    },
-                    enabled = prepared,
-                ) {
-                    Icon(
-                        imageVector = if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (playing) "Tạm dừng" else "Nghe thử",
-                    )
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Slider(
-                        value = positionMs.toFloat().coerceIn(0f, durationMs.toFloat()),
-                        onValueChange = { value ->
-                            positionMs = value.roundToInt().coerceIn(0, durationMs)
-                            player?.seekTo(positionMs)
-                        },
-                        valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
-                        enabled = prepared,
-                    )
-                    Text(
-                        "${formatTime(positionMs)} / ${formatTime(durationMs)}",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
-        }
-    }
 }
 
 @Composable
-private fun VoiceCleanupMetricsCard(report: VoiceCleanupReport) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text("Thống kê xử lý", style = MaterialTheme.typography.titleMedium)
-            AudioMetricRow("Bản gốc", report.source)
-            AudioMetricRow("Sau AI", report.afterAi)
-            AudioMetricRow("File cuối", report.finalOutput)
-            HorizontalDivider()
-            Text(
-                "Mask: mean ${formatMetric(report.mask.mean)} • p50 ${formatMetric(report.mask.p50)} • " +
-                    "<0,9 ${formatMetric(report.mask.belowPointNinePercent)}% • " +
-                    "<0,5 ${formatMetric(report.mask.belowPointFivePercent)}%",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                "Gần 1: ${formatMetric(report.mask.nearUnityPercent)}% • " +
-                    "Gain áp dụng: ${formatSigned(report.appliedGainDb)} dB • " +
-                    "RTF: ${formatMetric(report.inferenceRealTimeFactor)}",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-@Composable
-private fun AudioMetricRow(label: String, metrics: VoiceCleanupAudioMetrics) {
+private fun MetricsLine(label: String, metrics: VoiceCleanupAudioMetrics) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(label, fontWeight = FontWeight.SemiBold)
         Text(
-            "LUFS ${formatNullable(metrics.integratedLufs)} • " +
-                "RMS ${formatNullable(metrics.rmsDbfs)} dBFS • " +
-                "Peak ${formatNullable(metrics.samplePeakDbfs)} dBFS • " +
-                "True peak ${formatNullable(metrics.truePeakDbfs)} dBFS",
+            "LUFS ${formatNullable(metrics.integratedLufs)} • RMS ${formatNullable(metrics.rmsDbfs)} dBFS • " +
+                "Peak ${formatNullable(metrics.samplePeakDbfs)} dBFS • TP ${formatNullable(metrics.truePeakDbfs)} dBFS",
             style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
-private fun formatTime(milliseconds: Int): String {
-    val totalSeconds = milliseconds.coerceAtLeast(0) / 1_000
-    return "%d:%02d".format(Locale.US, totalSeconds / 60, totalSeconds % 60)
-}
+private fun formatSigned(value: Float, unit: String): String =
+    String.format(Locale.US, "%+.1f %s", value, unit)
 
-private fun formatSigned(value: Float): String = String.format(Locale.US, "%+.1f", value)
-private fun formatOneDecimal(value: Float): String = String.format(Locale.US, "%.1f", value)
-private fun formatMetric(value: Double): String = String.format(Locale.US, "%.2f", value)
-private fun formatNullable(value: Double?): String = value?.let(::formatMetric) ?: "N/A"
+private fun formatNumber(value: Double): String = String.format(Locale.US, "%.2f", value)
+
+private fun formatNullable(value: Double?): String = value?.let(::formatNumber) ?: "—"

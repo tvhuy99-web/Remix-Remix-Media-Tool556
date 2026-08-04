@@ -63,7 +63,9 @@ class StemPcmToolkitTest {
     }
 
     private fun pcmFile(samples: FloatArray): File = File.createTempFile("stem-pcm", ".f32").also { file ->
-        DataOutputStream(FileOutputStream(file)).use { output -> samples.forEach(output::writeFloatLittleEndian) }
+        DataOutputStream(FileOutputStream(file)).use { output ->
+            samples.forEach { value -> output.writeFloatLittleEndian(value) }
+        }
     }
 
     private fun DataOutputStream.writeFloatLittleEndian(value: Float) {

@@ -15,13 +15,31 @@ class MossFormer2DspTest {
     }
 
     @Test
-    fun segmentationAlwaysCoversInputForEveryMode() {
+    fun segmentationAlwaysCoversRetainedOutputForEveryMode() {
         for (mode in VoiceCleanupWindowMode.entries) {
             val dsp = MossFormer2Dsp(mode)
-            for (length in listOf(0L, 1L, mode.segmentSamples.toLong(), mode.segmentSamples + 1L, 1_000_000L)) {
+            val firstRetained = dsp.segmentSamples - dsp.edgeDiscardSamples
+            val lengths = listOf(
+                0L,
+                1L,
+                firstRetained.toLong(),
+                firstRetained + 1L,
+                mode.segmentSamples.toLong(),
+                mode.segmentSamples + 1L,
+                1_000_000L,
+            )
+
+            for (length in lengths) {
+                val count = dsp.segmentCount(length)
+                val retainedCoverage = firstRetained.toLong() + (count - 1L) * dsp.strideSamples
                 val padded = dsp.paddedLength(length)
+
+                assertTrue(retainedCoverage >= length)
                 assertTrue(padded >= length)
                 assertEquals(0L, (padded - dsp.segmentSamples) % dsp.strideSamples)
+                if (count > 1) {
+                    assertTrue(retainedCoverage - dsp.strideSamples < length)
+                }
             }
         }
     }

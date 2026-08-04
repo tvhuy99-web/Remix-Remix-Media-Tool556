@@ -984,13 +984,18 @@ class AudioSeparator(
                 }
             }
 
+            val activeJob = coroutineContext[kotlinx.coroutines.Job]
             if (!is4StemMode) {
                 StemPcmToolkit.createResidual(
                     mixFile = inferencePcm,
                     vocalsFile = tempRawVocals,
                     destination = tempRawMusic,
                     channels = channels,
-                    cancellationCheck = { coroutineContext.ensureActive() },
+                    cancellationCheck = {
+                        if (activeJob?.isActive == false) {
+                            throw CancellationException("Đã hủy xử lý")
+                        }
+                    },
                 )
                 logInfo(
                     event = "two_stem_residual_complete",

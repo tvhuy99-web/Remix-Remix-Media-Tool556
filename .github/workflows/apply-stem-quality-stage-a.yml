@@ -29,6 +29,37 @@ jobs:
           ref: agent/stem-quality-hardening
           fetch-depth: 0
 
+      - name: Tighten five-command replacement
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/apply_stem_quality_stage_a.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''replace_once(
+              "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt",
+              ' $trimArgs $encodingArgs ',
+              ' $outputFilterArgs $encodingArgs ',
+          )
+          # Four more trimArgs occurrences.
+          for _ in range(4):
+              replace_once(
+                  "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt",
+                  ' $trimArgs $encodingArgs ',
+                  ' $outputFilterArgs $encodingArgs ',
+              )
+          '''
+          new = '''target = ROOT / "app/src/main/java/com/aistudio/mediatool/core/ml/AudioSeparator.kt"
+          text = target.read_text(encoding="utf-8")
+          old_encoding = ' $trimArgs $encodingArgs '
+          if text.count(old_encoding) != 5:
+              raise RuntimeError(f"Expected five stem encoding filters, found {text.count(old_encoding)}")
+          target.write_text(text.replace(old_encoding, ' $outputFilterArgs $encodingArgs '), encoding="utf-8")
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('Could not locate guarded five-command replacement')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply guarded patch
         run: python3 scripts/apply_stem_quality_stage_a.py
 

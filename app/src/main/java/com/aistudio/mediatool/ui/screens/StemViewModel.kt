@@ -6,7 +6,6 @@ import androidx.lifecycle.viewModelScope
 import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.ml.DownloadState
 import com.aistudio.mediatool.core.ml.ModelDownloader
-import com.aistudio.mediatool.core.ml.OnnxAcceleration
 import com.aistudio.mediatool.core.ml.StemMode
 import com.aistudio.mediatool.core.ml.StemModelDescriptor
 import com.aistudio.mediatool.core.ml.StemModelRegistry
@@ -30,7 +29,6 @@ class StemViewModel(application: Application) : AndroidViewModel(application) {
     private var initializationJob: Job? = null
 
     init {
-        SettingsManager.setHardwareAccelIndex(appContext, OnnxAcceleration.CPU.settingsIndex)
         inspectSelectedModel(_selectedModel.value)
     }
 

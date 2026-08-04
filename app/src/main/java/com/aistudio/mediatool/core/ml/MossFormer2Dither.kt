@@ -16,7 +16,7 @@ internal class MossFormer2Dither(seed: Long) {
             hasSpare = false
             return spare.toFloat()
         }
-        val u1 = nextUnit().coerceAtLeast(Double.MIN_NORMAL)
+        val u1 = nextUnit().coerceAtLeast(MIN_POSITIVE_UNIT)
         val u2 = nextUnit()
         val radius = sqrt(-2.0 * ln(u1))
         val angle = 2.0 * PI * u2
@@ -37,5 +37,6 @@ internal class MossFormer2Dither(seed: Long) {
 
     private companion object {
         const val DEFAULT_SEED = -7_046_029_254_386_353_131L
+        const val MIN_POSITIVE_UNIT = 1.0e-300
     }
 }

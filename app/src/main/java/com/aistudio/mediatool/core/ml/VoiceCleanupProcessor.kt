@@ -106,7 +106,7 @@ class VoiceCleanupProcessor(
                     "inference_ms" to inference.inferenceMs,
                     "rtf" to inference.realTimeFactor,
                     "peak_pss_kb" to inference.peakPssKb,
-                ) + inference.maskMetrics.diagnosticFields(),
+                ) + config.diagnosticFields() + inference.maskMetrics.diagnosticFields(),
             )
 
             checkpoint("ai_metrics", 0.89f)
@@ -162,7 +162,7 @@ class VoiceCleanupProcessor(
                     "format" to extension,
                     "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
                     "applied_gain_db" to appliedGainDb,
-                ) + finalMetrics.diagnosticFields("final"),
+                ) + config.diagnosticFields() + finalMetrics.diagnosticFields("final"),
             )
             emit(VoiceCleanupState.Progress(1f, "Hoàn tất"))
             emit(VoiceCleanupState.Success(target, report))
@@ -180,7 +180,7 @@ class VoiceCleanupProcessor(
                     "source_id" to sourceId,
                     "out_of_memory" to (error is OutOfMemoryError),
                     "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
-                ),
+                ) + config.diagnosticFields(),
                 error = error,
             )
             throw error
@@ -198,13 +198,13 @@ class VoiceCleanupProcessor(
         totalSamples: Long,
         onProgress: suspend (Float, String) -> Unit,
     ): InferenceMetrics {
-        val segmentCount = MossFormer2Dsp.segmentCount(totalSamples)
-        val inputBytes = ByteArray(MossFormer2Dsp.SEGMENT_SAMPLES * Float.SIZE_BYTES)
-        val segment = FloatArray(MossFormer2Dsp.SEGMENT_SAMPLES)
+        val dsp = MossFormer2Dsp(config.windowMode)
+        val segmentCount = dsp.segmentCount(totalSamples)
+        val inputBytes = ByteArray(dsp.segmentSamples * Float.SIZE_BYTES)
+        val segment = FloatArray(dsp.segmentSamples)
         val writeBuffer = ByteBuffer
-            .allocate((MossFormer2Dsp.SEGMENT_SAMPLES - MossFormer2Dsp.EDGE_DISCARD_SAMPLES) * Float.SIZE_BYTES)
+            .allocate((dsp.segmentSamples - dsp.edgeDiscardSamples) * Float.SIZE_BYTES)
             .order(ByteOrder.LITTLE_ENDIAN)
-        val dsp = MossFormer2Dsp()
         val aggregateMask = VoiceCleanupMaskAccumulator()
         var inferenceMs = 0L
         var writtenSamples = 0L
@@ -213,6 +213,7 @@ class VoiceCleanupProcessor(
         val openedEngine = MossFormer2OnnxEngine.open(
             modelFile = modelFile,
             cpuThreads = SettingsManager.getNumThreads(context),
+            frames = dsp.frames,
         )
         engine = openedEngine
         try {
@@ -222,9 +223,9 @@ class VoiceCleanupProcessor(
                         coroutineContext.ensureActive()
                         if (cancelRequested.get()) throw CancellationException("Đã hủy xử lý")
                         Arrays.fill(segment, 0f)
-                        val sourceStart = segmentIndex.toLong() * MossFormer2Dsp.STRIDE_SAMPLES
+                        val sourceStart = segmentIndex.toLong() * dsp.strideSamples
                         val availableSamples = min(
-                            MossFormer2Dsp.SEGMENT_SAMPLES.toLong(),
+                            dsp.segmentSamples.toLong(),
                             (totalSamples - sourceStart).coerceAtLeast(0L),
                         ).toInt()
                         if (availableSamples > 0) {
@@ -252,11 +253,15 @@ class VoiceCleanupProcessor(
                         aggregateMask.add(mask)
                         logInfo(
                             "segment_mask_metrics",
-                            mapOf("segment_index" to segmentIndex) + segmentMask.diagnosticFields("mask"),
+                            mapOf(
+                                "segment_index" to segmentIndex,
+                                "available_samples" to availableSamples,
+                                "valid_sample_ratio" to availableSamples.toDouble() / dsp.segmentSamples,
+                            ) + segmentMask.diagnosticFields("mask"),
                         )
 
                         val enhanced = dsp.applyMask(segment, mask)
-                        val retained = MossFormer2Dsp.retainedRange(segmentIndex)
+                        val retained = dsp.retainedRange(segmentIndex)
                         val remaining = (totalSamples - writtenSamples).coerceAtLeast(0L)
                         val count = min(retained.count().toLong(), remaining).toInt()
                         writeBuffer.clear()
@@ -279,6 +284,8 @@ class VoiceCleanupProcessor(
                                 "available_samples" to availableSamples,
                                 "written_samples" to count,
                                 "process_pss_kb" to Debug.getPss(),
+                                "window_seconds" to config.windowMode.seconds,
+                                "feature_frames" to dsp.frames,
                             ),
                         )
                     }

@@ -58,10 +58,10 @@ internal object SynchronizedStemMixerMath {
             var left = 0f
             var right = 0f
             for (track in 0 until trackCount) {
-                val gain = gains[track].takeIf(Float::isFinite)?.coerceIn(0f, 1f) ?: 0f
+                val gain = gains[track].takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f
                 val channelBase = sourceBase + track * 2
-                val sourceLeft = source[channelBase].takeIf(Float::isFinite) ?: 0f
-                val sourceRight = source[channelBase + 1].takeIf(Float::isFinite) ?: 0f
+                val sourceLeft = source[channelBase].takeIf { it.isFinite() } ?: 0f
+                val sourceRight = source[channelBase + 1].takeIf { it.isFinite() } ?: 0f
                 left += sourceLeft * gain
                 right += sourceRight * gain
             }

@@ -317,7 +317,7 @@ fun StemScreen(onNavigateBack: () -> Unit) {
 
             result?.let { success ->
                 val items = buildStemItems(success)
-                StemMixerCard(items)
+                SynchronizedStemMixerCard(success)
                 ToolSectionCard(title = "Lưu kết quả") {
                     items.forEach { item ->
                         ResultFileActions(

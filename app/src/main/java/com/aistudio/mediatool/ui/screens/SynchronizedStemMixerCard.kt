@@ -66,7 +66,7 @@ internal fun SynchronizedStemMixerCard(success: SeparationState.Success) {
     var draggingTimeline by remember { mutableStateOf(false) }
 
     DisposableEffect(controller) {
-        onDispose(controller::close)
+        onDispose { controller.close() }
     }
 
     LaunchedEffect(enginePositionMs, draggingTimeline) {

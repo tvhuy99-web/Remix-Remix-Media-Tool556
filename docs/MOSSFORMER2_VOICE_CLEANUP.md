@@ -115,9 +115,9 @@ Mỗi tác vụ ghi:
 - Mask và PCM có NaN hoặc vô cực bị từ chối ngay.
 - Đầu ra là audio mono kể cả khi đầu vào là video hoặc stereo.
 
-## Xác minh
+## Xác minh tự động
 
-GitHub Actions đã đạt toàn bộ trên nhánh `agent/voice-cleanup-window-modes`:
+Workflow pull request phải đạt toàn bộ:
 
 - Xác minh cấu trúc dự án.
 - Build APK debug.

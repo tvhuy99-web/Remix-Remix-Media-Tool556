@@ -19,6 +19,7 @@ fun ToolScaffold(
     title: String,
     onNavigateBack: () -> Unit,
     actions: @Composable () -> Unit = {},
+    bottomBar: @Composable () -> Unit = {},
     content: @Composable (PaddingValues) -> Unit,
 ) {
     Scaffold(
@@ -38,6 +39,7 @@ fun ToolScaffold(
                 ),
             )
         },
+        bottomBar = bottomBar,
         content = content,
     )
 }

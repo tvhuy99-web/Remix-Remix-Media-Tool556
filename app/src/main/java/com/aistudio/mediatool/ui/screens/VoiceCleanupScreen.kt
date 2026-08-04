@@ -53,6 +53,7 @@ import com.aistudio.mediatool.core.ml.VoiceCleanupLoudnessMode
 import com.aistudio.mediatool.core.ml.VoiceCleanupReport
 import com.aistudio.mediatool.core.ml.VoiceCleanupService
 import com.aistudio.mediatool.core.ml.VoiceCleanupState
+import com.aistudio.mediatool.core.ml.VoiceCleanupWindowMode
 import com.aistudio.mediatool.ui.components.AccessibleSwitchRow
 import com.aistudio.mediatool.ui.components.AccessibleValueSlider
 import com.aistudio.mediatool.ui.components.AudioPreviewSource
@@ -85,6 +86,7 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
 
     var selectedUriText by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedName by rememberSaveable { mutableStateOf<String?>(null) }
+    var windowModeName by rememberSaveable { mutableStateOf(VoiceCleanupWindowMode.BALANCED_10S.name) }
     var loudnessModeName by rememberSaveable { mutableStateOf(VoiceCleanupLoudnessMode.MATCH_SOURCE.name) }
     var targetLufs by rememberSaveable { mutableFloatStateOf(-16f) }
     var outputGainDb by rememberSaveable { mutableFloatStateOf(0f) }
@@ -97,8 +99,10 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
     var resultReport by remember { mutableStateOf<VoiceCleanupReport?>(null) }
 
     val selectedUri = selectedUriText?.let(Uri::parse)
+    val windowMode = VoiceCleanupWindowMode.fromName(windowModeName)
     val loudnessMode = VoiceCleanupLoudnessMode.fromName(loudnessModeName)
     val config = VoiceCleanupConfig(
+        windowMode = windowMode,
         loudnessMode = loudnessMode,
         targetLufs = targetLufs,
         outputGainDb = outputGainDb,
@@ -150,6 +154,7 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
             action = VoiceCleanupService.ACTION_START
             putExtra(VoiceCleanupService.EXTRA_URI, start.uriText)
             putExtra(VoiceCleanupService.EXTRA_MODEL_FILE, start.modelPath)
+            putExtra(VoiceCleanupService.EXTRA_WINDOW_MODE, start.config.windowMode.name)
             putExtra(VoiceCleanupService.EXTRA_LOUDNESS_MODE, start.config.loudnessMode.name)
             putExtra(VoiceCleanupService.EXTRA_TARGET_LUFS, start.config.targetLufs)
             putExtra(VoiceCleanupService.EXTRA_OUTPUT_GAIN_DB, start.config.outputGainDb)
@@ -201,6 +206,24 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
     }
 
     val downloadedModel = (downloadState as? DownloadState.Success)?.file
+    val windowOptions = listOf(
+        "Tương thích – 4 giây",
+        "Cân bằng – 10 giây (mặc định)",
+        "Tối đa – 15 giây",
+    )
+    val windowIndex = when (windowMode) {
+        VoiceCleanupWindowMode.COMPATIBILITY_4S -> 0
+        VoiceCleanupWindowMode.BALANCED_10S -> 1
+        VoiceCleanupWindowMode.MAXIMUM_15S -> 2
+    }
+    val windowHint = when (windowMode) {
+        VoiceCleanupWindowMode.COMPATIBILITY_4S ->
+            "Dùng ít RAM nhất và phù hợp khi chế độ dài hơn không chạy ổn định."
+        VoiceCleanupWindowMode.BALANCED_10S ->
+            "Cân bằng giữa ngữ cảnh giọng nói, tốc độ và bộ nhớ trên điện thoại cao cấp."
+        VoiceCleanupWindowMode.MAXIMUM_15S ->
+            "Cho ngữ cảnh dài nhất, cần nhiều RAM và chỉ nên dùng trên điện thoại rất mạnh."
+    }
     val loudnessOptions = listOf(
         "Giống bản gốc",
         "Giữ nguyên kết quả lọc",
@@ -259,6 +282,24 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
             )
 
             ToolSectionCard(title = "Điều chỉnh âm thanh") {
+                CompactDropdown(
+                    label = "Độ dài xử lý AI",
+                    values = windowOptions,
+                    selectedIndex = windowIndex,
+                    onSelected = { index ->
+                        windowModeName = when (index) {
+                            0 -> VoiceCleanupWindowMode.COMPATIBILITY_4S.name
+                            2 -> VoiceCleanupWindowMode.MAXIMUM_15S.name
+                            else -> VoiceCleanupWindowMode.BALANCED_10S.name
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    windowHint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 CompactDropdown(
                     label = "Giữ âm lượng",
                     values = loudnessOptions,

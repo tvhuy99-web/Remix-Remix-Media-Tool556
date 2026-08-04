@@ -12,12 +12,16 @@ import kotlin.math.ln
  * remain valid only until the next call that produces the same kind of output.
  */
 internal class MossFormer2Dsp(
-    val windowMode: VoiceCleanupWindowMode = VoiceCleanupWindowMode.BALANCED_10S,
+    val plan: VoiceCleanupWindowPlan,
 ) {
-    val segmentSamples: Int = windowMode.segmentSamples
-    val strideSamples: Int = windowMode.strideSamples
-    val edgeDiscardSamples: Int = windowMode.edgeDiscardSamples
-    val frames: Int = windowMode.frames
+    constructor(windowMode: VoiceCleanupWindowMode = VoiceCleanupWindowMode.BALANCED_10S) :
+        this(VoiceCleanupWindowPlan.fixed(windowMode))
+
+    val windowMode: VoiceCleanupWindowMode = plan.mode
+    val segmentSamples: Int = plan.segmentSamples
+    val strideSamples: Int = plan.strideSamples
+    val edgeDiscardSamples: Int = plan.edgeDiscardSamples
+    val frames: Int = plan.frames
 
     private val maskFft = BluesteinFft(FFT_SIZE)
     private val fbankFft = MixedRadixFft(FBANK_FFT_SIZE)
@@ -31,19 +35,24 @@ internal class MossFormer2Dsp(
     private val stftReal = FloatArray(FFT_SIZE)
     private val stftImag = FloatArray(FFT_SIZE)
 
-    fun buildFeatures(samples: FloatArray): FloatArray {
+    fun buildFeatures(
+        samples: FloatArray,
+        ditherMode: VoiceCleanupDitherMode = VoiceCleanupDitherMode.OFF,
+        ditherSeed: Long = DEFAULT_DITHER_SEED,
+    ): FloatArray {
         require(samples.size == segmentSamples) {
-            "MossFormer2 cần đúng $segmentSamples mẫu cho mỗi đoạn ${windowMode.seconds} giây"
+            "MossFormer2 cần đúng $segmentSamples mẫu cho mỗi đoạn"
         }
+        val featureInput = prepareFeatureInput(samples, ditherMode, ditherSeed)
         val base = workspace.featureBase
         for (frame in 0 until frames) {
             val start = frame * HOP_SIZE
             var mean = 0.0
-            for (index in 0 until FRAME_LENGTH) mean += samples[start + index]
+            for (index in 0 until FRAME_LENGTH) mean += featureInput[start + index]
             mean /= FRAME_LENGTH.toDouble()
 
             for (index in 0 until FRAME_LENGTH) {
-                fbankReal[index] = samples[start + index] - mean.toFloat()
+                fbankReal[index] = featureInput[start + index] - mean.toFloat()
             }
             for (index in FRAME_LENGTH - 1 downTo 1) {
                 fbankReal[index] -= PREEMPHASIS * fbankReal[index - 1]
@@ -83,6 +92,21 @@ internal class MossFormer2Dsp(
         }
         check(features.all(Float::isFinite)) { "Frontend MossFormer2 tạo feature không hữu hạn" }
         return features
+    }
+
+    private fun prepareFeatureInput(
+        samples: FloatArray,
+        ditherMode: VoiceCleanupDitherMode,
+        ditherSeed: Long,
+    ): FloatArray {
+        if (ditherMode == VoiceCleanupDitherMode.OFF) return samples
+        val dither = MossFormer2Dither(ditherSeed)
+        val output = workspace.ditheredInput
+        val amplitude = ditherMode.amplitudeLsb
+        for (index in samples.indices) {
+            output[index] = samples[index] + amplitude * dither.nextGaussian()
+        }
+        return output
     }
 
     fun applyMask(samples: FloatArray, mask: FloatArray): FloatArray {
@@ -136,6 +160,10 @@ internal class MossFormer2Dsp(
 
     fun segmentCount(inputSamples: Long): Int {
         require(inputSamples >= 0L)
+        if (plan.fullContext) {
+            require(inputSamples <= segmentSamples) { "Tệp vượt quá kế hoạch ngữ cảnh đầy đủ" }
+            return 1
+        }
         val firstRetainedSamples = segmentSamples - edgeDiscardSamples
         if (inputSamples <= firstRetainedSamples) return 1
         val remaining = inputSamples - firstRetainedSamples
@@ -147,11 +175,28 @@ internal class MossFormer2Dsp(
 
     fun retainedRange(segmentIndex: Int): IntRange {
         require(segmentIndex >= 0)
+        if (plan.fullContext) return 0 until segmentSamples
         return if (segmentIndex == 0) {
             0 until segmentSamples - edgeDiscardSamples
         } else {
             edgeDiscardSamples until segmentSamples - edgeDiscardSamples
         }
+    }
+
+    /** Frames used by diagnostics must be fully backed by real input and centered in retained audio. */
+    fun validMaskFrameRange(segmentIndex: Int, availableSamples: Int): IntRange {
+        require(availableSamples in 0..segmentSamples)
+        val retained = retainedRange(segmentIndex)
+        val retainedEndExclusive = minOf(retained.last + 1, availableSamples)
+        if (retainedEndExclusive <= retained.first || availableSamples < FFT_SIZE) return IntRange.EMPTY
+
+        val firstCenter = retained.first
+        val lastCenter = retainedEndExclusive - 1
+        val firstFrame = ceilDiv(maxOf(0, firstCenter - FFT_SIZE / 2), HOP_SIZE)
+        val lastByRetained = (lastCenter - FFT_SIZE / 2) / HOP_SIZE
+        val lastByRealInput = (availableSamples - FFT_SIZE) / HOP_SIZE
+        val lastFrame = minOf(frames - 1, lastByRetained, lastByRealInput)
+        return if (lastFrame >= firstFrame) firstFrame..lastFrame else IntRange.EMPTY
     }
 
     internal fun windowSnapshot(): FloatArray = maskWindow.copyOf()
@@ -165,6 +210,7 @@ internal class MossFormer2Dsp(
         const val FEATURES = MEL_BINS * 3
         const val REFERENCE_SEGMENT_SAMPLES = 4 * SAMPLE_RATE
         const val REFERENCE_FRAMES = 496
+        const val DEFAULT_DITHER_SEED = 0x4D4F5353464F524DL
 
         private const val FRAME_LENGTH = FFT_SIZE
         private const val FBANK_FFT_SIZE = 2_048
@@ -180,6 +226,15 @@ internal class MossFormer2Dsp(
                 "Cửa sổ MossFormer2 phải khớp hop $HOP_SIZE mẫu"
             }
             return 1 + (segmentSamples - FFT_SIZE) / HOP_SIZE
+        }
+
+        fun alignSegmentSamples(requestedSamples: Long): Int {
+            require(requestedSamples > 0L)
+            val minimum = maxOf(requestedSamples, FFT_SIZE.toLong())
+            val hops = (minimum - FFT_SIZE + HOP_SIZE - 1L) / HOP_SIZE
+            val aligned = FFT_SIZE + hops * HOP_SIZE
+            require(aligned <= Int.MAX_VALUE)
+            return aligned.toInt()
         }
 
         internal fun computeDeltas(input: FloatArray, frames: Int, bins: Int): FloatArray =
@@ -207,6 +262,9 @@ internal class MossFormer2Dsp(
                 }
             }
         }
+
+        private fun ceilDiv(value: Int, divisor: Int): Int =
+            if (value <= 0) 0 else (value + divisor - 1) / divisor
 
         private fun symmetricHamming(size: Int): FloatArray = FloatArray(size) { index ->
             (0.54 - 0.46 * cos(2.0 * PI * index.toDouble() / (size - 1).toDouble())).toFloat()

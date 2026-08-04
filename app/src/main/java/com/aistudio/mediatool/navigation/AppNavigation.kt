@@ -9,7 +9,7 @@ import com.aistudio.mediatool.ui.screens.*
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
-    
+
     NavHost(navController = navController, startDestination = Route.Main.path) {
         composable(Route.Main.path) {
             MainScreen(
@@ -20,8 +20,9 @@ fun AppNavigation() {
                 onNavigateToImg2Vid = { navController.navigate(Route.Img2Vid.path) },
                 onNavigateToSub = { navController.navigate(Route.Sub.path) },
                 onNavigateToStem = { navController.navigate(Route.Stem.path) },
+                onNavigateToVoiceCleanup = { navController.navigate(Route.VoiceCleanup.path) },
                 onNavigateToOther = { navController.navigate(Route.Other.path) },
-                onNavigateToSettings = { navController.navigate(Route.Settings.path) }
+                onNavigateToSettings = { navController.navigate(Route.Settings.path) },
             )
         }
         composable(Route.Record.path) { RecordScreen(navController = navController) }
@@ -31,6 +32,9 @@ fun AppNavigation() {
         composable(Route.Img2Vid.path) { Img2VidScreen(navController = navController) }
         composable(Route.Sub.path) { SubScreen(navController = navController) }
         composable(Route.Stem.path) { StemScreen(onNavigateBack = { navController.popBackStack() }) }
+        composable(Route.VoiceCleanup.path) {
+            VoiceCleanupScreen(onNavigateBack = { navController.popBackStack() })
+        }
         composable(Route.Other.path) { OtherScreen(navController = navController) }
         composable(Route.Settings.path) { SettingsScreen(navController = navController) }
     }

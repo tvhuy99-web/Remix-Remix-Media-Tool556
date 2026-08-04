@@ -107,6 +107,24 @@ internal class VoiceCleanupMaskAccumulator {
         addRange(values, frameRange.first * bins, (frameRange.last + 1) * bins)
     }
 
+    fun addEffectiveFrames(
+        values: FloatArray,
+        frameRange: IntRange,
+        bins: Int,
+        cleanupStrength: Float,
+    ) {
+        require(bins > 0 && values.size % bins == 0)
+        if (frameRange.isEmpty()) return
+        val availableFrames = values.size / bins
+        require(frameRange.first >= 0 && frameRange.last < availableFrames)
+        frames += frameRange.count().toLong()
+        val start = frameRange.first * bins
+        val endExclusive = (frameRange.last + 1) * bins
+        for (index in start until endExclusive) {
+            addValue(MossFormer2Dsp.effectiveMaskGain(values[index], cleanupStrength))
+        }
+    }
+
     private fun addRange(values: FloatArray, start: Int, endExclusive: Int) {
         require(start in 0..values.size && endExclusive in start..values.size)
         for (index in start until endExclusive) addValue(values[index])

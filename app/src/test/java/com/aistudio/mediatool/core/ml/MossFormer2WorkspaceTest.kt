@@ -8,7 +8,7 @@ import org.junit.Test
 class MossFormer2WorkspaceTest {
     @Test
     fun synthesisBuffersAreClearedAndReused() {
-        val mode = VoiceCleanupWindowMode.COMPATIBILITY_4S
+        val mode = VoiceCleanupWindowMode.BALANCED_10S
         val workspace = MossFormer2Workspace(mode.segmentSamples, mode.frames)
         val output = workspace.output
         val envelope = workspace.envelope

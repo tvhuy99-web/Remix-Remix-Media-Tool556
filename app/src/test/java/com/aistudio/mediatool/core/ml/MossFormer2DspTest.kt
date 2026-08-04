@@ -14,9 +14,9 @@ import org.junit.Test
 class MossFormer2DspTest {
     @Test
     fun supportedWindowModesProduceExpectedFrames() {
-        assertEquals(496, VoiceCleanupWindowMode.COMPATIBILITY_4S.frames)
         assertEquals(1_246, VoiceCleanupWindowMode.BALANCED_10S.frames)
-        assertEquals(1_871, VoiceCleanupWindowMode.MAXIMUM_15S.frames)
+        assertEquals(2_496, VoiceCleanupWindowMode.QUALITY_20S.frames)
+        assertEquals(3_746, VoiceCleanupWindowMode.MAXIMUM_30S.frames)
     }
 
     @Test
@@ -35,13 +35,13 @@ class MossFormer2DspTest {
     }
 
     @Test
-    fun maximumModeUsesFullContextUpToTwentySeconds() {
-        val eighteenSeconds = 18L * MossFormer2Dsp.SAMPLE_RATE
-        val plan = VoiceCleanupWindowPlan.resolve(eighteenSeconds, VoiceCleanupWindowMode.MAXIMUM_15S)
+    fun maximumModeUsesFullContextUpToThirtySeconds() {
+        val twentyEightSeconds = 28L * MossFormer2Dsp.SAMPLE_RATE
+        val plan = VoiceCleanupWindowPlan.resolve(twentyEightSeconds, VoiceCleanupWindowMode.MAXIMUM_30S)
 
         assertTrue(plan.fullContext)
-        assertTrue(plan.segmentSamples >= eighteenSeconds)
-        assertTrue(plan.segmentSamples <= 20 * MossFormer2Dsp.SAMPLE_RATE)
+        assertTrue(plan.segmentSamples >= twentyEightSeconds)
+        assertTrue(plan.segmentSamples <= 30 * MossFormer2Dsp.SAMPLE_RATE)
         assertEquals(0, plan.edgeDiscardSamples)
     }
 
@@ -62,7 +62,7 @@ class MossFormer2DspTest {
     fun segmentationAlwaysCoversInputForEveryMode() {
         for (mode in VoiceCleanupWindowMode.entries) {
             val dsp = MossFormer2Dsp(VoiceCleanupWindowPlan.fixed(mode))
-            for (length in listOf(0L, 1L, mode.segmentSamples.toLong(), mode.segmentSamples + 1L, 1_000_000L)) {
+            for (length in listOf(0L, 1L, mode.segmentSamples.toLong(), mode.segmentSamples + 1L, 2_000_000L)) {
                 val padded = dsp.paddedLength(length)
                 assertTrue(padded >= length)
                 assertEquals(0L, (padded - dsp.segmentSamples) % dsp.strideSamples)
@@ -86,16 +86,24 @@ class MossFormer2DspTest {
 
     @Test
     fun validMaskFramesExcludeZeroPaddingAndDiscardedEdges() {
-        val dsp = MossFormer2Dsp(VoiceCleanupWindowPlan.fixed(VoiceCleanupWindowMode.COMPATIBILITY_4S))
-        val range = dsp.validMaskFrameRange(segmentIndex = 1, availableSamples = 100_000)
+        val dsp = MossFormer2Dsp(VoiceCleanupWindowPlan.fixed(VoiceCleanupWindowMode.BALANCED_10S))
+        val range = dsp.validMaskFrameRange(segmentIndex = 1, availableSamples = 300_000)
 
         assertFalse(range.isEmpty())
         for (frame in range) {
             val start = frame * MossFormer2Dsp.HOP_SIZE
             val center = start + MossFormer2Dsp.FFT_SIZE / 2
-            assertTrue(start + MossFormer2Dsp.FFT_SIZE <= 100_000)
+            assertTrue(start + MossFormer2Dsp.FFT_SIZE <= 300_000)
             assertTrue(center in dsp.retainedRange(1))
         }
+    }
+
+    @Test
+    fun cleanupStrengthInterpolatesBetweenPassthroughAndFullMask() {
+        assertEquals(1f, MossFormer2Dsp.effectiveMaskGain(0.2f, 0f), 1e-6f)
+        assertEquals(0.6f, MossFormer2Dsp.effectiveMaskGain(0.2f, 0.5f), 1e-6f)
+        assertEquals(0.2f, MossFormer2Dsp.effectiveMaskGain(0.2f, 1f), 1e-6f)
+        assertEquals(1.1f, MossFormer2Dsp.effectiveMaskGain(1.2f, 0.5f), 1e-6f)
     }
 
     @Test
@@ -110,7 +118,7 @@ class MossFormer2DspTest {
 
     @Test
     fun silenceUsesKaldiFloat32EpsilonBeforeLogWithoutDither() {
-        val dsp = MossFormer2Dsp(VoiceCleanupWindowMode.COMPATIBILITY_4S)
+        val dsp = referenceDsp()
         val features = dsp.buildFeatures(
             FloatArray(dsp.segmentSamples),
             ditherMode = VoiceCleanupDitherMode.OFF,
@@ -127,7 +135,7 @@ class MossFormer2DspTest {
 
     @Test
     fun frontendMatchesTorchaudioKaldiGoldenWithoutDither() {
-        val dsp = MossFormer2Dsp(VoiceCleanupWindowMode.COMPATIBILITY_4S)
+        val dsp = referenceDsp()
         val samples = FloatArray(dsp.segmentSamples) { index ->
             val position = index.toDouble()
             (
@@ -153,7 +161,7 @@ class MossFormer2DspTest {
 
     @Test
     fun ditherIsDeterministicAndChangesLowEnergyFeatures() {
-        val dsp = MossFormer2Dsp(VoiceCleanupWindowMode.COMPATIBILITY_4S)
+        val dsp = referenceDsp()
         val silence = FloatArray(dsp.segmentSamples)
         val first = dsp.buildFeatures(
             silence,
@@ -174,10 +182,21 @@ class MossFormer2DspTest {
 
     @Test
     fun symmetricHammingWindowIsStableAndNonZeroAtEdges() {
-        val window = MossFormer2Dsp(VoiceCleanupWindowMode.COMPATIBILITY_4S).windowSnapshot()
+        val window = referenceDsp().windowSnapshot()
         assertEquals(MossFormer2Dsp.FFT_SIZE, window.size)
         assertTrue(abs(window.first() - window.last()) < 1e-7f)
         assertTrue(window.first() > 0f)
         assertTrue(window.maxOrNull()!! <= 1.000001f)
     }
+
+    private fun referenceDsp(): MossFormer2Dsp = MossFormer2Dsp(
+        VoiceCleanupWindowPlan(
+            mode = VoiceCleanupWindowMode.BALANCED_10S,
+            segmentSamples = MossFormer2Dsp.REFERENCE_SEGMENT_SAMPLES,
+            strideSamples = MossFormer2Dsp.REFERENCE_SEGMENT_SAMPLES,
+            edgeDiscardSamples = 0,
+            fullContext = true,
+            minimumAvailableRamBytes = 0L,
+        ),
+    )
 }

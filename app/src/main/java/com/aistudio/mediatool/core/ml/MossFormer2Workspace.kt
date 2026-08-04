@@ -12,6 +12,7 @@ internal class MossFormer2Workspace(
         require(frames == MossFormer2Dsp.frameCount(segmentSamples))
     }
 
+    val ditheredInput = FloatArray(segmentSamples)
     val featureBase = FloatArray(frames * MossFormer2Dsp.MEL_BINS)
     val featureDelta = FloatArray(featureBase.size)
     val featureDeltaDelta = FloatArray(featureBase.size)

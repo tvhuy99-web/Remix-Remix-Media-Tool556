@@ -109,11 +109,16 @@ internal class MossFormer2Dsp(
         return output
     }
 
-    fun applyMask(samples: FloatArray, mask: FloatArray): FloatArray {
+    fun applyMask(
+        samples: FloatArray,
+        mask: FloatArray,
+        cleanupStrength: Float = 1f,
+    ): FloatArray {
         require(samples.size == segmentSamples)
         require(mask.size == frames * BINS) {
             "Mask MossFormer2 có ${mask.size} phần tử, cần ${frames * BINS}"
         }
+        require(cleanupStrength in 0f..1f) { "Mức làm sạch phải nằm trong khoảng 0 đến 1" }
         workspace.clearSynthesis()
         val output = workspace.output
         val envelope = workspace.envelope
@@ -127,7 +132,7 @@ internal class MossFormer2Dsp(
             maskFft.forward(stftReal, stftImag)
             val maskOffset = frame * BINS
             for (bin in 0 until BINS) {
-                val gain = mask[maskOffset + bin]
+                val gain = effectiveMaskGain(mask[maskOffset + bin], cleanupStrength)
                 stftReal[bin] *= gain
                 stftImag[bin] *= gain
             }
@@ -235,6 +240,12 @@ internal class MossFormer2Dsp(
             val aligned = FFT_SIZE + hops * HOP_SIZE
             require(aligned <= Int.MAX_VALUE)
             return aligned.toInt()
+        }
+
+        internal fun effectiveMaskGain(rawMask: Float, cleanupStrength: Float): Float {
+            require(rawMask.isFinite()) { "Mask MossFormer2 chứa giá trị không hữu hạn" }
+            require(cleanupStrength in 0f..1f) { "Mức làm sạch phải nằm trong khoảng 0 đến 1" }
+            return 1f + cleanupStrength * (rawMask - 1f)
         }
 
         internal fun computeDeltas(input: FloatArray, frames: Int, bins: Int): FloatArray =

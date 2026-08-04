@@ -19,6 +19,7 @@ data class VoiceCleanupAudioMetrics(
 
 data class VoiceCleanupMaskMetrics(
     val valueCount: Long,
+    val frameCount: Long,
     val minimum: Double,
     val maximum: Double,
     val mean: Double,
@@ -32,6 +33,7 @@ data class VoiceCleanupMaskMetrics(
 ) {
     internal fun diagnosticFields(prefix: String = "mask"): Map<String, Any?> = mapOf(
         "${prefix}_value_count" to valueCount,
+        "${prefix}_frame_count" to frameCount,
         "${prefix}_min" to minimum,
         "${prefix}_max" to maximum,
         "${prefix}_mean" to mean,
@@ -53,6 +55,9 @@ data class VoiceCleanupReport(
     val appliedGainDb: Float,
     val segmentCount: Int,
     val inferenceRealTimeFactor: Double,
+    val timing: VoiceCleanupTimingMetrics? = null,
+    val seams: VoiceCleanupSeamMetrics? = null,
+    val frontendComparison: VoiceCleanupFrontendComparisonMetrics? = null,
 )
 
 internal object VoiceCleanupMetricsParser {
@@ -80,6 +85,7 @@ internal object VoiceCleanupMetricsParser {
 internal class VoiceCleanupMaskAccumulator {
     private val histogram = LongArray(HISTOGRAM_BINS)
     private var count = 0L
+    private var frames = 0L
     private var sum = 0.0
     private var minimum = Double.POSITIVE_INFINITY
     private var maximum = Double.NEGATIVE_INFINITY
@@ -89,28 +95,63 @@ internal class VoiceCleanupMaskAccumulator {
     private var outsideZeroOne = 0L
 
     fun add(values: FloatArray) {
-        for (raw in values) {
-            require(raw.isFinite()) { "Mask MossFormer2 chứa giá trị không hữu hạn" }
-            val value = raw.toDouble()
-            count++
-            sum += value
-            minimum = minOf(minimum, value)
-            maximum = maxOf(maximum, value)
-            if (value < 0.5) belowPointFive++
-            if (value < 0.9) belowPointNine++
-            if (value in 0.98..1.02) nearUnity++
-            if (value < 0.0 || value > 1.0) outsideZeroOne++
-            val index = (value.coerceIn(0.0, 1.0) * (HISTOGRAM_BINS - 1))
-                .roundToInt()
-                .coerceIn(0, HISTOGRAM_BINS - 1)
-            histogram[index]++
+        addRange(values, 0, values.size)
+    }
+
+    fun addFrames(values: FloatArray, frameRange: IntRange, bins: Int) {
+        require(bins > 0 && values.size % bins == 0)
+        if (frameRange.isEmpty()) return
+        val availableFrames = values.size / bins
+        require(frameRange.first >= 0 && frameRange.last < availableFrames)
+        frames += frameRange.count().toLong()
+        addRange(values, frameRange.first * bins, (frameRange.last + 1) * bins)
+    }
+
+    fun addEffectiveFrames(
+        values: FloatArray,
+        frameRange: IntRange,
+        bins: Int,
+        cleanupStrength: Float,
+    ) {
+        require(bins > 0 && values.size % bins == 0)
+        if (frameRange.isEmpty()) return
+        val availableFrames = values.size / bins
+        require(frameRange.first >= 0 && frameRange.last < availableFrames)
+        frames += frameRange.count().toLong()
+        val start = frameRange.first * bins
+        val endExclusive = (frameRange.last + 1) * bins
+        for (index in start until endExclusive) {
+            addValue(MossFormer2Dsp.effectiveMaskGain(values[index], cleanupStrength))
         }
+    }
+
+    private fun addRange(values: FloatArray, start: Int, endExclusive: Int) {
+        require(start in 0..values.size && endExclusive in start..values.size)
+        for (index in start until endExclusive) addValue(values[index])
+    }
+
+    private fun addValue(raw: Float) {
+        require(raw.isFinite()) { "Mask MossFormer2 chứa giá trị không hữu hạn" }
+        val value = raw.toDouble()
+        count++
+        sum += value
+        minimum = minOf(minimum, value)
+        maximum = maxOf(maximum, value)
+        if (value < 0.5) belowPointFive++
+        if (value < 0.9) belowPointNine++
+        if (value in 0.98..1.02) nearUnity++
+        if (value < 0.0 || value > 1.0) outsideZeroOne++
+        val index = (value.coerceIn(0.0, 1.0) * (HISTOGRAM_BINS - 1))
+            .roundToInt()
+            .coerceIn(0, HISTOGRAM_BINS - 1)
+        histogram[index]++
     }
 
     fun snapshot(): VoiceCleanupMaskMetrics {
         require(count > 0L) { "Chưa có mask để thống kê" }
         return VoiceCleanupMaskMetrics(
             valueCount = count,
+            frameCount = frames.takeIf { it > 0L } ?: (count / MossFormer2Dsp.BINS),
             minimum = minimum,
             maximum = maximum,
             mean = sum / count.toDouble(),

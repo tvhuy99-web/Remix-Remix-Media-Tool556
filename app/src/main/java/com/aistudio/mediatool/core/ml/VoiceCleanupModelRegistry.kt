@@ -29,8 +29,8 @@ object VoiceCleanupModelRegistry {
             sha256 = "0904ff3b74bdc089854612096edbe5a2fcfada489241972ba69e0c3ccb24304a",
         ),
         sampleRate = MossFormer2Dsp.SAMPLE_RATE,
-        segmentSamples = MossFormer2Dsp.SEGMENT_SAMPLES,
-        strideSamples = MossFormer2Dsp.STRIDE_SAMPLES,
+        segmentSamples = MossFormer2Dsp.REFERENCE_SEGMENT_SAMPLES,
+        strideSamples = MossFormer2Dsp.REFERENCE_SEGMENT_SAMPLES * 3 / 4,
         licenseName = "Apache-2.0",
         projectUrl = "https://github.com/modelscope/ClearerVoice-Studio",
     )

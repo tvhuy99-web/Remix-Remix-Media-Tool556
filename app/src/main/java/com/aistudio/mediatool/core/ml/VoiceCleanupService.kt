@@ -75,6 +75,10 @@ class VoiceCleanupService : Service() {
         }
         val config = runCatching {
             VoiceCleanupConfig(
+                windowMode = VoiceCleanupWindowMode.fromName(
+                    intent.getStringExtra(EXTRA_WINDOW_MODE),
+                ),
+                cleanupStrengthPercent = intent.getIntExtra(EXTRA_CLEANUP_STRENGTH, 65),
                 loudnessMode = VoiceCleanupLoudnessMode.fromName(
                     intent.getStringExtra(EXTRA_LOUDNESS_MODE),
                 ),
@@ -84,7 +88,7 @@ class VoiceCleanupService : Service() {
                 limiterCeilingDb = intent.getFloatExtra(EXTRA_LIMITER_CEILING_DB, -1f),
             )
         }.getOrElse { error ->
-            failAndStop(error.message ?: "Thiết lập âm lượng không hợp lệ")
+            failAndStop(error.message ?: "Thiết lập làm sạch giọng không hợp lệ")
             return
         }
         val taskToken = taskGate.tryStart()
@@ -125,7 +129,7 @@ class VoiceCleanupService : Service() {
 
         val job = serviceScope.launch(start = CoroutineStart.LAZY) {
             try {
-                val durationMs = runPreflight(uri)
+                val durationMs = runPreflight(uri, config.windowMode)
                 val descriptor = VoiceCleanupModelRegistry.mossFormer2
                 require(ModelDownloader(this@VoiceCleanupService).isModelFileValid(modelFile, descriptor.modelSpec)) {
                     "Model MossFormer2 không đúng dung lượng hoặc SHA-256; hãy tải lại model"
@@ -168,7 +172,7 @@ class VoiceCleanupService : Service() {
                                         "percent" to bucket * 10,
                                         "phase" to state.phase,
                                         "model_id" to descriptor.id,
-                                    ),
+                                    ) + config.diagnosticFields(),
                                 )
                             }
                         }
@@ -189,7 +193,7 @@ class VoiceCleanupService : Service() {
                                     "source_id" to sourceId,
                                     "output_bytes" to state.outputFile.length(),
                                     "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
-                                ),
+                                ) + config.diagnosticFields(),
                             )
                             finishService(taskToken)
                         }
@@ -214,7 +218,7 @@ class VoiceCleanupService : Service() {
                             "model_id" to VoiceCleanupModelRegistry.MOSSFORMER2_ID,
                             "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
                             "out_of_memory" to (error is OutOfMemoryError),
-                        ),
+                        ) + config.diagnosticFields(),
                         error = error,
                     )
                     _errorMsg.value = message
@@ -229,7 +233,7 @@ class VoiceCleanupService : Service() {
         job.start()
     }
 
-    private fun runPreflight(uri: Uri): Long {
+    private fun runPreflight(uri: Uri, windowMode: VoiceCleanupWindowMode): Long {
         val retriever = MediaMetadataRetriever()
         val durationMs = try {
             retriever.setDataSource(this, uri)
@@ -254,14 +258,19 @@ class VoiceCleanupService : Service() {
                 "required_storage_bytes" to recommendedStorage,
                 "available_storage_bytes" to freeBytes,
                 "available_ram_bytes" to memoryInfo.availMem,
+                "required_ram_bytes" to windowMode.minimumAvailableRamBytes,
                 "low_memory" to memoryInfo.lowMemory,
+                "window_mode" to windowMode.name,
+                "window_seconds" to windowMode.seconds,
+                "feature_frames" to windowMode.frames,
             ),
         )
         require(freeBytes >= recommendedStorage) {
             "Không đủ dung lượng tạm. Cần khoảng ${formatMb(recommendedStorage)}, còn ${formatMb(freeBytes)}"
         }
-        require(!memoryInfo.lowMemory && memoryInfo.availMem >= MIN_AVAILABLE_RAM_BYTES) {
-            "MossFormer2 cần khoảng 768 MB RAM trống. Hãy đóng ứng dụng khác rồi thử lại."
+        require(!memoryInfo.lowMemory && memoryInfo.availMem >= windowMode.minimumAvailableRamBytes) {
+            "Chế độ ${windowMode.seconds} giây cần khoảng ${formatMb(windowMode.minimumAvailableRamBytes)} RAM trống. " +
+                "Hãy chọn chế độ ngắn hơn hoặc đóng ứng dụng khác."
         }
         return durationMs
     }
@@ -435,6 +444,8 @@ class VoiceCleanupService : Service() {
         const val ACTION_STOP = "com.aistudio.mediatool.action.STOP_VOICE_CLEANUP"
         const val EXTRA_URI = "extra_uri"
         const val EXTRA_MODEL_FILE = "extra_model_file"
+        const val EXTRA_WINDOW_MODE = "extra_window_mode"
+        const val EXTRA_CLEANUP_STRENGTH = "extra_cleanup_strength"
         const val EXTRA_LOUDNESS_MODE = "extra_loudness_mode"
         const val EXTRA_TARGET_LUFS = "extra_target_lufs"
         const val EXTRA_OUTPUT_GAIN_DB = "extra_output_gain_db"
@@ -442,7 +453,6 @@ class VoiceCleanupService : Service() {
         const val EXTRA_LIMITER_CEILING_DB = "extra_limiter_ceiling_db"
         private const val MAX_DURATION_MS = 3L * 60L * 60L * 1_000L
         private const val STORAGE_RESERVE_BYTES = 256L * 1024L * 1024L
-        private const val MIN_AVAILABLE_RAM_BYTES = 768L * 1024L * 1024L
         private const val WAKE_LOCK_TIMEOUT_MS = 6L * 60L * 60L * 1_000L
 
         private val _cleanupState = MutableStateFlow<VoiceCleanupState?>(null)

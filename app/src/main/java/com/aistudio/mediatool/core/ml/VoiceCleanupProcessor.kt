@@ -65,30 +65,41 @@ class VoiceCleanupProcessor(
         val rawEnhanced = File(context.cacheDir, "${prefix}_enhanced.f32")
         var outputFile: File? = null
         var outputCommitted = false
+        var totalSamples = 0L
+        val phaseTimings = linkedMapOf<String, Long>()
 
         logInfo("cleanup_config", config.diagnosticFields())
         try {
             checkpoint("decode", 0.02f)
             emit(VoiceCleanupState.Progress(0.02f, "Đang giải mã âm thanh"))
             val inputPath = FFmpegKitConfig.getSafParameterForRead(context, inputUri)
+            val decodeStartedAt = SystemClock.elapsedRealtime()
             val decode = executeFfmpeg(
                 "-y -i \"$inputPath\" -vn -f f32le -ac 1 -ar ${MossFormer2Dsp.SAMPLE_RATE} " +
                     "\"${rawInput.absolutePath}\"",
                 "voice_decode",
             )
+            phaseTimings["decode_ms"] = SystemClock.elapsedRealtime() - decodeStartedAt
             require(ReturnCode.isSuccess(decode.returnCode)) { "Không thể giải mã tệp đầu vào" }
             require(rawInput.length() >= Float.SIZE_BYTES && rawInput.length() % Float.SIZE_BYTES == 0L) {
                 "Tệp đầu vào không chứa PCM hợp lệ"
             }
-            val totalSamples = rawInput.length() / Float.SIZE_BYTES
+            totalSamples = rawInput.length() / Float.SIZE_BYTES
             logInfo(
                 "decode_complete",
-                mapOf("source_id" to sourceId, "samples" to totalSamples, "pcm_bytes" to rawInput.length()),
+                mapOf(
+                    "source_id" to sourceId,
+                    "samples" to totalSamples,
+                    "pcm_bytes" to rawInput.length(),
+                    "decode_ms" to phaseTimings.getValue("decode_ms"),
+                ),
             )
 
             checkpoint("source_metrics", 0.05f)
             emit(VoiceCleanupState.Progress(0.05f, "Đang đo âm lượng bản gốc"))
+            val sourceMetricsStartedAt = SystemClock.elapsedRealtime()
             val sourceMetrics = analyzeRawPcm(rawInput, "source")
+            phaseTimings["source_metrics_ms"] = SystemClock.elapsedRealtime() - sourceMetricsStartedAt
             logAudioMetrics("source", sourceMetrics)
 
             checkpoint("model_opening", 0.08f)
@@ -103,15 +114,18 @@ class VoiceCleanupProcessor(
                 "ai_complete",
                 mapOf(
                     "segments" to inference.segmentCount,
-                    "inference_ms" to inference.inferenceMs,
-                    "rtf" to inference.realTimeFactor,
                     "peak_pss_kb" to inference.peakPssKb,
-                ) + inference.maskMetrics.diagnosticFields(),
+                ) + config.diagnosticFields() + inference.plan.diagnosticFields() +
+                    inference.timing.diagnosticFields() + inference.maskMetrics.diagnosticFields() +
+                    inference.seamMetrics.diagnosticFields() +
+                    (inference.frontendComparison?.diagnosticFields() ?: emptyMap()),
             )
 
             checkpoint("ai_metrics", 0.89f)
             emit(VoiceCleanupState.Progress(0.89f, "Đang đo đầu ra AI"))
+            val aiMetricsStartedAt = SystemClock.elapsedRealtime()
             val afterAiMetrics = analyzeRawPcm(rawEnhanced, "after_ai")
+            phaseTimings["ai_metrics_ms"] = SystemClock.elapsedRealtime() - aiMetricsStartedAt
             logAudioMetrics("after_ai", afterAiMetrics)
 
             val appliedGainDb = resolveGainDb(sourceMetrics, afterAiMetrics)
@@ -129,20 +143,30 @@ class VoiceCleanupProcessor(
             val extension = SettingsManager.getAudioFormatExt(context)
             val target = FileExportManager.resultFile(context, "giong_noi_da_lam_sach", extension)
             outputFile = target
+            val encodeStartedAt = SystemClock.elapsedRealtime()
             val encode = executeFfmpeg(
                 "-y -f f32le -ar ${MossFormer2Dsp.SAMPLE_RATE} -ac 1 " +
                     "-i \"${rawEnhanced.absolutePath}\" -af \"$filter\" " +
                     "${SettingsManager.getAudioEncodingArgs(context)} \"${target.absolutePath}\"",
                 "voice_encode",
             )
+            phaseTimings["encode_ms"] = SystemClock.elapsedRealtime() - encodeStartedAt
             require(ReturnCode.isSuccess(encode.returnCode)) { "Không thể mã hóa kết quả" }
             require(target.isFile && target.length() > 0L) { "Tệp kết quả bị rỗng" }
 
             checkpoint("final_metrics", 0.97f)
             emit(VoiceCleanupState.Progress(0.97f, "Đang đo kết quả cuối"))
+            val finalMetricsStartedAt = SystemClock.elapsedRealtime()
             val finalMetrics = analyzeEncodedAudio(target, "final_output")
+            phaseTimings["final_metrics_ms"] = SystemClock.elapsedRealtime() - finalMetricsStartedAt
             logAudioMetrics("final_output", finalMetrics)
 
+            val pipelineMs = SystemClock.elapsedRealtime() - startedAt
+            val audioSeconds = totalSamples.toDouble() / MossFormer2Dsp.SAMPLE_RATE
+            val completeTiming = inference.timing.copy(
+                pipelineMs = pipelineMs,
+                pipelineRealTimeFactor = realTimeFactor(pipelineMs, audioSeconds),
+            )
             val report = VoiceCleanupReport(
                 source = sourceMetrics,
                 afterAi = afterAiMetrics,
@@ -150,19 +174,27 @@ class VoiceCleanupProcessor(
                 mask = inference.maskMetrics,
                 appliedGainDb = appliedGainDb,
                 segmentCount = inference.segmentCount,
-                inferenceRealTimeFactor = inference.realTimeFactor,
+                inferenceRealTimeFactor = completeTiming.onnxRealTimeFactor,
+                timing = completeTiming,
+                seams = inference.seamMetrics,
+                frontendComparison = inference.frontendComparison,
             )
             outputCommitted = true
             checkpoint("complete", 1f)
+            logInfo(
+                "pipeline_timing",
+                phaseTimings + completeTiming.diagnosticFields(),
+            )
             logInfo(
                 "pipeline_success",
                 mapOf(
                     "source_id" to sourceId,
                     "output_bytes" to target.length(),
                     "format" to extension,
-                    "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
+                    "elapsed_ms" to pipelineMs,
                     "applied_gain_db" to appliedGainDb,
-                ) + finalMetrics.diagnosticFields("final"),
+                ) + config.diagnosticFields() + inference.plan.diagnosticFields() +
+                    completeTiming.diagnosticFields() + finalMetrics.diagnosticFields("final"),
             )
             emit(VoiceCleanupState.Progress(1f, "Hoàn tất"))
             emit(VoiceCleanupState.Success(target, report))
@@ -180,7 +212,7 @@ class VoiceCleanupProcessor(
                     "source_id" to sourceId,
                     "out_of_memory" to (error is OutOfMemoryError),
                     "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
-                ),
+                ) + config.diagnosticFields(),
                 error = error,
             )
             throw error
@@ -198,22 +230,34 @@ class VoiceCleanupProcessor(
         totalSamples: Long,
         onProgress: suspend (Float, String) -> Unit,
     ): InferenceMetrics {
-        val segmentCount = MossFormer2Dsp.segmentCount(totalSamples)
-        val inputBytes = ByteArray(MossFormer2Dsp.SEGMENT_SAMPLES * Float.SIZE_BYTES)
-        val segment = FloatArray(MossFormer2Dsp.SEGMENT_SAMPLES)
+        val enhanceStartedAt = SystemClock.elapsedRealtime()
+        val plan = VoiceCleanupWindowPlan.resolve(totalSamples, config.windowMode)
+        val dsp = MossFormer2Dsp(plan)
+        val segmentCount = dsp.segmentCount(totalSamples)
+        val inputBytes = ByteArray(dsp.segmentSamples * Float.SIZE_BYTES)
+        val segment = FloatArray(dsp.segmentSamples)
         val writeBuffer = ByteBuffer
-            .allocate((MossFormer2Dsp.SEGMENT_SAMPLES - MossFormer2Dsp.EDGE_DISCARD_SAMPLES) * Float.SIZE_BYTES)
+            .allocate((dsp.segmentSamples - dsp.edgeDiscardSamples) * Float.SIZE_BYTES)
             .order(ByteOrder.LITTLE_ENDIAN)
-        val dsp = MossFormer2Dsp()
         val aggregateMask = VoiceCleanupMaskAccumulator()
-        var inferenceMs = 0L
+        val seamAccumulator = VoiceCleanupSeamAccumulator()
+        var frontendComparison: VoiceCleanupFrontendComparisonMetrics? = null
+        var modelOpenMs = 0L
+        var frontendMs = 0L
+        var onnxMs = 0L
+        var maskApplyMs = 0L
+        var pcmWriteMs = 0L
         var writtenSamples = 0L
         var peakPssKb = Debug.getPss()
 
+        logInfo("window_plan_resolved", config.diagnosticFields() + plan.diagnosticFields())
+        val modelOpenStartedAt = SystemClock.elapsedRealtime()
         val openedEngine = MossFormer2OnnxEngine.open(
             modelFile = modelFile,
             cpuThreads = SettingsManager.getNumThreads(context),
+            frames = dsp.frames,
         )
+        modelOpenMs = SystemClock.elapsedRealtime() - modelOpenStartedAt
         engine = openedEngine
         try {
             RandomAccessFile(inputFile, "r").use { input ->
@@ -222,9 +266,9 @@ class VoiceCleanupProcessor(
                         coroutineContext.ensureActive()
                         if (cancelRequested.get()) throw CancellationException("Đã hủy xử lý")
                         Arrays.fill(segment, 0f)
-                        val sourceStart = segmentIndex.toLong() * MossFormer2Dsp.STRIDE_SAMPLES
+                        val sourceStart = segmentIndex.toLong() * dsp.strideSamples
                         val availableSamples = min(
-                            MossFormer2Dsp.SEGMENT_SAMPLES.toLong(),
+                            dsp.segmentSamples.toLong(),
                             (totalSamples - sourceStart).coerceAtLeast(0L),
                         ).toInt()
                         if (availableSamples > 0) {
@@ -241,30 +285,97 @@ class VoiceCleanupProcessor(
                         val progressStart = 0.10f + 0.76f * segmentIndex / segmentCount.toFloat()
                         checkpoint("segment_${segmentIndex}_frontend", progressStart)
                         onProgress(progressStart, "Đang phân tích đoạn ${segmentIndex + 1}/$segmentCount")
-                        val features = dsp.buildFeatures(segment)
+                        val frontendStartedAt = SystemClock.elapsedRealtime()
+                        val ditherSeed = DITHER_SEED_BASE xor (segmentIndex.toLong() * DITHER_SEED_STEP)
+                        val features = if (
+                            segmentIndex == 0 && config.ditherMode != VoiceCleanupDitherMode.OFF
+                        ) {
+                            val noDither = dsp.buildFeatures(
+                                segment,
+                                ditherMode = VoiceCleanupDitherMode.OFF,
+                            ).copyOf()
+                            val withDither = dsp.buildFeatures(
+                                segment,
+                                ditherMode = config.ditherMode,
+                                ditherSeed = ditherSeed,
+                            )
+                            frontendComparison = VoiceCleanupFrontendComparisonMetrics.compare(noDither, withDither)
+                            logInfo(
+                                "frontend_ab_comparison",
+                                mapOf("segment_index" to segmentIndex, "dither_seed" to ditherSeed) +
+                                    checkNotNull(frontendComparison).diagnosticFields(),
+                            )
+                            withDither
+                        } else {
+                            dsp.buildFeatures(
+                                segment,
+                                ditherMode = config.ditherMode,
+                                ditherSeed = ditherSeed,
+                            )
+                        }
+                        frontendMs += SystemClock.elapsedRealtime() - frontendStartedAt
 
                         val inferenceStartedAt = SystemClock.elapsedRealtime()
                         checkpoint("segment_${segmentIndex}_inference", progressStart)
                         val mask = openedEngine.process(features)
-                        inferenceMs += SystemClock.elapsedRealtime() - inferenceStartedAt
+                        onnxMs += SystemClock.elapsedRealtime() - inferenceStartedAt
 
-                        val segmentMask = VoiceCleanupMaskAccumulator().apply { add(mask) }.snapshot()
-                        aggregateMask.add(mask)
+                        val validFrameRange = dsp.validMaskFrameRange(segmentIndex, availableSamples)
+                        val selectedFrames = if (validFrameRange.isEmpty()) 0..0 else validFrameRange
+                        if (validFrameRange.isEmpty()) {
+                            DiagnosticLogger.warn(
+                                TAG,
+                                "mask_metrics_padding_fallback",
+                                taskId,
+                                fields = mapOf(
+                                    "segment_index" to segmentIndex,
+                                    "available_samples" to availableSamples,
+                                ) + plan.diagnosticFields(),
+                            )
+                        }
+                        val segmentMaskAccumulator = VoiceCleanupMaskAccumulator().apply {
+                            addEffectiveFrames(
+                                mask,
+                                selectedFrames,
+                                MossFormer2Dsp.BINS,
+                                config.cleanupStrength,
+                            )
+                        }
+                        aggregateMask.addEffectiveFrames(
+                            mask,
+                            selectedFrames,
+                            MossFormer2Dsp.BINS,
+                            config.cleanupStrength,
+                        )
+                        val segmentMask = segmentMaskAccumulator.snapshot()
                         logInfo(
                             "segment_mask_metrics",
-                            mapOf("segment_index" to segmentIndex) + segmentMask.diagnosticFields("mask"),
+                            mapOf(
+                                "segment_index" to segmentIndex,
+                                "available_samples" to availableSamples,
+                                "valid_sample_ratio" to availableSamples.toDouble() / dsp.segmentSamples,
+                                "valid_frame_first" to selectedFrames.first,
+                                "valid_frame_last" to selectedFrames.last,
+                                "padding_frames_excluded" to (dsp.frames - selectedFrames.count()),
+                            ) + config.diagnosticFields() + segmentMask.diagnosticFields("effective_mask"),
                         )
 
-                        val enhanced = dsp.applyMask(segment, mask)
-                        val retained = MossFormer2Dsp.retainedRange(segmentIndex)
+                        val maskStartedAt = SystemClock.elapsedRealtime()
+                        val enhanced = dsp.applyMask(segment, mask, config.cleanupStrength)
+                        maskApplyMs += SystemClock.elapsedRealtime() - maskStartedAt
+                        val retained = dsp.retainedRange(segmentIndex)
                         val remaining = (totalSamples - writtenSamples).coerceAtLeast(0L)
                         val count = min(retained.count().toLong(), remaining).toInt()
+                        seamAccumulator.addSegment(enhanced, retained.first, count, PCM_SCALE)
+
+                        val writeStartedAt = SystemClock.elapsedRealtime()
                         writeBuffer.clear()
                         for (offset in 0 until count) {
                             val sample = enhanced[retained.first + offset] / PCM_SCALE
                             writeBuffer.putFloat(VoiceCleanupPcmOutput.validatedSample(sample))
                         }
                         output.write(writeBuffer.array(), 0, count * Float.SIZE_BYTES)
+                        pcmWriteMs += SystemClock.elapsedRealtime() - writeStartedAt
                         writtenSamples += count
                         peakPssKb = maxOf(peakPssKb, Debug.getPss())
 
@@ -279,7 +390,9 @@ class VoiceCleanupProcessor(
                                 "available_samples" to availableSamples,
                                 "written_samples" to count,
                                 "process_pss_kb" to Debug.getPss(),
-                            ),
+                                "window_seconds" to config.windowMode.seconds,
+                                "feature_frames" to dsp.frames,
+                            ) + plan.diagnosticFields(),
                         )
                     }
                     output.flush()
@@ -293,12 +406,37 @@ class VoiceCleanupProcessor(
             "Pipeline MossFormer2 ghi $writtenSamples/$totalSamples mẫu"
         }
         val audioSeconds = totalSamples.toDouble() / MossFormer2Dsp.SAMPLE_RATE
+        val enhanceMs = SystemClock.elapsedRealtime() - enhanceStartedAt
+        val timing = VoiceCleanupTimingMetrics(
+            modelOpenMs = modelOpenMs,
+            frontendMs = frontendMs,
+            onnxMs = onnxMs,
+            maskApplyMs = maskApplyMs,
+            pcmWriteMs = pcmWriteMs,
+            enhanceMs = enhanceMs,
+            onnxRealTimeFactor = realTimeFactor(onnxMs, audioSeconds),
+            enhanceRealTimeFactor = realTimeFactor(enhanceMs, audioSeconds),
+        )
+        val seams = seamAccumulator.snapshot()
+        if (
+            seams.maximumAbsoluteRmsDeltaDb > SEAM_RMS_WARN_DB ||
+            (seams.maximumRelativeJumpDb ?: Double.NEGATIVE_INFINITY) > SEAM_JUMP_WARN_DB
+        ) {
+            DiagnosticLogger.warn(
+                TAG,
+                "seam_discontinuity_detected",
+                taskId,
+                fields = seams.diagnosticFields() + plan.diagnosticFields(),
+            )
+        }
         return InferenceMetrics(
             segmentCount = segmentCount,
-            inferenceMs = inferenceMs,
-            realTimeFactor = if (audioSeconds > 0.0) inferenceMs / 1000.0 / audioSeconds else 0.0,
             peakPssKb = peakPssKb,
             maskMetrics = aggregateMask.snapshot(),
+            seamMetrics = seams,
+            frontendComparison = frontendComparison,
+            timing = timing,
+            plan = plan,
         )
     }
 
@@ -336,7 +474,11 @@ class VoiceCleanupProcessor(
             } else {
                 VoiceCleanupMetricsParser.parse(session.allLogsAsString)
             }
-        } catch (error: Throwable) {
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Error) {
+            throw error
+        } catch (error: Exception) {
             DiagnosticLogger.warn(
                 TAG,
                 "audio_metrics_failed",
@@ -506,14 +648,19 @@ class VoiceCleanupProcessor(
     private fun amplitudeToDb(amplitude: Double): Double? =
         amplitude.takeIf { it > 0.0 && it.isFinite() }?.let { 20.0 * log10(it) }
 
+    private fun realTimeFactor(elapsedMs: Long, audioSeconds: Double): Double =
+        if (audioSeconds > 0.0) elapsedMs / 1000.0 / audioSeconds else 0.0
+
     private fun formatDecimal(value: Double): String = String.format(Locale.US, "%.6f", value)
 
     private data class InferenceMetrics(
         val segmentCount: Int,
-        val inferenceMs: Long,
-        val realTimeFactor: Double,
         val peakPssKb: Long,
         val maskMetrics: VoiceCleanupMaskMetrics,
+        val seamMetrics: VoiceCleanupSeamMetrics,
+        val frontendComparison: VoiceCleanupFrontendComparisonMetrics?,
+        val timing: VoiceCleanupTimingMetrics,
+        val plan: VoiceCleanupWindowPlan,
     )
 
     private companion object {
@@ -522,6 +669,10 @@ class VoiceCleanupProcessor(
         const val MIN_APPLIED_GAIN_DB = -24.0
         const val MAX_APPLIED_GAIN_DB = 24.0
         const val METRICS_FILTER = "loudnorm=I=-16:LRA=11:TP=-1:print_format=json"
+        const val DITHER_SEED_BASE = MossFormer2Dsp.DEFAULT_DITHER_SEED
+        const val DITHER_SEED_STEP = -7_046_029_254_386_353_131L
+        const val SEAM_RMS_WARN_DB = 6.0
+        const val SEAM_JUMP_WARN_DB = 12.0
         val EMPTY_AUDIO_METRICS = VoiceCleanupAudioMetrics(null, null, null, null)
     }
 }

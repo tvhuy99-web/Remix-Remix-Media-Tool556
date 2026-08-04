@@ -13,6 +13,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
@@ -86,6 +87,7 @@ internal class SynchronizedStemMixerController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Any()
     private val generation = AtomicLong(0L)
+    private val playbackRequested = AtomicBoolean(false)
     private val gains = AtomicReference(FloatArray(tracks.size) { 1f })
     private val activeSessionId = AtomicLong(-1L)
     private val activePipe = AtomicReference<String?>(null)
@@ -120,6 +122,7 @@ internal class SynchronizedStemMixerController(
     fun play(requestedPositionMs: Long) {
         synchronized(lock) {
             if (released) return
+            playbackRequested.set(true)
             val currentTrack = activeAudioTrack.get()
             if (worker?.isActive == true && currentTrack != null) {
                 runCatching(currentTrack::play)
@@ -133,6 +136,7 @@ internal class SynchronizedStemMixerController(
     fun pause() {
         synchronized(lock) {
             if (released) return
+            playbackRequested.set(false)
             runCatching { activeAudioTrack.get()?.pause() }
             _isPlaying.value = false
         }
@@ -161,6 +165,7 @@ internal class SynchronizedStemMixerController(
         synchronized(lock) {
             if (released) return
             stopActiveLocked()
+            playbackRequested.set(playImmediately)
             _positionMs.value = clampedMs
             _error.value = null
             currentGeneration = generation.incrementAndGet()
@@ -171,6 +176,7 @@ internal class SynchronizedStemMixerController(
 
     private fun stopActiveLocked() {
         generation.incrementAndGet()
+        playbackRequested.set(false)
         worker?.cancel()
         worker = null
         val sessionId = activeSessionId.getAndSet(-1L)
@@ -249,6 +255,7 @@ internal class SynchronizedStemMixerController(
                 releaseAudioTrack(audioTrack)
             }
             if (isCurrent(currentGeneration)) {
+                playbackRequested.set(false)
                 _isPlaying.value = false
                 synchronized(lock) {
                     worker = null
@@ -301,7 +308,7 @@ internal class SynchronizedStemMixerController(
                     buffer = outputBytes,
                     currentGeneration = currentGeneration,
                 )
-                if (!playbackStarted) {
+                if (!playbackStarted && playbackRequested.get()) {
                     audioTrack.play()
                     playbackStarted = true
                     _isPlaying.value = true
@@ -362,6 +369,11 @@ internal class SynchronizedStemMixerController(
             when {
                 writtenBytes > 0 -> consecutiveZeroWrites = 0
                 writtenBytes == 0 -> {
+                    if (!playbackRequested.get()) {
+                        consecutiveZeroWrites = 0
+                        delay(PAUSED_WRITE_RETRY_MS)
+                        continue
+                    }
                     consecutiveZeroWrites += 1
                     if (consecutiveZeroWrites == 1) {
                         DiagnosticLogger.warn(
@@ -488,6 +500,7 @@ internal class SynchronizedStemMixerController(
         private const val PIPE_BUFFER_BYTES = 256 * 1_024
         private const val MAX_CONSECUTIVE_ZERO_WRITES = 20
         private const val ZERO_WRITE_RETRY_MS = 10L
+        private const val PAUSED_WRITE_RETRY_MS = 20L
         private val PAN_CHANNEL_ORDER = listOf("FL", "FR", "FC", "LFE", "BL", "BR", "SL", "SR")
         private val PAN_CHANNEL_PAIRS = listOf(
             "FL" to "FR",

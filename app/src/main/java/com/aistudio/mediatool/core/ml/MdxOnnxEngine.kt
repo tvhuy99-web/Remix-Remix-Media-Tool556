@@ -135,31 +135,34 @@ internal class MdxOnnxEngine private constructor(
             val environment = OrtEnvironment.getEnvironment()
 
             attempts.forEach { provider ->
-                var options: OrtSession.SessionOptions? = null
-                var openedSession: OrtSession? = null
-                var openedRunOptions: OrtSession.RunOptions? = null
+                var optionsForCleanup: OrtSession.SessionOptions? = null
+                var sessionForCleanup: OrtSession? = null
+                var runOptionsForCleanup: OrtSession.RunOptions? = null
                 try {
-                    options = createOptions(provider, cpuThreads)
-                    openedSession = environment.createSession(modelFile.absolutePath, options)
-                    val inputName = model.tensor.inputName.takeIf(openedSession.inputNames::contains)
-                        ?: openedSession.inputNames.singleOrNull()
+                    val createdOptions = createOptions(provider, cpuThreads)
+                    optionsForCleanup = createdOptions
+                    val createdSession = environment.createSession(modelFile.absolutePath, createdOptions)
+                    sessionForCleanup = createdSession
+                    val inputName = model.tensor.inputName.takeIf(createdSession.inputNames::contains)
+                        ?: createdSession.inputNames.singleOrNull()
                         ?: throw MdxModelContractException("MDX ONNX graph must expose exactly one input")
-                    val outputName = model.tensor.outputName.takeIf(openedSession.outputNames::contains)
-                        ?: openedSession.outputNames.singleOrNull()
+                    val outputName = model.tensor.outputName.takeIf(createdSession.outputNames::contains)
+                        ?: createdSession.outputNames.singleOrNull()
                         ?: throw MdxModelContractException("MDX ONNX graph must expose exactly one output")
-                    val inputShape = (openedSession.inputInfo[inputName]?.info as? TensorInfo)?.shape
+                    val inputShape = (createdSession.inputInfo[inputName]?.info as? TensorInfo)?.shape
                         ?: throw MdxModelContractException("Cannot read MDX ONNX input shape")
-                    val outputShape = (openedSession.outputInfo[outputName]?.info as? TensorInfo)?.shape
+                    val outputShape = (createdSession.outputInfo[outputName]?.info as? TensorInfo)?.shape
                         ?: throw MdxModelContractException("Cannot read MDX ONNX output shape")
                     requireShape("input", inputShape, tensorShape)
                     requireShape("output", outputShape, tensorShape)
-                    openedRunOptions = OrtSession.RunOptions()
+                    val createdRunOptions = OrtSession.RunOptions()
+                    runOptionsForCleanup = createdRunOptions
                     return MdxEngineOpenResult(
                         engine = MdxOnnxEngine(
                             environment = environment,
-                            sessionOptions = options,
-                            session = openedSession,
-                            runOptions = openedRunOptions,
+                            sessionOptions = createdOptions,
+                            session = createdSession,
+                            runOptions = createdRunOptions,
                             inputName = inputName,
                             outputName = outputName,
                             tensorShape = tensorShape,
@@ -169,9 +172,9 @@ internal class MdxOnnxEngine private constructor(
                         failedAttempts = failures.toList(),
                     )
                 } catch (error: Throwable) {
-                    runCatching { openedRunOptions?.close() }
-                    runCatching { openedSession?.close() }
-                    runCatching { options?.close() }
+                    runCatching { runOptionsForCleanup?.close() }
+                    runCatching { sessionForCleanup?.close() }
+                    runCatching { optionsForCleanup?.close() }
                     failures += "${provider.name}: ${error.message ?: error::class.java.simpleName}"
                     onAttemptFailed(provider, error)
                 }

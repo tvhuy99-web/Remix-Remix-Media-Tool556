@@ -10,10 +10,17 @@ class SpatialAudioConfigTest {
         val value = SpatialAudioConfig()
         assertEquals(1.2f, value.startDistanceM, 0f)
         assertEquals(1.2f, value.endDistanceM, 0f)
+        assertEquals(8f, value.cycleSeconds, 0f)
         assertEquals(0.85f, value.spatialBlend, 0f)
         assertEquals(0.12f, value.reverbWet, 0f)
         assertEquals(0.65f, value.distanceRolloff, 0f)
         assertEquals(0.35f, value.airAbsorption, 0f)
+    }
+
+    @Test
+    fun exposesExactlyTenDistinctTrajectories() {
+        assertEquals(10, SpatialTrajectory.entries.size)
+        assertEquals(10, SpatialTrajectory.entries.map { it.label }.distinct().size)
     }
 
     @Test
@@ -68,18 +75,50 @@ class SpatialAudioConfigTest {
     }
 
     @Test
-    fun friendlyControlsStayInsideMusicalRanges() {
+    fun friendlyControlsUseFinalSpeedAndDistanceRanges() {
         val slowNear = SpatialAudioConfig().withFriendlySpeed(0f).withFriendlyDistance(0f)
+        val midpoint = SpatialAudioConfig().withFriendlyDistance(0.5f)
         val fastFar = SpatialAudioConfig().withFriendlySpeed(1f).withFriendlyDistance(1f)
-        assertEquals(18f, slowNear.cycleSeconds, 0.001f)
+
+        assertEquals(30f, slowNear.cycleSeconds, 0.001f)
         assertEquals(0.8f, slowNear.startDistanceM, 0.001f)
+        assertEquals(4f, midpoint.startDistanceM, 0.001f)
         assertEquals(3f, fastFar.cycleSeconds, 0.001f)
-        assertEquals(4f, fastFar.startDistanceM, 0.001f)
+        assertEquals(20f, fastFar.startDistanceM, 0.001f)
         assertEquals(fastFar.startDistanceM, fastFar.endDistanceM, 0f)
     }
 
     @Test
-    fun friendlyTrajectoryAppliesSafePreset() {
+    fun depthTrajectoriesKeepNearAndFarMotionWhenDistanceChanges() {
+        val nearFar = SpatialAudioConfig()
+            .withFriendlyTrajectory(SpatialTrajectory.NEAR_FAR)
+            .withFriendlyDistance(1f)
+        assertEquals(9f, nearFar.startDistanceM, 0.001f)
+        assertEquals(20f, nearFar.endDistanceM, 0.001f)
+
+        val freeDrift = SpatialAudioConfig()
+            .withFriendlyTrajectory(SpatialTrajectory.FREE_DRIFT)
+            .withFriendlyDistance(1f)
+        assertEquals(12f, freeDrift.startDistanceM, 0.001f)
+        assertEquals(20f, freeDrift.endDistanceM, 0.001f)
+    }
+
+    @Test
+    fun switchingAwayFromDepthTrajectoryRemovesHiddenDistanceAnimation() {
+        val nearFar = SpatialAudioConfig()
+            .withFriendlyTrajectory(SpatialTrajectory.NEAR_FAR)
+        val horizontal = nearFar.withFriendlyTrajectory(SpatialTrajectory.HORIZONTAL_CIRCLE)
+        assertEquals(horizontal.startDistanceM, horizontal.endDistanceM, 0f)
+        assertEquals(nearFar.endDistanceM, horizontal.startDistanceM, 0f)
+    }
+
+    @Test
+    fun friendlyTrajectoryAppliesSafePresetForEveryChoice() {
+        SpatialTrajectory.entries.forEach { trajectory ->
+            val value = SpatialAudioConfig().withFriendlyTrajectory(trajectory)
+            assertEquals(trajectory, value.trajectory)
+        }
+
         val figureEight = SpatialAudioConfig().withFriendlyTrajectory(SpatialTrajectory.FIGURE_EIGHT)
         assertEquals(-110f, figureEight.startAzimuthDeg, 0f)
         assertEquals(110f, figureEight.endAzimuthDeg, 0f)
@@ -88,6 +127,17 @@ class SpatialAudioConfigTest {
 
         val linear = SpatialAudioConfig().withFriendlyTrajectory(SpatialTrajectory.LINEAR)
         assertEquals(SpatialMotionMode.ONCE, linear.motionMode)
+
+        val static = SpatialAudioConfig().withFriendlyTrajectory(SpatialTrajectory.STATIC)
+        assertEquals(SpatialMotionMode.ONCE, static.motionMode)
+
+        val looping = SpatialTrajectory.entries - setOf(SpatialTrajectory.LINEAR, SpatialTrajectory.STATIC)
+        looping.forEach { trajectory ->
+            assertEquals(
+                SpatialMotionMode.LOOP,
+                SpatialAudioConfig().withFriendlyTrajectory(trajectory).motionMode,
+            )
+        }
     }
 
     @Test
@@ -116,6 +166,55 @@ class SpatialAudioConfigTest {
     }
 
     @Test
+    fun pendulumReversesSmoothlyBetweenLeftAndRight() {
+        val config = SpatialAudioConfig().withFriendlyTrajectory(SpatialTrajectory.PENDULUM)
+        val left = SpatialTrajectoryMath.pose(config, 0f)
+        val right = SpatialTrajectoryMath.pose(config, config.cycleSeconds / 2f)
+        val looped = SpatialTrajectoryMath.pose(config, config.cycleSeconds)
+        assertTrue(left.x < -0.9f)
+        assertTrue(right.x > 0.9f)
+        assertPose(looped, left.x, left.y, left.z)
+    }
+
+    @Test
+    fun frontBackArcReachesBothCardinalDirections() {
+        val config = SpatialAudioConfig().withFriendlyTrajectory(SpatialTrajectory.FRONT_BACK)
+        val front = SpatialTrajectoryMath.pose(config, 0f)
+        val back = SpatialTrajectoryMath.pose(config, config.cycleSeconds / 2f)
+        assertPose(front, 0f, 0f, -1f)
+        assertPose(back, 0f, 0f, 1f)
+    }
+
+    @Test
+    fun nearFarReturnsToNearDistanceWithoutASeam() {
+        val config = SpatialAudioConfig(
+            trajectory = SpatialTrajectory.NEAR_FAR,
+            startAzimuthDeg = -90f,
+            endAzimuthDeg = 270f,
+            startDistanceM = 1f,
+            endDistanceM = 8f,
+            cycleSeconds = 10f,
+        )
+        assertEquals(1f, SpatialTrajectoryMath.pose(config, 0f).distanceM, 1e-4f)
+        assertEquals(8f, SpatialTrajectoryMath.pose(config, 5f).distanceM, 1e-4f)
+        assertEquals(1f, SpatialTrajectoryMath.pose(config, 10f).distanceM, 1e-4f)
+    }
+
+    @Test
+    fun everyLoopingTrajectoryIsContinuousAtCycleBoundary() {
+        val looping = SpatialTrajectory.entries - setOf(SpatialTrajectory.LINEAR, SpatialTrajectory.STATIC)
+        looping.forEach { trajectory ->
+            val config = SpatialAudioConfig().withFriendlyTrajectory(trajectory)
+            val start = SpatialTrajectoryMath.pose(config, 0f)
+            val end = SpatialTrajectoryMath.pose(config, config.cycleSeconds)
+            assertEquals("$trajectory x", start.x, end.x, 1e-4f)
+            assertEquals("$trajectory y", start.y, end.y, 1e-4f)
+            assertEquals("$trajectory z", start.z, end.z, 1e-4f)
+            assertEquals("$trajectory distance", start.distanceM, end.distanceM, 1e-4f)
+        }
+    }
+
+    @Test
     fun oneShotLinearTrajectoryStopsAtEndPose() {
         val config = SpatialAudioConfig(
             trajectory = SpatialTrajectory.LINEAR,
@@ -137,7 +236,7 @@ class SpatialAudioConfigTest {
     }
 
     @Test
-    fun everyPoseIsUnitLengthAndDistanceInterpolates() {
+    fun everyPoseIsUnitLengthAndDistanceStaysBounded() {
         SpatialTrajectory.entries.forEach { trajectory ->
             val config = SpatialAudioConfig(
                 trajectory = trajectory,
@@ -149,7 +248,7 @@ class SpatialAudioConfigTest {
                 val pose = SpatialTrajectoryMath.pose(config, index * 0.09f)
                 val length = kotlin.math.sqrt(pose.x * pose.x + pose.y * pose.y + pose.z * pose.z)
                 assertEquals(1f, length, 1e-4f)
-                assertTrue(pose.distanceM in 1f..15f)
+                assertTrue("$trajectory distance ${pose.distanceM}", pose.distanceM in 1f..15f)
             }
         }
     }

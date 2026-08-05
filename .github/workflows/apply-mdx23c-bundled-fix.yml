@@ -40,3 +40,5 @@ jobs:
           git diff --cached --check
           git commit -m "Sửa tên và đóng gói MDX23C trong APK"
           git push origin HEAD:agent/mdx23c-vocal-onnx
+
+# Trigger synchronized PR run after temporarily targeting main.

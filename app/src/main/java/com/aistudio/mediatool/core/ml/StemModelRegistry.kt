@@ -2,6 +2,7 @@ package com.aistudio.mediatool.core.ml
 
 object StemModelRegistry {
     const val UVR_MDX_VOC_FT_LITERT_ID = "uvr-mdx-voc-ft-litert-fp16-v1"
+    const val MDX23C_VOCAL_PERSONAL_ID = "mdx23c-vocals-core-personal-v1"
     const val DEMUCS_2_STEM_LITE_ID = "demucs-ht-2stems-lite-v1"
     const val DEMUCS_4_STEM_ID = "demucs-ht-4stems-legacy-v1"
 
@@ -68,6 +69,48 @@ object StemModelRegistry {
         projectUrl = "https://huggingface.co/gyoom-sa/UVR-MDX-LiteRT",
         backend = StemInferenceBackend.MDX_LITERT,
         mdx = uvrMdxVocFtContract,
+    )
+
+    val mdx23cVocalPersonal = StemModelDescriptor(
+        id = MDX23C_VOCAL_PERSONAL_ID,
+        displayName = "MDX23C Vocal HQ",
+        description = "2 stem • dùng cá nhân",
+        mode = StemMode.TWO_STEM,
+        modelSpec = ModelSpec(
+            url = "https://github.com/tvhuy99-web/Remix-Remix-Media-Tool556/releases/download/mdx23c-vocal-personal-v1/mdx23c-vocals-core.onnx",
+            fileName = "mdx23c-vocals-core-8925ece1.onnx",
+            familyPrefix = "mdx23c-vocals-core-",
+            expectedBytes = 448_152_790L,
+            sha256 = "8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb",
+        ),
+        sampleRate = 44_100,
+        channels = 2,
+        chunking = ChunkingSpec(
+            frames = Mdx23cVocalPrototypeContract.spectrogram.chunkFrames,
+            overlapFrames = Mdx23cVocalPrototypeContract.spectrogram.overlapFrames,
+            edgeFadeFrames = Mdx23cVocalPrototypeContract.spectrogram.windowFadeFrames,
+            overlapProfile = OverlapProfile.REFERENCE_LINEAR_WINDOW,
+            reflectBoundaryFrames = Mdx23cVocalPrototypeContract.spectrogram.reflectBoundaryFrames,
+        ),
+        normalization = AudioNormalization.NONE,
+        tensor = Mdx23cVocalPrototypeContract.tensor,
+        sources = StemSourceMap(
+            vocals = SourceMix(listOf(0)),
+            music = SourceMix(listOf(1)),
+        ),
+        allowedAccelerators = setOf(
+            OnnxAcceleration.CPU,
+            OnnxAcceleration.XNNPACK,
+        ),
+        deviceRequirements = DeviceRequirements(
+            minimumTotalRamBytes = 8L * GIB,
+            minimumAvailableRamBytes = 3L * GIB,
+            userFacingSummary = "Cần thiết bị 8 GB RAM và khoảng 3 GB RAM trống.",
+        ),
+        licenseName = "Dùng cá nhân/phi thương mại",
+        projectUrl = "https://github.com/ZFTurbo/Music-Source-Separation-Training/releases/tag/v1.0.0",
+        backend = StemInferenceBackend.MDX_ONNX,
+        mdx = Mdx23cVocalPrototypeContract.spectrogram,
     )
 
     val demucsTwoStemLite = StemModelDescriptor(
@@ -147,6 +190,7 @@ object StemModelRegistry {
 
     val all: List<StemModelDescriptor> = listOf(
         uvrMdxVocFtLiteRt,
+        mdx23cVocalPersonal,
         demucsTwoStemLite,
         demucsFourStem,
     )

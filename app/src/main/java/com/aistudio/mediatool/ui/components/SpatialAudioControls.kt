@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.core.spatial.SpatialAudioConfig
+import com.aistudio.mediatool.core.spatial.SpatialRoomPreset
 import com.aistudio.mediatool.core.spatial.SpatialTrajectory
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -71,33 +72,49 @@ fun SpatialAudioControls(
                 onSelect = { onConfigChange(value.withFriendlyTrajectory(it)) },
             )
 
-            val speed = value.friendlySpeedPosition()
-            AccessibleSliderColumn(
-                label = "Tốc độ • ${formatSeconds(value.cycleSeconds)}",
-                value = speed,
-                onValueChange = { onConfigChange(value.withFriendlySpeed(it)) },
-                valueRange = 0f..1f,
+            EnumDropdown(
+                label = "Không gian",
+                valueLabel = value.roomPreset.label,
+                entries = SpatialRoomPreset.entries.toList(),
+                entryLabel = { it.label },
+                onSelect = { onConfigChange(value.withRoomPreset(it)) },
             )
+
+            if (value.trajectory != SpatialTrajectory.STATIC) {
+                val speed = value.friendlySpeedPosition()
+                val speedLabel = if (value.trajectory == SpatialTrajectory.LINEAR) {
+                    "Thời gian quét • ${formatSeconds(value.cycleSeconds)}"
+                } else {
+                    "Chu kỳ • ${formatSeconds(value.cycleSeconds)}"
+                }
+                AccessibleSliderColumn(
+                    label = speedLabel,
+                    value = speed,
+                    onValueChange = { onConfigChange(value.withFriendlySpeed(it)) },
+                    valueRange = 0f..1f,
+                )
+            }
 
             val distance = value.friendlyDistancePosition()
             AccessibleSliderColumn(
-                label = "Khoảng cách • ${formatDistance(max(value.startDistanceM, value.endDistanceM))}",
+                label = "Độ xa ước tính • ${formatDistance(max(value.startDistanceM, value.endDistanceM))}",
                 value = distance,
                 onValueChange = { onConfigChange(value.withFriendlyDistance(it)) },
                 valueRange = 0f..1f,
             )
 
             AccessibleSliderColumn(
-                label = "Cường độ 3D • ${(value.spatialBlend * 100f).roundToInt()}%",
+                label = "Cường độ chuyển động • ${(value.spatialBlend * 100f).roundToInt()}%",
                 value = value.spatialBlend,
                 onValueChange = { onConfigChange(value.copy(spatialBlend = it).normalized()) },
                 valueRange = 0f..1f,
             )
 
+            val reflection = value.friendlyReflectionPosition()
             AccessibleSliderColumn(
-                label = "Độ vang • ${(value.reverbWet * 100f).roundToInt()}%",
-                value = value.reverbWet,
-                onValueChange = { onConfigChange(value.copy(reverbWet = it).normalized()) },
+                label = "Phản xạ phòng • ${(reflection * 100f).roundToInt()}%",
+                value = reflection,
+                onValueChange = { onConfigChange(value.withFriendlyReflection(it)) },
                 valueRange = 0f..1f,
             )
         }

@@ -10,7 +10,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,10 +18,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.core.spatial.SpatialAudioConfig
 import com.aistudio.mediatool.core.spatial.SpatialTrajectory
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,35 +44,28 @@ fun SpatialAudioControls(
     )
     if (!enabled) return
 
-    Text(
-        "Giữ stereo gốc, hoặc tự chuyển nguồn mono thành stereo trước khi dựng HRTF.",
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        style = MaterialTheme.typography.bodySmall,
-        modifier = Modifier.padding(bottom = 4.dp),
-    )
-
     Card(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(),
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(
-                "Tùy chỉnh Spatial Audio",
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-            )
-
             EnumDropdown(
-                label = "Kiểu chuyển động",
+                label = "Chuyển động",
                 valueLabel = value.trajectory.label,
                 entries = listOf(
                     SpatialTrajectory.HORIZONTAL_CIRCLE,
+                    SpatialTrajectory.LINEAR,
+                    SpatialTrajectory.PENDULUM,
+                    SpatialTrajectory.FRONT_BACK,
                     SpatialTrajectory.FIGURE_EIGHT,
                     SpatialTrajectory.VERTICAL_CIRCLE,
-                    SpatialTrajectory.LINEAR,
+                    SpatialTrajectory.SPIRAL,
+                    SpatialTrajectory.NEAR_FAR,
+                    SpatialTrajectory.FREE_DRIFT,
+                    SpatialTrajectory.STATIC,
                 ),
                 entryLabel = { it.label },
                 onSelect = { onConfigChange(value.withFriendlyTrajectory(it)) },
@@ -81,7 +73,7 @@ fun SpatialAudioControls(
 
             val speed = value.friendlySpeedPosition()
             AccessibleSliderColumn(
-                label = "Tốc độ: ${levelLabel(speed, "Chậm", "Vừa", "Nhanh")}",
+                label = "Tốc độ • ${formatSeconds(value.cycleSeconds)}",
                 value = speed,
                 onValueChange = { onConfigChange(value.withFriendlySpeed(it)) },
                 valueRange = 0f..1f,
@@ -89,39 +81,37 @@ fun SpatialAudioControls(
 
             val distance = value.friendlyDistancePosition()
             AccessibleSliderColumn(
-                label = "Khoảng cách: ${levelLabel(distance, "Gần", "Vừa", "Xa")}",
+                label = "Khoảng cách • ${formatDistance(max(value.startDistanceM, value.endDistanceM))}",
                 value = distance,
                 onValueChange = { onConfigChange(value.withFriendlyDistance(it)) },
                 valueRange = 0f..1f,
             )
 
             AccessibleSliderColumn(
-                label = "Cường độ 3D: ${levelLabel(value.spatialBlend, "Nhẹ", "Cân bằng", "Rõ")}",
+                label = "Cường độ 3D • ${(value.spatialBlend * 100f).roundToInt()}%",
                 value = value.spatialBlend,
                 onValueChange = { onConfigChange(value.copy(spatialBlend = it).normalized()) },
                 valueRange = 0f..1f,
             )
 
             AccessibleSliderColumn(
-                label = "Độ vang: ${(value.reverbWet * 100f).roundToInt()}%",
+                label = "Độ vang • ${(value.reverbWet * 100f).roundToInt()}%",
                 value = value.reverbWet,
                 onValueChange = { onConfigChange(value.copy(reverbWet = it).normalized()) },
                 valueRange = 0f..1f,
-            )
-
-            Text(
-                "Âm lượng được cân tự động theo đầu vào và bảo vệ bằng một peak ceiling chung cho hai tai. Độ vang 0% là đường khô.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
 }
 
-private fun levelLabel(value: Float, low: String, middle: String, high: String): String = when {
-    value < 0.34f -> low
-    value < 0.67f -> middle
-    else -> high
+private fun formatSeconds(seconds: Float): String {
+    val tenths = (seconds * 10f).roundToInt()
+    return if (tenths % 10 == 0) "${tenths / 10} giây" else "${tenths / 10f} giây"
+}
+
+private fun formatDistance(distanceM: Float): String {
+    val tenths = (distanceM * 10f).roundToInt()
+    return if (tenths % 10 == 0) "${tenths / 10} m" else "${tenths / 10f} m"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

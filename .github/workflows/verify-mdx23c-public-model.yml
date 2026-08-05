@@ -8,12 +8,19 @@ on:
       - app/**
       - docs/MDX23C_PUBLIC_MODEL_HOSTING.md
       - .github/workflows/verify-mdx23c-public-model.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - app/**
+      - docs/MDX23C_PUBLIC_MODEL_HOSTING.md
+      - .github/workflows/verify-mdx23c-public-model.yml
 
 permissions:
   contents: read
 
 concurrency:
-  group: verify-mdx23c-public-model
+  group: verify-mdx23c-public-model-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -23,6 +30,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Verify public release without token
         env:

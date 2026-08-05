@@ -42,9 +42,11 @@ class VoiceCleanupConfigTest {
     @Test
     fun modesAreTenTwentyAndThirtySecondsWithIncreasingRam() {
         val modes = VoiceCleanupWindowMode.entries
+        val mib = 1024L * 1024L
 
         assertEquals(listOf(10, 20, 30), modes.map(VoiceCleanupWindowMode::seconds))
         assertEquals(listOf(1_246, 2_496, 3_746), modes.map(VoiceCleanupWindowMode::frames))
+        assertEquals(listOf(1_024L, 1_536L, 2_048L), modes.map { it.minimumAvailableRamBytes / mib })
         assertTrue(modes.zipWithNext().all { (left, right) -> left.segmentSamples < right.segmentSamples })
         assertTrue(modes.zipWithNext().all { (left, right) -> left.frames < right.frames })
         assertTrue(

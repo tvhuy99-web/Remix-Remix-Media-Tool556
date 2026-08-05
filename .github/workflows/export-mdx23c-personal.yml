@@ -2,9 +2,9 @@ name: Export MDX23C personal model
 
 on:
   workflow_dispatch:
-  push:
+  pull_request:
     branches:
-      - agent/mdx23c-vocal-onnx
+      - agent/stem-quality-hardening
     paths:
       - .github/workflows/export-mdx23c-personal.yml
       - tools/mdx23c/**
@@ -21,14 +21,17 @@ env:
   CHECKPOINT_SHA256: 49d51472769e34a2501cd1da782346a3212555c3a5619fc2c53507445528d816
   MODEL_FILE: mdx23c-vocals-core.onnx
   RELEASE_TAG: mdx23c-vocal-personal-v1
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   export:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - name: Checkout MediaTool
+      - name: Checkout MediaTool head
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_SHA }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -128,7 +131,7 @@ jobs:
             gh release upload "$RELEASE_TAG" /tmp/mdx23c-output/* --clobber
           else
             gh release create "$RELEASE_TAG" /tmp/mdx23c-output/* \
-              --target "$GITHUB_SHA" \
+              --target "$TARGET_SHA" \
               --title "MDX23C vocal-only personal model" \
               --notes-file /tmp/release-notes.md \
               --prerelease

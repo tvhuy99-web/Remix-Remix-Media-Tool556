@@ -1,0 +1,41 @@
+name: Apply Spatial Patches
+
+on:
+  push:
+    branches: [agent/spatial-audio-engine]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-spatial-patches
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/spatial-audio-engine
+          fetch-depth: 0
+
+      - name: Apply deterministic patches
+        run: python3 scripts/apply_spatial_patches.py
+
+      - name: Commit changes when needed
+        run: |
+          if git diff --quiet; then
+            echo "Không có bản vá mới"
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Sửa lỗi compile Spatial Audio'
+          git fetch origin agent/spatial-audio-engine
+          git rebase origin/agent/spatial-audio-engine
+          git push origin HEAD:agent/spatial-audio-engine

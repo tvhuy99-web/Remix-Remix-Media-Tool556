@@ -361,7 +361,6 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
     long long blocks = 0;
     long long nonFinite = 0;
     long long clippedBefore = 0;
-    double sumSquaresBefore = 0.0;
     float peakBefore = 0.0f;
     const auto started = std::chrono::steady_clock::now();
 
@@ -454,7 +453,6 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
                 const float magnitude = std::fabs(safe);
                 peakBefore = std::max(peakBefore, magnitude);
                 if (magnitude > 1.0f) ++clippedBefore;
-                sumSquaresBefore += static_cast<double>(safe) * safe;
                 interleaved[static_cast<size_t>(i) * 2u + static_cast<size_t>(channel)] = safe;
             }
         }
@@ -470,6 +468,159 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
         frames += samplesRead;
         ++blocks;
     }
+
+    long long tailFrames = 0;
+    const float sourceDurationSeconds = static_cast<float>(frames) / static_cast<float>(sampleRate);
+    const float blockDurationSeconds = static_cast<float>(frameSize) / static_cast<float>(sampleRate);
+    const bool effectReachesFileEnd = effectEnd < 0.0f ||
+        effectEnd >= sourceDurationSeconds - blockDurationSeconds;
+
+    if (effectReachesFileEnd && frames > 0) {
+        const float tailLocalSeconds = std::max(0.0f, sourceDurationSeconds - effectStart);
+        const Pose tailPose = calculatePose(
+            trajectory, motionMode, tailLocalSeconds, cycleSeconds,
+            startAzimuth, endAzimuth, startElevation, endElevation,
+            startDistance, endDistance
+        );
+
+        IPLBinauralEffectParams tailBinauralParams{};
+        tailBinauralParams.direction = tailPose.direction;
+        tailBinauralParams.interpolation = interpolation == 0
+            ? IPL_HRTFINTERPOLATION_BILINEAR
+            : IPL_HRTFINTERPOLATION_NEAREST;
+        tailBinauralParams.spatialBlend = spatialBlend;
+        tailBinauralParams.hrtf = hrtf;
+        tailBinauralParams.peakDelays = nullptr;
+
+        IPLReflectionEffectParams tailReflectionParams{};
+        if (reverbWet > 0.0f) {
+            tailReflectionParams.type = IPL_REFLECTIONEFFECTTYPE_PARAMETRIC;
+            tailReflectionParams.reverbTimes[0] = rt60Low;
+            tailReflectionParams.reverbTimes[1] = rt60Mid;
+            tailReflectionParams.reverbTimes[2] = rt60High;
+            tailReflectionParams.eq[0] = eqLow;
+            tailReflectionParams.eq[1] = eqMid;
+            tailReflectionParams.eq[2] = eqHigh;
+            tailReflectionParams.delay = 0;
+            tailReflectionParams.numChannels = 1;
+            tailReflectionParams.irSize = static_cast<int>(
+                std::ceil(std::max({rt60Low, rt60Mid, rt60High}) * sampleRate)
+            );
+            tailReflectionParams.ir = nullptr;
+            tailReflectionParams.tanDevice = nullptr;
+            tailReflectionParams.tanSlot = 0;
+        }
+
+        const float tailDryGain = reverbWet > 0.0f ? std::sqrt(1.0f - reverbWet) : 1.0f;
+        const float tailWetGain = reverbWet > 0.0f ? std::sqrt(reverbWet) : 0.0f;
+        const float maximumTailSeconds = reverbWet > 0.0f
+            ? std::max({rt60Low, rt60Mid, rt60High}) + 1.0f
+            : 1.0f;
+        const int maximumTailBlocks = std::max(
+            16,
+            static_cast<int>(std::ceil(maximumTailSeconds * sampleRate / frameSize)) + 8
+        );
+
+        for (int tailBlock = 0; tailBlock < maximumTailBlocks; ++tailBlock) {
+            std::fill(directBuffer.data[0], directBuffer.data[0] + frameSize, 0.0f);
+            for (int channel = 0; channel < 2; ++channel) {
+                std::fill(directStereo.data[channel], directStereo.data[channel] + frameSize, 0.0f);
+            }
+            if (reverbWet > 0.0f) {
+                std::fill(reverbBuffer.data[0], reverbBuffer.data[0] + frameSize, 0.0f);
+                for (int channel = 0; channel < 2; ++channel) {
+                    std::fill(reverbStereo.data[channel], reverbStereo.data[channel] + frameSize, 0.0f);
+                }
+            }
+
+            bool hasDirectMono = false;
+            bool hasDirectStereo = false;
+            bool hasReverbMono = false;
+            bool hasWetStereo = false;
+
+            if (iplDirectEffectGetTailSize(directEffect) > 0) {
+                iplDirectEffectGetTail(directEffect, &directBuffer);
+                hasDirectMono = true;
+            }
+
+            if (hasDirectMono) {
+                iplBinauralEffectApply(
+                    directBinaural,
+                    &tailBinauralParams,
+                    &directBuffer,
+                    &directStereo
+                );
+                hasDirectStereo = true;
+            } else if (iplBinauralEffectGetTailSize(directBinaural) > 0) {
+                iplBinauralEffectGetTail(directBinaural, &directStereo);
+                hasDirectStereo = true;
+            }
+
+            if (reverbWet > 0.0f) {
+                if (hasDirectMono) {
+                    iplReflectionEffectApply(
+                        reflectionEffect,
+                        &tailReflectionParams,
+                        &directBuffer,
+                        &reverbBuffer,
+                        nullptr
+                    );
+                    hasReverbMono = true;
+                } else if (iplReflectionEffectGetTailSize(reflectionEffect) > 0) {
+                    iplReflectionEffectGetTail(reflectionEffect, &reverbBuffer, nullptr);
+                    hasReverbMono = true;
+                }
+
+                if (hasReverbMono) {
+                    IPLBinauralEffectParams wetTailParams = tailBinauralParams;
+                    wetTailParams.spatialBlend = std::max(0.35f, spatialBlend * 0.75f);
+                    iplBinauralEffectApply(
+                        wetBinaural,
+                        &wetTailParams,
+                        &reverbBuffer,
+                        &reverbStereo
+                    );
+                    hasWetStereo = true;
+                } else if (iplBinauralEffectGetTailSize(wetBinaural) > 0) {
+                    iplBinauralEffectGetTail(wetBinaural, &reverbStereo);
+                    hasWetStereo = true;
+                }
+            }
+
+            if (!hasDirectMono && !hasDirectStereo && !hasReverbMono && !hasWetStereo) break;
+
+            for (int i = 0; i < frameSize; ++i) {
+                for (int channel = 0; channel < 2; ++channel) {
+                    float sample = 0.0f;
+                    if (hasDirectStereo) sample += tailDryGain * directStereo.data[channel][i];
+                    if (hasWetStereo) sample += tailWetGain * reverbStereo.data[channel][i];
+                    sample *= outputGain;
+                    if (!std::isfinite(sample)) {
+                        sample = 0.0f;
+                        ++nonFinite;
+                    }
+                    const float magnitude = std::fabs(sample);
+                    peakBefore = std::max(peakBefore, magnitude);
+                    if (magnitude > 1.0f) ++clippedBefore;
+                    interleaved[static_cast<size_t>(i) * 2u + static_cast<size_t>(channel)] = sample;
+                }
+            }
+            firstPass.write(
+                reinterpret_cast<const char*>(interleaved.data()),
+                static_cast<std::streamsize>(frameSize * 2 * sizeof(float))
+            );
+            if (!firstPass) {
+                cleanup(context, &hrtf, &directEffect, &directBinaural, &reflectionEffect, &wetBinaural,
+                        {&inputBuffer, &directBuffer, &directStereo, &reverbBuffer, &reverbStereo});
+                firstPass.close();
+                std::remove(tempPath.c_str());
+                return errorJson(env, "Ghi tail Spatial Audio thất bại");
+            }
+            tailFrames += frameSize;
+            ++blocks;
+        }
+    }
+
     firstPass.close();
     input.close();
 
@@ -524,6 +675,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
     json << "{\"ok\":true"
          << ",\"frames\":" << frames
          << ",\"blocks\":" << blocks
+         << ",\"tail_frames\":" << tailFrames
          << ",\"render_ms\":" << renderMs
          << ",\"peak_before_gain\":" << peakBefore
          << ",\"peak_after_gain\":" << peakAfter

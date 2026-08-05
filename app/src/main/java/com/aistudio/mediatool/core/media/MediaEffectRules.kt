@@ -7,7 +7,6 @@ enum class MediaAudioEffect {
     DENOISE,
     NOISE_GATE,
     PAN,
-    SPATIAL_8D,
     COMPRESSOR,
     EQUALIZER,
 }
@@ -21,7 +20,6 @@ object MediaEffectRules {
         MediaAudioEffect.EQUALIZER -> true
 
         MediaAudioEffect.PAN,
-        MediaAudioEffect.SPATIAL_8D,
         MediaAudioEffect.COMPRESSOR -> false
     }
 

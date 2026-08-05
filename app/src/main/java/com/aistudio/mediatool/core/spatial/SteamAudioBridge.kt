@@ -59,6 +59,7 @@ object SteamAudioBridge {
         return SpatialRenderMetrics(
             frames = json.optLong("frames"),
             blocks = json.optLong("blocks"),
+            tailFrames = json.optLong("tail_frames"),
             renderMs = json.optLong("render_ms"),
             peakBeforeGain = json.optDouble("peak_before_gain").toFloat(),
             peakAfterGain = json.optDouble("peak_after_gain").toFloat(),
@@ -110,6 +111,7 @@ object SteamAudioBridge {
 data class SpatialRenderMetrics(
     val frames: Long,
     val blocks: Long,
+    val tailFrames: Long,
     val renderMs: Long,
     val peakBeforeGain: Float,
     val peakAfterGain: Float,
@@ -123,6 +125,7 @@ data class SpatialRenderMetrics(
     fun diagnosticFields(): Map<String, Any?> = mapOf(
         "frames" to frames,
         "blocks" to blocks,
+        "tail_frames" to tailFrames,
         "render_ms" to renderMs,
         "peak_before_gain" to peakBeforeGain,
         "peak_after_gain" to peakAfterGain,

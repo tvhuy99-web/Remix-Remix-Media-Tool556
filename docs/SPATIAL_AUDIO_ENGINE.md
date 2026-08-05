@@ -68,7 +68,7 @@ Góc phương vị 0 độ ở phía trước, 90 độ ở bên phải, 180 đ�
 - RT60 thấp, trung và cao.
 - EQ reverb thấp, trung và cao.
 
-Wet bằng 0 không tạo hoặc chạy reflection effect.
+Wet bằng 0 không tạo hoặc chạy reflection effect. Renderer vẫn xả tail ngắn của direct/HRTF khi hiệu ứng kéo tới cuối tệp; khi Wet lớn hơn 0, reflection và wet-binaural tail cũng được xả đầy đủ.
 
 ### Phạm vi và đầu ra
 
@@ -91,6 +91,7 @@ Các trường quan trọng:
 - toàn bộ cấu hình quỹ đạo và âm học;
 - HRTF tích hợp hoặc SOFA;
 - số frame và block;
+- số tail frame được xả sau khi nguồn kết thúc;
 - thời gian render và realtime factor;
 - peak trước và sau shared gain;
 - RMS dBFS;

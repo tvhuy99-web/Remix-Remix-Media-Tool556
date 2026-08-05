@@ -59,6 +59,45 @@ class MdxOverlapAddWriterTest {
     }
 
     @Test
+    fun supportsSeventyFivePercentOverlapAndTrimsReflectPadding() {
+        val generated = 16
+        val stride = 4
+        val chunks = 7
+        val discard = 12
+        val totalFrames = 16
+        val window = MdxDsp.buildCrossfadeWindow(generated, 3)
+        val timelineLength = (chunks - 1) * stride + generated
+        val leftChunks = List(chunks) { chunk ->
+            FloatArray(generated) { local -> (chunk * stride + local).toFloat() }
+        }
+        val rightChunks = List(chunks) { chunk ->
+            FloatArray(generated) { local -> -(chunk * stride + local).toFloat() }
+        }
+        assertTrue(timelineLength >= discard + totalFrames)
+
+        val bytes = ByteArrayOutputStream()
+        MdxOverlapAddWriter(
+            output = DataOutputStream(bytes),
+            totalFrames = totalFrames.toLong(),
+            generatedFrames = generated,
+            strideFrames = stride,
+            window = window,
+            compensation = 1f,
+            discardLeadingFrames = discard.toLong(),
+        ).use { writer ->
+            for (chunk in 0 until chunks) writer.append(leftChunks[chunk], rightChunks[chunk], 0)
+        }
+
+        val result = ByteBuffer.wrap(bytes.toByteArray()).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+        assertEquals(totalFrames * 2, result.remaining())
+        for (frame in 0 until totalFrames) {
+            val expected = (discard + frame).toFloat()
+            assertEquals(expected, result.get(frame * 2), 1e-5f)
+            assertEquals(-expected, result.get(frame * 2 + 1), 1e-5f)
+        }
+    }
+
+    @Test
     fun crossfadeWindowIsStrictlyPositiveAndSymmetric() {
         val window = MdxDsp.buildCrossfadeWindow(100, 10)
         assertTrue(window.all { it > 0f && it <= 1f })

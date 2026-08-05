@@ -134,7 +134,7 @@ internal class MdxOnnxEngine private constructor(
             val failures = mutableListOf<String>()
             val environment = OrtEnvironment.getEnvironment()
 
-            attempts.forEach { provider ->
+            for ((attemptIndex, provider) in attempts.withIndex()) {
                 var optionsForCleanup: OrtSession.SessionOptions? = null
                 var sessionForCleanup: OrtSession? = null
                 var runOptionsForCleanup: OrtSession.RunOptions? = null
@@ -175,14 +175,22 @@ internal class MdxOnnxEngine private constructor(
                     runCatching { runOptionsForCleanup?.close() }
                     runCatching { sessionForCleanup?.close() }
                     runCatching { optionsForCleanup?.close() }
+                    if (error is InterruptedException) Thread.currentThread().interrupt()
+                    if (!MdxBackendFailurePolicy.isRecoverable(error)) throw error
+
                     failures += "${provider.name}: ${error.message ?: error::class.java.simpleName}"
                     onAttemptFailed(provider, error)
+                    val hasNextBackend = attemptIndex < attempts.lastIndex
+                    if (!MdxBackendFailurePolicy.shouldFallback(error, hasNextBackend)) {
+                        throw IllegalStateException(
+                            "Không thể mở MDX ONNX: ${failures.joinToString(" | ")}",
+                            error,
+                        )
+                    }
                 }
             }
 
-            throw IllegalStateException(
-                "Không thể mở MDX ONNX bằng CPU/XNNPACK: ${failures.joinToString(" | ")}",
-            )
+            error("Danh sách backend MDX ONNX không được để trống")
         }
 
         private fun createOptions(

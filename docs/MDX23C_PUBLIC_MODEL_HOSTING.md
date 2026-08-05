@@ -13,8 +13,8 @@ embedding the ONNX file in Android assets.
 - Expected bytes: `448152790`
 - SHA-256: `8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb`
 
-The CI public-model probe calls the release API and direct asset URL without `GH_TOKEN`. This catches
-visibility regressions or accidental asset deletion before an APK is shared.
+The `verify-mdx23c-public-model.yml` workflow calls the release API and direct asset URL without
+`GH_TOKEN`. This catches visibility regressions or accidental asset deletion before an APK is shared.
 
 ## Android behavior
 

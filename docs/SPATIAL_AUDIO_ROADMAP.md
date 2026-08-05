@@ -20,7 +20,7 @@ Trạng thái: mã nguồn và CI đã hoàn tất trong draft PR #28; còn bài
 
 ### 1B. Steam Audio scene và phản xạ động
 
-Trạng thái: renderer Hybrid đang được xác minh trong draft PR #29.
+Trạng thái: mã nguồn và CI đã hoàn tất trong draft PR #29; còn runtime/A-B trên OnePlus.
 
 - Dựng mesh hình hộp từ kích thước preset, với vật liệu riêng cho tường, sàn và trần.
 - Tạo `IPLScene`, `IPLStaticMesh`, `IPLSimulator` và một source phản xạ.
@@ -43,12 +43,24 @@ Trạng thái: renderer Hybrid đang được xác minh trong draft PR #29.
 
 ### 1C. Bảo toàn stereo và độ tin cậy production
 
-- A/B ba chế độ: point stereo hiện tại, Mid/Side và cặp nguồn L/R.
+Trạng thái: 1C.1 đang được xác minh trong draft PR #30.
+
+Đã triển khai trong 1C.1:
+
+- ID Kotlin/JNI ổn định, không phụ thuộc thứ tự enum.
+- Preflight dung lượng cho hai pass PCM, tail và safety margin.
+- Mid/Side post-process theo luồng, giữ Mid binaural và phục hồi tối đa 40% Side nguồn.
+- Giảm độ rộng phục hồi theo khoảng cách và bỏ qua nguồn dual-mono.
+- Pass peak chỉ-giảm-gain với trần -1 dBFS.
+- Diagnostics cho disk guard và stereo post-process.
+
+Còn lại trong 1C:
+
 - Vô hiệu hóa Pan, AutoPan, reverb cũ và mono khi Spatial Audio đang bật.
-- Native cancellation và kiểm tra dung lượng trống.
+- Native cancellation.
 - Sửa parser LUFS/true peak và thêm native/Kotlin trajectory parity tests.
-- Thay enum ordinal bằng native ID ổn định.
 - Quy định tail riêng cho audio và video.
+- Runtime A/B point stereo, Mid/Side và sau đó mới cân nhắc cặp nguồn L/R.
 
 ## Giai đoạn 2: High Quality Offline
 
@@ -59,7 +71,7 @@ Trạng thái: renderer Hybrid đang được xác minh trong draft PR #29.
 - Cache IR/keyframe để tránh tính lại khi chỉ đổi codec đầu ra.
 - HRTF calibration và lưu profile theo tai nghe.
 
-Mọi tăng chất lượng phải đi kèm benchmark CPU, RAM, nhiệt, dung lượng tạm và kiểm tra seam.
+Mọi tăng chất lượng phải đi kèm benchmark CPU, RAM, nhiệt, dung lượng tạm và kiểm tra seam. Không mở mặc định chế độ Cao trước khi có số đo từ renderer Cân bằng trên thiết bị thật.
 
 ## Giai đoạn 3: Object Music
 

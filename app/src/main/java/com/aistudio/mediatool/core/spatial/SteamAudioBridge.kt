@@ -18,45 +18,74 @@ object SteamAudioBridge {
         output.delete()
         val value = config.normalized()
         val room = RoomReflectionNativeSpec.balanced(value.roomPreset)
-        val response = nativeRenderRoomAware(
-            inputPath = input.absolutePath,
-            outputPath = output.absolutePath,
-            sofaPath = value.customSofaPath.orEmpty(),
-            sampleRate = SAMPLE_RATE,
-            frameSize = value.frameSize,
-            trajectory = value.trajectory.ordinal,
-            interpolation = value.interpolation.ordinal,
-            motionMode = value.motionMode.ordinal,
-            reflectionIntegerPayload = room.integerPayload(),
-            reflectionFloatPayload = room.floatPayload(),
-            startAzimuthDeg = value.startAzimuthDeg,
-            endAzimuthDeg = value.endAzimuthDeg,
-            startElevationDeg = value.startElevationDeg,
-            endElevationDeg = value.endElevationDeg,
-            startDistanceM = value.startDistanceM,
-            endDistanceM = value.endDistanceM,
-            cycleSeconds = value.cycleSeconds,
-            spatialBlend = value.spatialBlend,
-            distanceMinM = value.distanceMinM,
-            distanceRolloff = value.distanceRolloff,
-            airAbsorption = value.airAbsorption,
-            directivityWeight = value.directivityWeight,
-            directivityPower = value.directivityPower,
-            sourceYawDeg = value.sourceYawDeg,
-            reverbWet = value.reverbWet,
-            reverbRt60Low = value.reverbRt60Low,
-            reverbRt60Mid = value.reverbRt60Mid,
-            reverbRt60High = value.reverbRt60High,
-            reverbEqLow = value.reverbEqLow,
-            reverbEqMid = value.reverbEqMid,
-            reverbEqHigh = value.reverbEqHigh,
-            outputGainDb = value.outputGainDb,
-            effectStartSeconds = value.effectStartSeconds,
-            effectEndSeconds = value.effectEndSeconds,
+        val diskBudget = SpatialDiskBudgetEstimator.requireCapacity(input, output, value)
+        val nativeOutput = File(
+            output.parentFile,
+            ".${output.nameWithoutExtension}_${System.nanoTime()}_point_spatial.f32",
         )
+        nativeOutput.delete()
+        val response = try {
+            nativeRenderRoomAware(
+                inputPath = input.absolutePath,
+                outputPath = nativeOutput.absolutePath,
+                sofaPath = value.customSofaPath.orEmpty(),
+                sampleRate = SAMPLE_RATE,
+                frameSize = value.frameSize,
+                trajectory = value.trajectory.nativeId,
+                interpolation = value.interpolation.nativeId,
+                motionMode = value.motionMode.nativeId,
+                reflectionIntegerPayload = room.integerPayload(),
+                reflectionFloatPayload = room.floatPayload(),
+                startAzimuthDeg = value.startAzimuthDeg,
+                endAzimuthDeg = value.endAzimuthDeg,
+                startElevationDeg = value.startElevationDeg,
+                endElevationDeg = value.endElevationDeg,
+                startDistanceM = value.startDistanceM,
+                endDistanceM = value.endDistanceM,
+                cycleSeconds = value.cycleSeconds,
+                spatialBlend = value.spatialBlend,
+                distanceMinM = value.distanceMinM,
+                distanceRolloff = value.distanceRolloff,
+                airAbsorption = value.airAbsorption,
+                directivityWeight = value.directivityWeight,
+                directivityPower = value.directivityPower,
+                sourceYawDeg = value.sourceYawDeg,
+                reverbWet = value.reverbWet,
+                reverbRt60Low = value.reverbRt60Low,
+                reverbRt60Mid = value.reverbRt60Mid,
+                reverbRt60High = value.reverbRt60High,
+                reverbEqLow = value.reverbEqLow,
+                reverbEqMid = value.reverbEqMid,
+                reverbEqHigh = value.reverbEqHigh,
+                outputGainDb = value.outputGainDb,
+                effectStartSeconds = value.effectStartSeconds,
+                effectEndSeconds = value.effectEndSeconds,
+            )
+        } catch (error: Throwable) {
+            nativeOutput.delete()
+            output.delete()
+            throw error
+        }
         val json = JSONObject(response)
         if (!json.optBoolean("ok", false)) {
+            nativeOutput.delete()
             error(json.optString("error", "Steam Audio không thể render"))
+        }
+        require(nativeOutput.isFile && nativeOutput.length() > 0L) {
+            "Steam Audio không tạo PCM binaural tạm"
+        }
+        val stereoPost = try {
+            SpatialStereoPostProcessor.process(
+                sourceStereo = input,
+                pointRenderedStereo = nativeOutput,
+                output = output,
+                spatialBlend = value.spatialBlend,
+                startDistanceM = value.startDistanceM,
+                endDistanceM = value.endDistanceM,
+                inputDualMono = json.optBoolean("input_dual_mono", false),
+            )
+        } finally {
+            nativeOutput.delete()
         }
         require(output.isFile && output.length() > 0L) { "Steam Audio không tạo PCM đầu ra" }
         return SpatialRenderMetrics(
@@ -66,7 +95,7 @@ object SteamAudioBridge {
             renderMs = json.optLong("render_ms"),
             inputChannels = json.optInt("input_channels", 2),
             outputChannels = json.optInt("output_channels", 2),
-            stereoMode = json.optString("stereo_mode", "preserve_point_stereo"),
+            stereoMode = stereoPost.mode,
             inputPeak = json.float("input_peak"),
             inputPeakLeft = json.float("input_peak_left"),
             inputPeakRight = json.float("input_peak_right"),
@@ -108,6 +137,14 @@ object SteamAudioBridge {
             reflectionOrder = json.optInt("reflection_order", room.order),
             reflectionDurationSeconds = json.float("reflection_duration_seconds", room.durationSeconds),
             trueEffectMix = json.optBoolean("true_effect_mix", false),
+            diskAdditionalRequiredBytes = diskBudget.additionalRequiredBytes,
+            diskUsableBytes = diskBudget.usableBytes,
+            diskGuardPassed = diskBudget.hasCapacity,
+            stereoSidePreservation = stereoPost.preservation,
+            stereoDistanceWidthScale = stereoPost.distanceWidthScale,
+            stereoPostPeakBefore = stereoPost.peakBefore,
+            stereoPostPeakAfter = stereoPost.peakAfter,
+            stereoPostPeakGainDb = stereoPost.peakGainDb,
         )
     }
 
@@ -203,6 +240,14 @@ data class SpatialRenderMetrics(
     val reflectionOrder: Int,
     val reflectionDurationSeconds: Float,
     val trueEffectMix: Boolean,
+    val diskAdditionalRequiredBytes: Long,
+    val diskUsableBytes: Long,
+    val diskGuardPassed: Boolean,
+    val stereoSidePreservation: Float,
+    val stereoDistanceWidthScale: Float,
+    val stereoPostPeakBefore: Float,
+    val stereoPostPeakAfter: Float,
+    val stereoPostPeakGainDb: Float,
 ) {
     fun diagnosticFields(): Map<String, Any?> = mapOf(
         "frames" to frames,
@@ -253,5 +298,13 @@ data class SpatialRenderMetrics(
         "reflection_order" to reflectionOrder,
         "reflection_duration_seconds" to reflectionDurationSeconds,
         "true_effect_mix" to trueEffectMix,
+        "disk_additional_required_bytes" to diskAdditionalRequiredBytes,
+        "disk_usable_bytes" to diskUsableBytes,
+        "disk_guard_passed" to diskGuardPassed,
+        "stereo_side_preservation" to stereoSidePreservation,
+        "stereo_distance_width_scale" to stereoDistanceWidthScale,
+        "stereo_post_peak_before" to stereoPostPeakBefore,
+        "stereo_post_peak_after" to stereoPostPeakAfter,
+        "stereo_post_peak_gain_db" to stereoPostPeakGainDb,
     )
 }

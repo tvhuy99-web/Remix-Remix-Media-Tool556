@@ -2,6 +2,8 @@
 
 Thư mục này chuyển checkpoint vocal MDX23C chính thức của MSST thành ONNX **spectrogram core** cố định. STFT, iSTFT, reflect padding và overlap-add vẫn chạy trong host Android.
 
+Nguồn kiến trúc và config được khóa theo commit MSST `e247dfe4abc1f17c69dff719207fe045dc04413a`. Không dùng nhánh `main` trôi nổi khi tạo artifact phân phối.
+
 ## Contract đã khóa
 
 - Audio: stereo 44.100 Hz.
@@ -19,6 +21,7 @@ Thư mục này chuyển checkpoint vocal MDX23C chính thức của MSST thành
 Dùng checkout MSST bất biến và đúng config/checkpoint:
 
 ```bash
+git -C /path/to/Music-Source-Separation-Training checkout e247dfe4abc1f17c69dff719207fe045dc04413a
 python -m venv .venv
 . .venv/bin/activate
 pip install -r tools/mdx23c/requirements.txt

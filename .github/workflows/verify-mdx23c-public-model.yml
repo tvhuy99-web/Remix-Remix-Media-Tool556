@@ -1,0 +1,83 @@
+name: Verify MDX23C public model and slim APK
+
+on:
+  push:
+    branches:
+      - agent/mdx23c-vocal-onnx
+    paths:
+      - app/**
+      - docs/MDX23C_PUBLIC_MODEL_HOSTING.md
+      - .github/workflows/verify-mdx23c-public-model.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-mdx23c-public-model
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Verify public release without token
+        env:
+          API_URL: https://api.github.com/repos/tvhuy99-web/Remix-Remix-Media-Tool556/releases/tags/mdx23c-vocal-personal-v1
+          ASSET_URL: https://github.com/tvhuy99-web/Remix-Remix-Media-Tool556/releases/download/mdx23c-vocal-personal-v1/mdx23c-vocals-core.onnx
+        run: |
+          unset GH_TOKEN GITHUB_TOKEN
+          curl --fail --silent --show-error --location --retry 3 "$API_URL" -o /tmp/release.json
+          jq -e '.assets[] | select(.name == "mdx23c-vocals-core.onnx" and .size == 448152790)' /tmp/release.json
+          curl --fail --silent --show-error --location --head --retry 3 "$ASSET_URL" -o /tmp/asset.headers
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore stable CI signing key
+        run: |
+          mkdir -p .ci
+          keytool -genkeypair -v \
+            -keystore .ci/mediatool-ci-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname "CN=MediaTool CI,O=MediaTool,C=US" \
+            -keyalg RSA -keysize 2048 -validity 10000
+
+      - name: Verify, test and build slim APK
+        run: |
+          python3 scripts/verify_project.py
+          ./gradlew testDebugUnitTest assembleDebug --stacktrace
+
+      - name: Verify APK does not contain MDX23C model
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          if unzip -l "$APK" | grep -F "mdx23c-vocals-core.onnx"; then
+            echo "MDX23C model must not be bundled in the APK" >&2
+            exit 1
+          fi
+          stat -c '%s' "$APK" | tee /tmp/MediaTool-MDX23C-slim-debug.apk.bytes
+          sha256sum "$APK" | sed 's#  .*#  MediaTool-MDX23C-slim-debug.apk#' \
+            | tee /tmp/MediaTool-MDX23C-slim-debug.apk.sha256
+
+      - name: Upload slim APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaTool-MDX23C-slim-debug
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            /tmp/MediaTool-MDX23C-slim-debug.apk.bytes
+            /tmp/MediaTool-MDX23C-slim-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

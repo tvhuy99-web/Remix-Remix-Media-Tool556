@@ -2,6 +2,8 @@ package com.aistudio.mediatool.core.spatial
 
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.sin
 
 /**
@@ -77,53 +79,159 @@ data class SpatialAudioConfig(
         )
     }
 
-    fun withFriendlyTrajectory(next: SpatialTrajectory): SpatialAudioConfig = when (next) {
-        SpatialTrajectory.HORIZONTAL_CIRCLE -> copy(
-            trajectory = next,
-            motionMode = SpatialMotionMode.LOOP,
-            startAzimuthDeg = -90f,
-            endAzimuthDeg = 270f,
-            startElevationDeg = 0f,
-            endElevationDeg = 0f,
+    fun withFriendlyTrajectory(next: SpatialTrajectory): SpatialAudioConfig {
+        val fixedDistance = max(
+            FRIENDLY_DISTANCE_MIN_M,
+            max(startDistanceM, endDistanceM),
         )
-        SpatialTrajectory.VERTICAL_CIRCLE -> copy(
-            trajectory = next,
-            motionMode = SpatialMotionMode.LOOP,
-            startAzimuthDeg = 0f,
-            endAzimuthDeg = 0f,
-            startElevationDeg = 0f,
-            endElevationDeg = 0f,
-        )
-        SpatialTrajectory.FIGURE_EIGHT -> copy(
-            trajectory = next,
-            motionMode = SpatialMotionMode.LOOP,
-            startAzimuthDeg = -110f,
-            endAzimuthDeg = 110f,
-            startElevationDeg = -30f,
-            endElevationDeg = 30f,
-        )
-        SpatialTrajectory.LINEAR -> copy(
-            trajectory = next,
-            motionMode = SpatialMotionMode.ONCE,
-            startAzimuthDeg = -100f,
-            endAzimuthDeg = 100f,
-            startElevationDeg = 0f,
-            endElevationDeg = 0f,
-        )
-        SpatialTrajectory.STATIC -> copy(trajectory = next, motionMode = SpatialMotionMode.ONCE)
-    }.normalized()
+        return when (next) {
+            SpatialTrajectory.HORIZONTAL_CIRCLE -> copy(
+                trajectory = next,
+                motionMode = SpatialMotionMode.LOOP,
+                startAzimuthDeg = -90f,
+                endAzimuthDeg = 270f,
+                startElevationDeg = 0f,
+                endElevationDeg = 0f,
+                startDistanceM = fixedDistance,
+                endDistanceM = fixedDistance,
+            )
+            SpatialTrajectory.VERTICAL_CIRCLE -> copy(
+                trajectory = next,
+                motionMode = SpatialMotionMode.LOOP,
+                startAzimuthDeg = 0f,
+                endAzimuthDeg = 0f,
+                startElevationDeg = 0f,
+                endElevationDeg = 0f,
+                startDistanceM = fixedDistance,
+                endDistanceM = fixedDistance,
+            )
+            SpatialTrajectory.FIGURE_EIGHT -> copy(
+                trajectory = next,
+                motionMode = SpatialMotionMode.LOOP,
+                startAzimuthDeg = -110f,
+                endAzimuthDeg = 110f,
+                startElevationDeg = -30f,
+                endElevationDeg = 30f,
+                startDistanceM = fixedDistance,
+                endDistanceM = fixedDistance,
+            )
+            SpatialTrajectory.LINEAR -> copy(
+                trajectory = next,
+                motionMode = SpatialMotionMode.ONCE,
+                startAzimuthDeg = -100f,
+                endAzimuthDeg = 100f,
+                startElevationDeg = 0f,
+                endElevationDeg = 0f,
+                startDistanceM = fixedDistance,
+                endDistanceM = fixedDistance,
+            )
+            SpatialTrajectory.STATIC -> copy(
+                trajectory = next,
+                motionMode = SpatialMotionMode.ONCE,
+                startAzimuthDeg = 0f,
+                endAzimuthDeg = 0f,
+                startElevationDeg = 0f,
+                endElevationDeg = 0f,
+                startDistanceM = fixedDistance,
+                endDistanceM = fixedDistance,
+            )
+            SpatialTrajectory.PENDULUM -> copy(
+                trajectory = next,
+                motionMode = SpatialMotionMode.LOOP,
+                startAzimuthDeg = -75f,
+                endAzimuthDeg = 75f,
+                startElevationDeg = -5f,
+                endElevationDeg = 10f,
+                startDistanceM = fixedDistance,
+                endDistanceM = fixedDistance,
+            )
+            SpatialTrajectory.FRONT_BACK -> copy(
+                trajectory = next,
+                motionMode = SpatialMotionMode.LOOP,
+                startAzimuthDeg = 0f,
+                endAzimuthDeg = 180f,
+                startElevationDeg = 0f,
+                endElevationDeg = 45f,
+                startDistanceM = fixedDistance,
+                endDistanceM = fixedDistance,
+            )
+            SpatialTrajectory.SPIRAL -> copy(
+                trajectory = next,
+                motionMode = SpatialMotionMode.LOOP,
+                startAzimuthDeg = -90f,
+                endAzimuthDeg = 270f,
+                startElevationDeg = -30f,
+                endElevationDeg = 30f,
+                startDistanceM = fixedDistance,
+                endDistanceM = fixedDistance,
+            )
+            SpatialTrajectory.NEAR_FAR -> {
+                val farDistance = max(2.5f, fixedDistance)
+                copy(
+                    trajectory = next,
+                    motionMode = SpatialMotionMode.LOOP,
+                    startAzimuthDeg = -90f,
+                    endAzimuthDeg = 270f,
+                    startElevationDeg = 0f,
+                    endElevationDeg = 0f,
+                    startDistanceM = max(FRIENDLY_DISTANCE_MIN_M, farDistance * NEAR_FAR_RATIO),
+                    endDistanceM = farDistance,
+                )
+            }
+            SpatialTrajectory.FREE_DRIFT -> {
+                val farDistance = max(2.2f, fixedDistance)
+                copy(
+                    trajectory = next,
+                    motionMode = SpatialMotionMode.LOOP,
+                    startAzimuthDeg = -110f,
+                    endAzimuthDeg = 110f,
+                    startElevationDeg = -25f,
+                    endElevationDeg = 25f,
+                    startDistanceM = max(FRIENDLY_DISTANCE_MIN_M, farDistance * FREE_DRIFT_NEAR_RATIO),
+                    endDistanceM = farDistance,
+                )
+            }
+        }.normalized()
+    }
 
-    fun friendlySpeedPosition(): Float = ((18f - cycleSeconds) / 15f).coerceIn(0f, 1f)
+    fun friendlySpeedPosition(): Float =
+        ((FRIENDLY_SPEED_MAX_SECONDS - cycleSeconds) /
+            (FRIENDLY_SPEED_MAX_SECONDS - FRIENDLY_SPEED_MIN_SECONDS)).coerceIn(0f, 1f)
 
     fun withFriendlySpeed(position: Float): SpatialAudioConfig = copy(
-        cycleSeconds = 18f - 15f * position.coerceIn(0f, 1f),
+        cycleSeconds = FRIENDLY_SPEED_MAX_SECONDS -
+            (FRIENDLY_SPEED_MAX_SECONDS - FRIENDLY_SPEED_MIN_SECONDS) * position.coerceIn(0f, 1f),
     ).normalized()
 
-    fun friendlyDistancePosition(): Float = ((startDistanceM - 0.8f) / 3.2f).coerceIn(0f, 1f)
+    fun friendlyDistancePosition(): Float {
+        val distance = max(startDistanceM, endDistanceM)
+            .coerceIn(FRIENDLY_DISTANCE_MIN_M, FRIENDLY_DISTANCE_MAX_M)
+        return (
+            ln((distance / FRIENDLY_DISTANCE_MIN_M).toDouble()) /
+                ln((FRIENDLY_DISTANCE_MAX_M / FRIENDLY_DISTANCE_MIN_M).toDouble())
+            ).toFloat().coerceIn(0f, 1f)
+    }
 
     fun withFriendlyDistance(position: Float): SpatialAudioConfig {
-        val distance = 0.8f + 3.2f * position.coerceIn(0f, 1f)
-        return copy(startDistanceM = distance, endDistanceM = distance).normalized()
+        val distance = (
+            FRIENDLY_DISTANCE_MIN_M *
+                kotlin.math.exp(
+                    ln((FRIENDLY_DISTANCE_MAX_M / FRIENDLY_DISTANCE_MIN_M).toDouble()) *
+                        position.coerceIn(0f, 1f),
+                ).toFloat()
+            ).coerceIn(FRIENDLY_DISTANCE_MIN_M, FRIENDLY_DISTANCE_MAX_M)
+
+        return when (trajectory) {
+            SpatialTrajectory.NEAR_FAR -> copy(
+                startDistanceM = max(FRIENDLY_DISTANCE_MIN_M, distance * NEAR_FAR_RATIO),
+                endDistanceM = distance,
+            )
+            SpatialTrajectory.FREE_DRIFT -> copy(
+                startDistanceM = max(FRIENDLY_DISTANCE_MIN_M, distance * FREE_DRIFT_NEAR_RATIO),
+                endDistanceM = distance,
+            )
+            else -> copy(startDistanceM = distance, endDistanceM = distance)
+        }.normalized()
     }
 
     fun diagnosticFields(): Map<String, Any?> = normalized().let { value ->
@@ -162,14 +270,28 @@ data class SpatialAudioConfig(
             "automatic_loudness_preservation" to true,
         )
     }
+
+    companion object {
+        const val FRIENDLY_SPEED_MIN_SECONDS = 3f
+        const val FRIENDLY_SPEED_MAX_SECONDS = 30f
+        const val FRIENDLY_DISTANCE_MIN_M = 0.8f
+        const val FRIENDLY_DISTANCE_MAX_M = 20f
+        private const val NEAR_FAR_RATIO = 0.45f
+        private const val FREE_DRIFT_NEAR_RATIO = 0.6f
+    }
 }
 
 enum class SpatialTrajectory(val label: String) {
     HORIZONTAL_CIRCLE("Vòng quanh đầu"),
     VERTICAL_CIRCLE("Trên và dưới"),
     FIGURE_EIGHT("Hình số 8"),
-    LINEAR("Đi từ trái sang phải"),
-    STATIC("Đứng yên tại một vị trí"),
+    LINEAR("Trái sang phải"),
+    STATIC("Đứng yên"),
+    PENDULUM("Con lắc"),
+    FRONT_BACK("Trước ra sau"),
+    SPIRAL("Xoắn ốc quanh đầu"),
+    NEAR_FAR("Gần và xa"),
+    FREE_DRIFT("Trôi tự do"),
 }
 
 enum class SpatialInterpolation(val label: String) {
@@ -196,7 +318,7 @@ object SpatialTrajectoryMath {
             SpatialMotionMode.LOOP -> positiveModulo(seconds / value.cycleSeconds, 1f)
             SpatialMotionMode.ONCE -> (seconds / value.cycleSeconds).coerceIn(0f, 1f)
         }
-        val eased = phase * phase * (3f - 2f * phase)
+        val eased = smoothstep(phase)
         val distance = lerp(value.startDistanceM, value.endDistanceM, eased)
         return when (value.trajectory) {
             SpatialTrajectory.HORIZONTAL_CIRCLE -> fromAngles(
@@ -240,6 +362,70 @@ object SpatialTrajectoryMath {
                 elevationDeg = value.startElevationDeg,
                 distanceM = value.startDistanceM,
             )
+            SpatialTrajectory.PENDULUM -> {
+                val theta = 2.0 * PI * phase
+                val swing = (0.5 - 0.5 * cos(theta)).toFloat()
+                val lift = (0.5 - 0.5 * cos(2.0 * theta)).toFloat()
+                fromAngles(
+                    azimuthDeg = lerp(value.startAzimuthDeg, value.endAzimuthDeg, swing),
+                    elevationDeg = lerp(value.startElevationDeg, value.endElevationDeg, lift),
+                    distanceM = distance,
+                )
+            }
+            SpatialTrajectory.FRONT_BACK -> {
+                val theta = 2.0 * PI * phase
+                val sweep = (0.5 - 0.5 * cos(theta)).toFloat()
+                val arch = sin(theta).let { it * it }.toFloat()
+                fromAngles(
+                    azimuthDeg = lerp(value.startAzimuthDeg, value.endAzimuthDeg, sweep),
+                    elevationDeg = lerp(value.startElevationDeg, value.endElevationDeg, arch),
+                    distanceM = distance,
+                )
+            }
+            SpatialTrajectory.SPIRAL -> {
+                val theta = 2.0 * PI * phase
+                val elevationWave = (0.5 + 0.5 * sin(theta)).toFloat()
+                fromAngles(
+                    azimuthDeg = lerp(value.startAzimuthDeg, value.endAzimuthDeg, phase),
+                    elevationDeg = lerp(value.startElevationDeg, value.endElevationDeg, elevationWave),
+                    distanceM = distance,
+                )
+            }
+            SpatialTrajectory.NEAR_FAR -> {
+                val theta = 2.0 * PI * phase
+                val breathe = (0.5 - 0.5 * cos(theta)).toFloat()
+                fromAngles(
+                    azimuthDeg = lerp(value.startAzimuthDeg, value.endAzimuthDeg, phase),
+                    elevationDeg = lerp(value.startElevationDeg, value.endElevationDeg, smoothstep(breathe)),
+                    distanceM = lerp(value.startDistanceM, value.endDistanceM, breathe),
+                )
+            }
+            SpatialTrajectory.FREE_DRIFT -> {
+                val theta = 2.0 * PI * phase
+                val azimuthCenter = 0.5f * (value.startAzimuthDeg + value.endAzimuthDeg)
+                val azimuthRadius = 0.5f * (value.endAzimuthDeg - value.startAzimuthDeg)
+                val elevationCenter = 0.5f * (value.startElevationDeg + value.endElevationDeg)
+                val elevationRadius = 0.5f * (value.endElevationDeg - value.startElevationDeg)
+                val azimuthNoise = (
+                    0.68 * sin(theta) +
+                        0.22 * sin(3.0 * theta + 0.7) +
+                        0.10 * sin(5.0 * theta + 1.4)
+                    ).toFloat()
+                val elevationNoise = (
+                    0.72 * sin(2.0 * theta + 1.1) +
+                        0.28 * sin(4.0 * theta + 0.3)
+                    ).toFloat()
+                val distanceWave = (
+                    0.5 +
+                        0.32 * sin(theta + 0.4) +
+                        0.18 * sin(3.0 * theta + 1.2)
+                    ).toFloat().coerceIn(0f, 1f)
+                fromAngles(
+                    azimuthDeg = azimuthCenter + azimuthRadius * azimuthNoise,
+                    elevationDeg = elevationCenter + elevationRadius * elevationNoise,
+                    distanceM = lerp(value.startDistanceM, value.endDistanceM, distanceWave),
+                )
+            }
         }
     }
 
@@ -258,6 +444,11 @@ object SpatialTrajectoryMath {
     private fun normalize(x: Float, y: Float, z: Float, distanceM: Float): SpatialPose {
         val length = kotlin.math.sqrt(x * x + y * y + z * z).coerceAtLeast(1e-6f)
         return SpatialPose(x / length, y / length, z / length, distanceM)
+    }
+
+    private fun smoothstep(value: Float): Float {
+        val x = value.coerceIn(0f, 1f)
+        return x * x * (3f - 2f * x)
     }
 
     private fun lerp(start: Float, end: Float, progress: Float): Float =

@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: build-debug-${{ github.workflow }}-${{ github.ref }}
@@ -67,24 +68,27 @@ jobs:
         if: github.event_name == 'pull_request'
         run: ./gradlew lintDebug testDebugUnitTest --stacktrace --build-cache
 
-      - name: Publish Spatial Audio test APK as draft prerelease
+      - name: Publish one stable Spatial Audio draft APK
         if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/spatial-audio-engine'
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          set -euo pipefail
           SHORT_SHA="${HEAD_SHA:0:7}"
-          TAG="spatial-audio-pr26-${SHORT_SHA}"
-          APK="MediaTool-spatial-audio-pr26-${SHORT_SHA}.apk"
+          TAG="spatial-audio-pr26-latest"
+          APK="MediaTool-spatial-audio-pr26-latest.apk"
           cp app/build/outputs/apk/debug/app-debug.apk "$APK"
           APK_BYTES="$(stat -c '%s' "$APK")"
           APK_SHA256="$(sha256sum "$APK" | cut -d' ' -f1)"
           cat > spatial-release-notes.md <<EOF
-          Draft APK kiểm thử cho PR #26, nhánh agent/spatial-audio-engine.
+          Draft APK kiểm thử ổn định cho PR #26, nhánh agent/spatial-audio-engine.
 
           Head: ${HEAD_SHA}
           Dung lượng: ${APK_BYTES} byte
           SHA-256: ${APK_SHA256}
+
+          Mỗi lần CI đạt, draft release này được thay thế thay vì tạo thêm APK mới.
 
           Đã xác minh trong cùng workflow:
           - CMake/NDK ARM64
@@ -95,21 +99,101 @@ jobs:
 
           Chưa hợp nhất vào main. Chỉ dùng để kiểm thử Spatial Audio trên thiết bị.
           EOF
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --target "$HEAD_SHA" \
-              --title "Spatial Audio PR #26 • ${SHORT_SHA}" \
-              --notes-file spatial-release-notes.md \
-              --draft \
-              --prerelease
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --cleanup-tag --yes
           fi
+          gh release create "$TAG" \
+            --target "$HEAD_SHA" \
+            --title "Spatial Audio PR #26 • latest (${SHORT_SHA})" \
+            --notes-file spatial-release-notes.md \
+            --draft \
+            --prerelease
           gh release upload "$TAG" "$APK" --clobber
           echo "SPATIAL_APK_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "SPATIAL_APK_NAME=$APK" >> "$GITHUB_ENV"
           echo "SPATIAL_APK_SHA256=$APK_SHA256" >> "$GITHUB_ENV"
           echo "SPATIAL_APK_BYTES=$APK_BYTES" >> "$GITHUB_ENV"
 
-      # Artifact quota must never prevent code, lint, unit-test, or draft-release validation.
+      - name: Delete redundant APK artifacts, drafts, and branch caches
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/spatial-audio-engine'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          KEEP_TAG="$SPATIAL_APK_TAG"
+          KEEP_ASSET="$SPATIAL_APK_NAME"
+          TEMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TEMP_DIR"' EXIT
+
+          artifacts_before="$(gh api --paginate --slurp "repos/$REPO/actions/artifacts?per_page=100")"
+          apk_artifacts_before="$(jq '[.[].artifacts[]? | select(((.name // "") | ascii_downcase | contains("apk")))] | length' <<<"$artifacts_before")"
+          apk_artifact_bytes_before="$(jq '[.[].artifacts[]? | select(((.name // "") | ascii_downcase | contains("apk"))) | .size_in_bytes] | add // 0' <<<"$artifacts_before")"
+          while IFS= read -r artifact_id; do
+            [ -z "$artifact_id" ] || gh api --method DELETE "repos/$REPO/actions/artifacts/$artifact_id"
+          done < <(jq -r '.[].artifacts[]? | select(((.name // "") | ascii_downcase | contains("apk"))) | .id' <<<"$artifacts_before")
+
+          caches_before="$(gh api --paginate --slurp "repos/$REPO/actions/caches?per_page=100")"
+          branch_caches_before="$(jq '[.[].actions_caches[]? | select((.ref == "refs/heads/agent/spatial-audio-engine") or ((.ref // "") | startswith("refs/pull/26/")))] | length' <<<"$caches_before")"
+          branch_cache_bytes_before="$(jq '[.[].actions_caches[]? | select((.ref == "refs/heads/agent/spatial-audio-engine") or ((.ref // "") | startswith("refs/pull/26/"))) | .size_in_bytes] | add // 0' <<<"$caches_before")"
+          while IFS= read -r cache_id; do
+            [ -z "$cache_id" ] || gh api --method DELETE "repos/$REPO/actions/caches/$cache_id"
+          done < <(jq -r '.[].actions_caches[]? | select((.ref == "refs/heads/agent/spatial-audio-engine") or ((.ref // "") | startswith("refs/pull/26/"))) | .id' <<<"$caches_before")
+
+          releases_before="$(gh api --paginate --slurp "repos/$REPO/releases?per_page=100")"
+          redundant_drafts_before="$(jq --arg keep "$KEEP_TAG" '[.[][]? | select(.draft == true) | select((((.tag_name // "") | startswith("spatial-audio-pr26-")) or ((.name // "") | startswith("Spatial Audio PR #26")))) | select(.tag_name != $keep)] | length' <<<"$releases_before")"
+          redundant_release_bytes_before="$(jq --arg keep "$KEEP_TAG" '[.[][]? | select(.draft == true) | select((((.tag_name // "") | startswith("spatial-audio-pr26-")) or ((.name // "") | startswith("Spatial Audio PR #26")))) | select(.tag_name != $keep) | .assets[]?.size] | add // 0' <<<"$releases_before")"
+          while IFS=$'\t' read -r release_id tag_name; do
+            [ -z "$release_id" ] && continue
+            gh api --method DELETE "repos/$REPO/releases/$release_id"
+            if [ -n "$tag_name" ]; then
+              gh api --method DELETE "repos/$REPO/git/refs/tags/$tag_name" >/dev/null 2>&1 || true
+            fi
+          done < <(jq -r --arg keep "$KEEP_TAG" '.[][]? | select(.draft == true) | select((((.tag_name // "") | startswith("spatial-audio-pr26-")) or ((.name // "") | startswith("Spatial Audio PR #26")))) | select(.tag_name != $keep) | [.id, (.tag_name // "")] | @tsv' <<<"$releases_before")
+
+          artifacts_after="$(gh api --paginate --slurp "repos/$REPO/actions/artifacts?per_page=100")"
+          caches_after="$(gh api --paginate --slurp "repos/$REPO/actions/caches?per_page=100")"
+          releases_after="$(gh api --paginate --slurp "repos/$REPO/releases?per_page=100")"
+
+          apk_artifacts_after="$(jq '[.[].artifacts[]? | select(((.name // "") | ascii_downcase | contains("apk")))] | length' <<<"$artifacts_after")"
+          branch_caches_after="$(jq '[.[].actions_caches[]? | select((.ref == "refs/heads/agent/spatial-audio-engine") or ((.ref // "") | startswith("refs/pull/26/")))] | length' <<<"$caches_after")"
+          redundant_drafts_after="$(jq --arg keep "$KEEP_TAG" '[.[][]? | select(.draft == true) | select((((.tag_name // "") | startswith("spatial-audio-pr26-")) or ((.name // "") | startswith("Spatial Audio PR #26")))) | select(.tag_name != $keep)] | length' <<<"$releases_after")"
+          stable_release_count="$(jq --arg keep "$KEEP_TAG" '[.[][]? | select(.draft == true and .tag_name == $keep)] | length' <<<"$releases_after")"
+          stable_asset_count="$(jq --arg keep "$KEEP_TAG" --arg asset "$KEEP_ASSET" '[.[][]? | select(.draft == true and .tag_name == $keep) | .assets[]? | select(.name == $asset)] | length' <<<"$releases_after")"
+          stable_asset_bytes="$(jq --arg keep "$KEEP_TAG" --arg asset "$KEEP_ASSET" '[.[][]? | select(.draft == true and .tag_name == $keep) | .assets[]? | select(.name == $asset) | .size] | add // 0' <<<"$releases_after")"
+
+          test "$apk_artifacts_after" -eq 0
+          test "$branch_caches_after" -eq 0
+          test "$redundant_drafts_after" -eq 0
+          test "$stable_release_count" -eq 1
+          test "$stable_asset_count" -eq 1
+          test "$stable_asset_bytes" -eq "$SPATIAL_APK_BYTES"
+
+          gh release download "$KEEP_TAG" --pattern "$KEEP_ASSET" --dir "$TEMP_DIR"
+          downloaded_sha="$(sha256sum "$TEMP_DIR/$KEEP_ASSET" | cut -d' ' -f1)"
+          test "$downloaded_sha" = "$SPATIAL_APK_SHA256"
+
+          {
+            echo "## Spatial Audio APK storage cleanup"
+            echo
+            echo "- APK Actions artifacts deleted: $apk_artifacts_before"
+            echo "- APK artifact bytes deleted: $apk_artifact_bytes_before"
+            echo "- PR/feature Gradle caches deleted: $branch_caches_before"
+            echo "- Cache bytes deleted: $branch_cache_bytes_before"
+            echo "- Redundant draft releases deleted: $redundant_drafts_before"
+            echo "- Redundant release-asset bytes deleted: $redundant_release_bytes_before"
+            echo "- Remaining APK Actions artifacts: $apk_artifacts_after"
+            echo "- Remaining PR/feature caches: $branch_caches_after"
+            echo "- Remaining redundant Spatial Audio drafts: $redundant_drafts_after"
+            echo "- Stable draft release count: $stable_release_count"
+            echo "- Stable APK asset count: $stable_asset_count"
+            echo "- Stable APK bytes: $stable_asset_bytes"
+            echo "- Stable APK SHA-256 verified: $downloaded_sha"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Spatial Audio PR keeps one verified APK in a stable draft release, so do not duplicate it in Actions artifacts.
       - name: Upload app-debug APK
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.ref != 'agent/spatial-audio-engine'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -117,10 +201,10 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           compression-level: 0
-          retention-days: 14
+          retention-days: 3
 
       - name: Upload pull-request reports
-        if: always() && github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.ref != 'agent/spatial-audio-engine'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -129,4 +213,4 @@ jobs:
             app/build/reports/lint-results-*.html
             app/build/reports/tests/**
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3

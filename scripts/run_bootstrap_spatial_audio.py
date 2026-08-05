@@ -9,17 +9,10 @@ _original_find_one = bootstrap.find_one
 
 def find_one(root, predicate, label):
     if label == "Steam Audio license":
-        matches = [
-            path
-            for path in root.rglob("*")
-            if path.is_file()
-            and path.name.lower().startswith(("license", "copying", "notice"))
-        ]
-        if matches:
-            return sorted(
-                matches,
-                key=lambda path: (len(path.relative_to(root).parts), str(path)),
-            )[0]
+        pinned = bootstrap.ROOT / "third_party/steam_audio/LICENSE.txt"
+        if not pinned.is_file() or pinned.stat().st_size == 0:
+            raise RuntimeError("Thiếu giấy phép Apache 2.0 đã ghim cho Steam Audio")
+        return pinned
     return _original_find_one(root, predicate, label)
 
 

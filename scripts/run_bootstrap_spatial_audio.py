@@ -8,9 +8,18 @@ _original_find_one = bootstrap.find_one
 
 
 def find_one(root, predicate, label):
-    matches = [path for path in root.rglob("*") if path.is_file() and predicate(path)]
-    if label == "Steam Audio license" and matches:
-        return sorted(matches, key=lambda path: (len(path.relative_to(root).parts), str(path)))[0]
+    if label == "Steam Audio license":
+        matches = [
+            path
+            for path in root.rglob("*")
+            if path.is_file()
+            and path.name.lower().startswith(("license", "copying", "notice"))
+        ]
+        if matches:
+            return sorted(
+                matches,
+                key=lambda path: (len(path.relative_to(root).parts), str(path)),
+            )[0]
     return _original_find_one(root, predicate, label)
 
 

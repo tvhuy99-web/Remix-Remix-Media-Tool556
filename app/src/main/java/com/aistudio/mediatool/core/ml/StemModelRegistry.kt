@@ -2,6 +2,7 @@ package com.aistudio.mediatool.core.ml
 
 object StemModelRegistry {
     const val UVR_MDX_VOC_FT_LITERT_ID = "uvr-mdx-voc-ft-litert-fp16-v1"
+    const val DEMUCS_FT_VOCALS_SPECIALIST_ID = "htdemucs-ft-vocals-specialist-04573f0d-v1"
     const val DEMUCS_2_STEM_LITE_ID = "demucs-ht-2stems-lite-v1"
     const val DEMUCS_4_STEM_ID = "demucs-ht-4stems-legacy-v1"
 
@@ -14,6 +15,14 @@ object StemModelRegistry {
         familyPrefix = "demucs-4stems-",
         expectedBytes = 304_330_587L,
         sha256 = "0cf9f378b3a736efacafe09b8c07aafbb3109568c274ffb7b963b540aa1978d2",
+    )
+
+    private val demucsFtVocalsModelSpec = ModelSpec(
+        url = "https://huggingface.co/StemSplitio/htdemucs-ft-vocals-onnx/resolve/9cae283d619681bf7906351a20adfa0b936b69c5/htdemucs_ft_vocals.onnx?download=true",
+        fileName = "htdemucs-ft-vocals-04573f0d-9cae283.onnx",
+        familyPrefix = "htdemucs-ft-vocals-",
+        expectedBytes = 316_446_953L,
+        sha256 = "8c5d5e2da1f27050240bb80236673307ee3b40d4b064066d9350f4d64bfd544d",
     )
 
     private val uvrMdxVocFtContract = MdxSpectrogramContract(
@@ -67,6 +76,42 @@ object StemModelRegistry {
         projectUrl = "https://huggingface.co/gyoom-sa/UVR-MDX-LiteRT",
         backend = StemInferenceBackend.MDX_LITERT,
         mdx = uvrMdxVocFtContract,
+    )
+
+    val demucsFtVocalsSpecialist = StemModelDescriptor(
+        id = DEMUCS_FT_VOCALS_SPECIALIST_ID,
+        displayName = "HTDemucs FT Vocal",
+        description = "2 stem • chất lượng cao",
+        mode = StemMode.TWO_STEM,
+        modelSpec = demucsFtVocalsModelSpec,
+        sampleRate = 44_100,
+        channels = 2,
+        chunking = ChunkingSpec(
+            frames = 343_980,
+            overlapFrames = 85_995,
+            edgeFadeFrames = 85_995,
+            overlapProfile = OverlapProfile.REFERENCE_LINEAR_WINDOW,
+        ),
+        normalization = AudioNormalization.NONE,
+        tensor = TensorContract(
+            inputName = "mix",
+            outputName = "stems",
+            inputLayout = TensorAudioLayout.BATCH_CHANNEL_FRAME,
+            outputLayout = TensorSourceLayout.BATCH_SOURCE_CHANNEL_FRAME,
+            sourceCount = 4,
+        ),
+        sources = StemSourceMap(
+            vocals = SourceMix(listOf(3)),
+            music = SourceMix(listOf(0, 1, 2)),
+        ),
+        allowedAccelerators = setOf(OnnxAcceleration.CPU),
+        deviceRequirements = DeviceRequirements(
+            minimumTotalRamBytes = 8L * GIB,
+            minimumAvailableRamBytes = 5L * GIB / 2L,
+            userFacingSummary = "Cần thiết bị 8 GB RAM và khoảng 2,5 GB RAM trống.",
+        ),
+        licenseName = "MIT",
+        projectUrl = "https://huggingface.co/StemSplitio/htdemucs-ft-vocals-onnx",
     )
 
     val demucsTwoStemLite = StemModelDescriptor(
@@ -146,6 +191,7 @@ object StemModelRegistry {
 
     val all: List<StemModelDescriptor> = listOf(
         uvrMdxVocFtLiteRt,
+        demucsFtVocalsSpecialist,
         demucsTwoStemLite,
         demucsFourStem,
     )

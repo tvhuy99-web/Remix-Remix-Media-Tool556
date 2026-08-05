@@ -36,7 +36,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.suspendCancellableCoroutine
 
-/** Streaming two-stem pipeline for UVR MDX-Net models whose learned core runs in LiteRT. */
+/** Streaming two-stem pipeline for MDX-family learned spectrogram cores. */
 class MdxAudioSeparator(
     private val context: Context,
     private val modelFile: File,
@@ -45,13 +45,17 @@ class MdxAudioSeparator(
 ) {
     private val activeFfmpegSessionId = AtomicLong(-1L)
     private val cancelRequested = AtomicBoolean(false)
+    @Volatile private var activeEngine: MdxCoreEngine? = null
     private val sampleRate = model.sampleRate
     private val channels = model.channels
     private val bytesPerFrame = channels * Float.SIZE_BYTES
     private val contract = requireNotNull(model.mdx)
 
     init {
-        require(model.backend == StemInferenceBackend.MDX_LITERT)
+        require(
+            model.backend == StemInferenceBackend.MDX_LITERT ||
+                model.backend == StemInferenceBackend.MDX_ONNX,
+        )
         require(model.mode == StemMode.TWO_STEM)
     }
 
@@ -63,6 +67,7 @@ class MdxAudioSeparator(
             sessionId = taskId,
             fields = mapOf("model_id" to model.id, "backend" to model.backend),
         )
+        activeEngine?.cancel()
         val sessionId = activeFfmpegSessionId.getAndSet(-1L)
         if (sessionId >= 0L) FFmpegKit.cancel(sessionId)
     }
@@ -73,12 +78,14 @@ class MdxAudioSeparator(
         val sourceId = DiagnosticRedactor.stableId(inputUri.toString())
         val tempPrefix = "mdx_${taskId.replace('-', '_')}"
         val tempRawMix = File(context.cacheDir, "${tempPrefix}_mix.f32")
+        val tempRawInference = File(context.cacheDir, "${tempPrefix}_reflect.f32")
         val tempRawVocals = File(context.cacheDir, "${tempPrefix}_vocals.f32")
         val tempRawMusic = File(context.cacheDir, "${tempPrefix}_music.f32")
-        val temporaryFiles = listOf(tempRawMix, tempRawVocals, tempRawMusic)
+        val temporaryFiles = listOf(tempRawMix, tempRawInference, tempRawVocals, tempRawMusic)
         val createdOutputs = mutableListOf<File>()
         var outputsCommitted = false
-        val denoiseEnabled = SettingsManager.isStemMdxDenoiseEnabled(context)
+        val denoiseEnabled = contract.supportsPolarityDenoise &&
+            SettingsManager.isStemMdxDenoiseEnabled(context)
         var seamFrames: List<Long> = emptyList()
 
         logInfo(
@@ -94,8 +101,12 @@ class MdxAudioSeparator(
                 "time_frames" to contract.timeFrames,
                 "chunk_frames" to contract.chunkFrames,
                 "generated_frames" to contract.generatedFrames,
+                "contribution_trim_frames" to contract.contributionTrimFrames,
                 "stride_frames" to contract.strideFrames,
                 "overlap_frames" to contract.overlapFrames,
+                "window_fade_frames" to contract.windowFadeFrames,
+                "reflect_boundary_frames" to contract.reflectBoundaryFrames,
+                "denoise_supported" to contract.supportsPolarityDenoise,
                 "denoise_enabled" to denoiseEnabled,
             ),
         )
@@ -116,37 +127,83 @@ class MdxAudioSeparator(
                 event = "mdx_decode_complete",
                 fields = mapOf("frames" to totalFrames, "pcm_bytes" to tempRawMix.length()),
             )
+
+            val requestedBoundaryFrames = contract.reflectBoundaryFrames
+            val boundaryPaddingFrames = requestedBoundaryFrames.takeIf {
+                it > 0 && totalFrames > it.toLong() * 2L
+            } ?: 0
+            val inferencePcm = if (boundaryPaddingFrames > 0) {
+                val paddingStartedAt = SystemClock.elapsedRealtime()
+                createReflectPaddedPcm(
+                    source = tempRawMix,
+                    destination = tempRawInference,
+                    sourceFrames = totalFrames,
+                    paddingFrames = boundaryPaddingFrames,
+                )
+                logInfo(
+                    event = "mdx_boundary_padding_complete",
+                    fields = mapOf(
+                        "padding_frames_per_side" to boundaryPaddingFrames,
+                        "padded_bytes" to tempRawInference.length(),
+                        "elapsed_ms" to SystemClock.elapsedRealtime() - paddingStartedAt,
+                    ),
+                )
+                tempRawInference
+            } else {
+                logInfo(
+                    event = "mdx_boundary_padding_skipped",
+                    fields = mapOf(
+                        "requested_frames" to requestedBoundaryFrames,
+                        "source_frames" to totalFrames,
+                    ),
+                )
+                tempRawMix
+            }
+            val inferenceFrames = inferencePcm.length() / bytesPerFrame
             emit(SeparationState.Progress(0.08f))
             checkpoint("mdx_engine_opening", 0.08f)
 
             val engineStartedAt = SystemClock.elapsedRealtime()
-            val openResult = MdxLiteRtEngine.open(
-                modelFile = modelFile,
-                tensorElements = contract.tensorElements,
-                cpuThreads = SettingsManager.getNumThreads(context),
-                gpuCacheDirectory = File(context.codeCacheDir, "litert_gpu_cache/${model.id}"),
-            ) { attemptedBackend, error ->
-                DiagnosticLogger.warn(
-                    component = TAG,
-                    event = "mdx_backend_attempt_failed",
-                    sessionId = taskId,
-                    message = error.message,
-                    fields = mapOf(
-                        "model_id" to model.id,
-                        "attempted_backend" to attemptedBackend,
-                        "next_backend" to if (attemptedBackend == MdxExecutionBackend.LITERT_GPU_FP16) {
-                            MdxExecutionBackend.LITERT_CPU_XNNPACK
+            val openResult = when (model.backend) {
+                StemInferenceBackend.MDX_LITERT -> MdxLiteRtEngine.open(
+                    modelFile = modelFile,
+                    tensorElements = contract.tensorElements,
+                    cpuThreads = SettingsManager.getNumThreads(context),
+                    gpuCacheDirectory = File(context.codeCacheDir, "litert_gpu_cache/${model.id}"),
+                ) { attemptedBackend, error ->
+                    logBackendAttemptFailed(
+                        attemptedBackend = attemptedBackend.name,
+                        nextBackend = if (attemptedBackend == MdxExecutionBackend.LITERT_GPU_FP16) {
+                            MdxExecutionBackend.LITERT_CPU_XNNPACK.name
                         } else null,
+                        error = error,
+                    )
+                }
+
+                StemInferenceBackend.MDX_ONNX -> MdxOnnxEngine.open(
+                    modelFile = modelFile,
+                    model = model,
+                    cpuThreads = SettingsManager.getNumThreads(context),
+                    configuredAcceleration = OnnxAcceleration.fromSettingsIndex(
+                        SettingsManager.getHardwareAccelIndex(context),
                     ),
-                    error = error,
-                )
+                ) { attemptedBackend, error ->
+                    logBackendAttemptFailed(
+                        attemptedBackend = "ONNX_${attemptedBackend.name}",
+                        nextBackend = if (attemptedBackend != OnnxAcceleration.CPU) "ONNX_CPU" else null,
+                        error = error,
+                    )
+                }
+
+                StemInferenceBackend.WAVEFORM_ONNX -> error("Sai backend cho pipeline MDX")
             }
+            activeEngine = openResult.engine
             openResult.engine.use { engine ->
                 logInfo(
                     event = "mdx_engine_opened",
                     fields = mapOf(
                         "model_id" to model.id,
-                        "effective_backend" to engine.backend,
+                        "effective_backend" to engine.backendLabel,
                         "cpu_threads" to SettingsManager.getNumThreads(context),
                         "failed_attempts" to openResult.failedAttempts.joinToString(" | "),
                         "elapsed_ms" to SystemClock.elapsedRealtime() - engineStartedAt,
@@ -156,15 +213,20 @@ class MdxAudioSeparator(
 
                 val generatedFrames = contract.generatedFrames
                 val strideFrames = contract.strideFrames
-                val chunksLong = if (totalFrames <= generatedFrames.toLong()) {
+                val chunksLong = if (inferenceFrames <= generatedFrames.toLong()) {
                     1L
                 } else {
-                    (totalFrames - generatedFrames + strideFrames - 1L) / strideFrames + 1L
+                    (inferenceFrames - generatedFrames + strideFrames - 1L) / strideFrames + 1L
                 }
                 require(chunksLong in 1..Int.MAX_VALUE.toLong()) { "Tệp quá dài cho pipeline MDX" }
                 val chunkCount = chunksLong.toInt()
-                seamFrames = (1 until chunkCount).map { index -> index.toLong() * strideFrames }
-                val window = MdxDsp.buildCrossfadeWindow(generatedFrames, contract.overlapFrames)
+                seamFrames = (1 until chunkCount)
+                    .map { index -> index.toLong() * strideFrames - boundaryPaddingFrames }
+                    .filter { frame -> frame in 1 until totalFrames }
+                val window = MdxDsp.buildCrossfadeWindow(
+                    generatedFrames,
+                    contract.windowFadeFrames,
+                )
                 val dsp = MdxDsp(contract)
                 val chunkLeft = FloatArray(contract.chunkFrames)
                 val chunkRight = FloatArray(contract.chunkFrames)
@@ -178,13 +240,15 @@ class MdxAudioSeparator(
                     event = "mdx_buffers_ready",
                     fields = mapOf(
                         "chunk_count" to chunkCount,
+                        "inference_frames" to inferenceFrames,
+                        "boundary_padding_frames" to boundaryPaddingFrames,
                         "tensor_elements" to contract.tensorElements,
                         "tensor_bytes" to tensorBytes,
                         "tensor_handoff" to "output_reused_as_next_input",
                     ) + memoryFields(),
                 )
 
-                RandomAccessFile(tempRawMix, "r").use { mixInput ->
+                RandomAccessFile(inferencePcm, "r").use { mixInput ->
                     val vocalStream = DataOutputStream(
                         BufferedOutputStream(FileOutputStream(tempRawVocals), 1024 * 1024),
                     )
@@ -195,16 +259,17 @@ class MdxAudioSeparator(
                         strideFrames = strideFrames,
                         window = window,
                         compensation = contract.compensation,
+                        discardLeadingFrames = boundaryPaddingFrames.toLong(),
                     ).use { writer ->
                         for (chunkIndex in 0 until chunkCount) {
                             coroutineContext.ensureActive()
                             check(!cancelRequested.get()) { "Đã hủy xử lý" }
                             val chunkStartedAt = SystemClock.elapsedRealtime()
                             val outputStart = chunkIndex.toLong() * strideFrames
-                            val inputStart = outputStart - contract.trimFrames
+                            val inputStart = outputStart - contract.contributionTrimFrames
                             readChunk(
                                 input = mixInput,
-                                totalFrames = totalFrames,
+                                totalFrames = inferenceFrames,
                                 startFrame = inputStart,
                                 left = chunkLeft,
                                 right = chunkRight,
@@ -245,7 +310,7 @@ class MdxAudioSeparator(
                             writer.append(
                                 leftChunk = vocalsLeft,
                                 rightChunk = vocalsRight,
-                                centralOffset = contract.trimFrames,
+                                centralOffset = contract.contributionTrimFrames,
                             )
                             val writeElapsed = SystemClock.elapsedRealtime() - writeStartedAt
                             val progress = 0.10f + 0.70f * ((chunkIndex + 1f) / chunkCount.toFloat())
@@ -263,7 +328,7 @@ class MdxAudioSeparator(
                                     "istft_ms" to istftElapsed,
                                     "write_ms" to writeElapsed,
                                     "elapsed_ms" to SystemClock.elapsedRealtime() - chunkStartedAt,
-                                    "effective_backend" to engine.backend,
+                                    "effective_backend" to engine.backendLabel,
                                     "inference_passes" to if (denoiseEnabled) 2 else 1,
                                 ) + memoryFields(),
                             )
@@ -360,14 +425,79 @@ class MdxAudioSeparator(
         } catch (error: Throwable) {
             logError("Lỗi MDX: ${error.message ?: "không xác định"}", error)
             throw if (error is OutOfMemoryError) error else Exception(
-                "Lỗi khi xử lý UVR MDX-Net: ${error.message ?: "không xác định"}",
+                "Lỗi khi xử lý model MDX: ${error.message ?: "không xác định"}",
                 error,
             )
         } finally {
+            activeEngine = null
             temporaryFiles.forEach { file -> runCatching { file.delete() } }
             if (!outputsCommitted) createdOutputs.forEach { file -> runCatching { file.delete() } }
         }
     }.flowOn(Dispatchers.IO)
+
+    private fun logBackendAttemptFailed(
+        attemptedBackend: String,
+        nextBackend: String?,
+        error: Throwable,
+    ) {
+        DiagnosticLogger.warn(
+            component = TAG,
+            event = "mdx_backend_attempt_failed",
+            sessionId = taskId,
+            message = error.message,
+            fields = mapOf(
+                "model_id" to model.id,
+                "attempted_backend" to attemptedBackend,
+                "next_backend" to nextBackend,
+            ),
+            error = error,
+        )
+    }
+
+    private fun createReflectPaddedPcm(
+        source: File,
+        destination: File,
+        sourceFrames: Long,
+        paddingFrames: Int,
+    ) {
+        require(sourceFrames > paddingFrames.toLong() * 2L)
+        val edgeByteCount = Math.multiplyExact(paddingFrames, bytesPerFrame)
+
+        fun reverseFrames(bytes: ByteArray): ByteArray {
+            val reversed = ByteArray(bytes.size)
+            for (frame in 0 until paddingFrames) {
+                val sourceOffset = (paddingFrames - 1 - frame) * bytesPerFrame
+                System.arraycopy(bytes, sourceOffset, reversed, frame * bytesPerFrame, bytesPerFrame)
+            }
+            return reversed
+        }
+
+        val prefix = ByteArray(edgeByteCount)
+        val suffix = ByteArray(edgeByteCount)
+        RandomAccessFile(source, "r").use { input ->
+            input.seek(bytesPerFrame.toLong())
+            input.readFully(prefix)
+            input.seek((sourceFrames - paddingFrames.toLong() - 1L) * bytesPerFrame.toLong())
+            input.readFully(suffix)
+        }
+
+        try {
+            FileOutputStream(destination).use { fileOutput ->
+                BufferedOutputStream(fileOutput, 1024 * 1024).use { output ->
+                    output.write(reverseFrames(prefix))
+                    FileInputStream(source).buffered(1024 * 1024).use { input ->
+                        input.copyTo(output, 1024 * 1024)
+                    }
+                    output.write(reverseFrames(suffix))
+                    output.flush()
+                    fileOutput.fd.sync()
+                }
+            }
+        } catch (error: Throwable) {
+            destination.delete()
+            throw error
+        }
+    }
 
     private fun readChunk(
         input: RandomAccessFile,

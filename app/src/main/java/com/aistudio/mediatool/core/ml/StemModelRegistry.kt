@@ -73,8 +73,8 @@ object StemModelRegistry {
 
     val mdx23cVocalPersonal = StemModelDescriptor(
         id = MDX23C_VOCAL_PERSONAL_ID,
-        displayName = "MDX23C Vocal HQ",
-        description = "2 stem • dùng cá nhân",
+        displayName = "MDX23C Vocal",
+        description = "2 stem • thử nghiệm",
         mode = StemMode.TWO_STEM,
         modelSpec = ModelSpec(
             url = "https://github.com/tvhuy99-web/Remix-Remix-Media-Tool556/releases/download/mdx23c-vocal-personal-v1/mdx23c-vocals-core.onnx",

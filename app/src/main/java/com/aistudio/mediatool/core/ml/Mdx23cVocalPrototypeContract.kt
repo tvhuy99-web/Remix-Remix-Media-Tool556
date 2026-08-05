@@ -4,8 +4,8 @@ package com.aistudio.mediatool.core.ml
  * Verified tensor and overlap contract for the personal-use MSST MDX23C vocal artifact.
  *
  * The exported ONNX graph contains only the learned complex-spectrogram core. Android keeps the
- * periodic-Hann STFT/iSTFT, reflect padding, 75% overlap-add and residual instrumental path in host
- * code so the signal-processing contract remains inspectable and testable.
+ * periodic-Hann STFT/iSTFT, reflect padding, configurable 25/50/75% overlap-add and residual
+ * instrumental path in host code so the signal-processing contract remains inspectable and testable.
  */
 internal object Mdx23cVocalPrototypeContract {
     const val INPUT_NAME = "spectrogram"

@@ -86,6 +86,21 @@ class MdxAudioSeparator(
         var outputsCommitted = false
         val denoiseEnabled = contract.supportsPolarityDenoise &&
             SettingsManager.isStemMdxDenoiseEnabled(context)
+        val isMdx23c = model.id == StemModelRegistry.MDX23C_VOCAL_PERSONAL_ID
+        val mdx23cExecutionMode = if (isMdx23c) {
+            Mdx23cExecutionMode.fromSettingsIndex(
+                SettingsManager.getStemMdx23cAccelerationIndex(context),
+            )
+        } else null
+        val mdx23cOverlapMode = if (isMdx23c) {
+            Mdx23cOverlapMode.fromSettingsIndex(
+                SettingsManager.getStemMdx23cOverlapIndex(context),
+            ).requireCompatible(contract)
+        } else null
+        val configuredOnnxAcceleration = mdx23cExecutionMode?.acceleration
+            ?: OnnxAcceleration.fromSettingsIndex(SettingsManager.getHardwareAccelIndex(context))
+        val runtimeStrideFrames = mdx23cOverlapMode?.strideFrames ?: contract.strideFrames
+        val runtimeOverlapFrames = contract.generatedFrames - runtimeStrideFrames
         var seamFrames: List<Long> = emptyList()
 
         logInfo(
@@ -102,8 +117,11 @@ class MdxAudioSeparator(
                 "chunk_frames" to contract.chunkFrames,
                 "generated_frames" to contract.generatedFrames,
                 "contribution_trim_frames" to contract.contributionTrimFrames,
-                "stride_frames" to contract.strideFrames,
-                "overlap_frames" to contract.overlapFrames,
+                "stride_frames" to runtimeStrideFrames,
+                "overlap_frames" to runtimeOverlapFrames,
+                "overlap_mode" to (mdx23cOverlapMode?.name ?: "MODEL_DEFAULT"),
+                "overlap_percent" to mdx23cOverlapMode?.overlapPercent,
+                "requested_acceleration" to configuredOnnxAcceleration,
                 "window_fade_frames" to contract.windowFadeFrames,
                 "reflect_boundary_frames" to contract.reflectBoundaryFrames,
                 "denoise_supported" to contract.supportsPolarityDenoise,
@@ -184,9 +202,7 @@ class MdxAudioSeparator(
                     modelFile = modelFile,
                     model = model,
                     cpuThreads = SettingsManager.getNumThreads(context),
-                    configuredAcceleration = OnnxAcceleration.fromSettingsIndex(
-                        SettingsManager.getHardwareAccelIndex(context),
-                    ),
+                    configuredAcceleration = configuredOnnxAcceleration,
                 ) { attemptedBackend, error ->
                     logBackendAttemptFailed(
                         attemptedBackend = "ONNX_${attemptedBackend.name}",
@@ -204,6 +220,9 @@ class MdxAudioSeparator(
                     fields = mapOf(
                         "model_id" to model.id,
                         "effective_backend" to engine.backendLabel,
+                        "requested_acceleration" to configuredOnnxAcceleration,
+                        "overlap_mode" to (mdx23cOverlapMode?.name ?: "MODEL_DEFAULT"),
+                        "stride_frames" to runtimeStrideFrames,
                         "cpu_threads" to SettingsManager.getNumThreads(context),
                         "failed_attempts" to openResult.failedAttempts.joinToString(" | "),
                         "elapsed_ms" to SystemClock.elapsedRealtime() - engineStartedAt,
@@ -212,7 +231,7 @@ class MdxAudioSeparator(
                 checkpoint("mdx_engine_opened", 0.10f)
 
                 val generatedFrames = contract.generatedFrames
-                val strideFrames = contract.strideFrames
+                val strideFrames = runtimeStrideFrames
                 val chunksLong = if (inferenceFrames <= generatedFrames.toLong()) {
                     1L
                 } else {

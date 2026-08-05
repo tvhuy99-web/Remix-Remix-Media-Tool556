@@ -16,6 +16,8 @@ object SettingsManager {
     private const val KEY_STEM_MODEL_FOUR = "stem_model_four"
     private const val KEY_STEM_LOW_MEMORY_FALLBACK_TASK = "stem_low_memory_fallback_task"
     private const val KEY_STEM_MDX_DENOISE = "stem_mdx_denoise"
+    private const val KEY_STEM_MDX23C_ACCELERATION = "stem_mdx23c_acceleration"
+    private const val KEY_STEM_MDX23C_OVERLAP = "stem_mdx23c_overlap"
 
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -49,6 +51,18 @@ object SettingsManager {
 
     fun setStemMdxDenoiseEnabled(context: Context, enabled: Boolean) =
         prefs(context).edit().putBoolean(KEY_STEM_MDX_DENOISE, enabled).apply()
+
+    fun getStemMdx23cAccelerationIndex(context: Context): Int =
+        prefs(context).getInt(KEY_STEM_MDX23C_ACCELERATION, 1).coerceIn(0, 1)
+
+    fun setStemMdx23cAccelerationIndex(context: Context, value: Int) =
+        prefs(context).edit().putInt(KEY_STEM_MDX23C_ACCELERATION, value.coerceIn(0, 1)).apply()
+
+    fun getStemMdx23cOverlapIndex(context: Context): Int =
+        prefs(context).getInt(KEY_STEM_MDX23C_OVERLAP, 1).coerceIn(0, 2)
+
+    fun setStemMdx23cOverlapIndex(context: Context, value: Int) =
+        prefs(context).edit().putInt(KEY_STEM_MDX23C_OVERLAP, value.coerceIn(0, 2)).apply()
 
     fun getFadeDurationSec(context: Context): Int = prefs(context).getInt(KEY_FADE_DURATION, 3).coerceIn(0, 10)
     fun setFadeDurationSec(context: Context, value: Int) = prefs(context).edit().putInt(KEY_FADE_DURATION, value.coerceIn(0, 10)).apply()

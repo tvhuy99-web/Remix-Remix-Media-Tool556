@@ -47,6 +47,8 @@ import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
 import com.aistudio.mediatool.core.ml.DownloadState
+import com.aistudio.mediatool.core.ml.Mdx23cExecutionMode
+import com.aistudio.mediatool.core.ml.Mdx23cOverlapMode
 import com.aistudio.mediatool.core.ml.SeparationState
 import com.aistudio.mediatool.core.ml.StemInferenceBackend
 import com.aistudio.mediatool.core.ml.StemMode
@@ -91,6 +93,12 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     var modeIndex by rememberSaveable { mutableStateOf(SettingsManager.getStemModeIndex(context)) }
     var mdxDenoiseEnabled by rememberSaveable {
         mutableStateOf(SettingsManager.isStemMdxDenoiseEnabled(context))
+    }
+    var mdx23cAccelerationIndex by rememberSaveable {
+        mutableStateOf(SettingsManager.getStemMdx23cAccelerationIndex(context))
+    }
+    var mdx23cOverlapIndex by rememberSaveable {
+        mutableStateOf(SettingsManager.getStemMdx23cOverlapIndex(context))
     }
     var separationProgress by remember { mutableFloatStateOf(0f) }
     var result by remember { mutableStateOf<SeparationState.Success?>(null) }
@@ -284,6 +292,42 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                     )
                 }
 
+                if (selectedModel.id == StemModelRegistry.MDX23C_VOCAL_PERSONAL_ID) {
+                    CompactDropdown(
+                        label = "Tăng tốc MDX23C",
+                        values = Mdx23cExecutionMode.entries.map { it.displayName },
+                        selectedIndex = mdx23cAccelerationIndex,
+                        onSelected = { index ->
+                            mdx23cAccelerationIndex = index
+                            SettingsManager.setStemMdx23cAccelerationIndex(context, index)
+                            resetResult()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    CompactDropdown(
+                        label = "Tốc độ và chất lượng",
+                        values = Mdx23cOverlapMode.entries.map { it.displayName },
+                        selectedIndex = mdx23cOverlapIndex,
+                        onSelected = { index ->
+                            mdx23cOverlapIndex = index
+                            SettingsManager.setStemMdx23cOverlapIndex(context, index)
+                            resetResult()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        Mdx23cOverlapMode.fromSettingsIndex(mdx23cOverlapIndex).explanation +
+                            " XNNPACK sẽ tự trở về CPU nếu không tương thích.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "LiteRT GPU và Qualcomm QNN chưa bật trong bản này vì cần artifact/runtime riêng.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
                 StemDownloadSection(
                     selectedModel = selectedModel,
                     state = downloadState,
@@ -361,7 +405,7 @@ private fun StemDownloadSection(
 
 private fun shortModelName(model: StemModelDescriptor): String = when (model.id) {
     StemModelRegistry.UVR_MDX_VOC_FT_LITERT_ID -> "UVR MDX-Net"
-    StemModelRegistry.MDX23C_VOCAL_PERSONAL_ID -> "MDX23C Vocal HQ"
+    StemModelRegistry.MDX23C_VOCAL_PERSONAL_ID -> "MDX23C Vocal"
     else -> model.displayName
 }
 

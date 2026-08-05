@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -22,6 +23,31 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+
+      - name: Delete all old Actions artifacts once
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/spatial-audio-engine'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t artifacts < <(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+              --jq '.artifacts[] | "\(.id)\t\(.size_in_bytes)\t\(.name)\t\(.created_at)"'
+          )
+          count=${#artifacts[@]}
+          bytes=0
+          echo "Found ${count} artifact(s)."
+          for artifact in "${artifacts[@]}"; do
+            IFS=$'\t' read -r id size name created_at <<< "$artifact"
+            echo "Deleting id=${id}, name=${name}, bytes=${size}, created=${created_at}"
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}"
+            bytes=$((bytes + size))
+          done
+          remaining="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=1" --jq '.total_count')"
+          echo "Deleted ${count} artifact(s), ${bytes} byte(s). Remaining: ${remaining}."
+          test "$remaining" -eq 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

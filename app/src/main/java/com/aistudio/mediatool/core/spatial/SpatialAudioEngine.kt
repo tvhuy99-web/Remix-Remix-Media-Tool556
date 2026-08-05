@@ -7,6 +7,7 @@ import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
 import com.aistudio.mediatool.core.media.MediaEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -134,7 +135,21 @@ class SpatialAudioEngine(
                 fields = mapOf("source_id" to DiagnosticRedactor.stableId(inputSaf)),
             )
             throw cancelled
-        } catch (error: Throwable) {
+        } catch (error: LinkageError) {
+            output.delete()
+            DiagnosticLogger.error(
+                component = TAG,
+                event = "spatial_render_failed",
+                sessionId = taskId,
+                message = error.message,
+                fields = value.diagnosticFields() + mapOf(
+                    "source_id" to DiagnosticRedactor.stableId(inputSaf),
+                    "failure_type" to error.javaClass.name,
+                ),
+                error = error,
+            )
+            emit(State.Error(error.message ?: "Thành phần native spatial audio chưa sẵn sàng"))
+        } catch (error: Exception) {
             output.delete()
             DiagnosticLogger.error(
                 component = TAG,

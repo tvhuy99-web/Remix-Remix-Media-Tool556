@@ -11,3 +11,4 @@
 - Bản xuất ONNX `TigreGotico/audiosronnx-mossformer2`: Apache License 2.0, kế thừa từ ClearerVoice-Studio.
 
 Các model được tải khi chạy và không nằm trong kho mã nguồn.
+- Steam Audio SDK 4.8.1: Apache License 2.0; binary Android ARM64 và header được ghim bằng SHA-256 trong `app/src/main/cpp/third_party/steam_audio/METADATA.json`.

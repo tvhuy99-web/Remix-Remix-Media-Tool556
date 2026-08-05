@@ -44,6 +44,10 @@ import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.ResultFileActions
 import com.aistudio.mediatool.core.FileExportManager
 import com.aistudio.mediatool.core.SettingsManager
+import com.aistudio.mediatool.core.spatial.SpatialAudioConfig
+import com.aistudio.mediatool.core.spatial.SpatialAudioEngine
+import com.aistudio.mediatool.core.spatial.SpatialAudioPreferences
+import com.aistudio.mediatool.ui.components.SpatialAudioControls
 import kotlin.math.pow
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,6 +56,7 @@ fun OtherScreen(navController: NavController) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val mediaEngine = remember { MediaEngine(context) }
+    val spatialAudioEngine = remember { SpatialAudioEngine(context, mediaEngine) }
 
     var fileUriText by rememberSaveable { mutableStateOf<String?>(null) }
     val fileUri = fileUriText?.let(Uri::parse)
@@ -63,6 +68,39 @@ fun OtherScreen(navController: NavController) {
     var isProcessing by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
     var statusText by remember { mutableStateOf("Sẵn sàng") }
+    var enableSpatialAudio by rememberSaveable { mutableStateOf(false) }
+    var spatialAudioConfig by remember { mutableStateOf(SpatialAudioPreferences.load(context)) }
+
+    fun updateSpatialAudioConfig(next: SpatialAudioConfig) {
+        val normalized = next.normalized()
+        spatialAudioConfig = normalized
+        SpatialAudioPreferences.save(context, normalized)
+    }
+
+    val sofaLauncher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri ->
+        if (uri != null) {
+            coroutineScope.launch(Dispatchers.IO) {
+                runCatching {
+                    val directory = File(context.filesDir, "hrtf").apply { mkdirs() }
+                    val target = File(directory, "custom_${System.currentTimeMillis()}.sofa")
+                    context.contentResolver.openInputStream(uri).use { input ->
+                        requireNotNull(input) { "Không thể mở tệp SOFA" }
+                        target.outputStream().use(input::copyTo)
+                    }
+                    require(target.length() > 0L) { "Tệp SOFA rỗng" }
+                    withContext(Dispatchers.Main) {
+                        spatialAudioConfig.customSofaPath?.let(::File)?.delete()
+                        updateSpatialAudioConfig(spatialAudioConfig.copy(customSofaPath = target.absolutePath))
+                        statusText = "Đã chọn HRTF SOFA: ${target.name}"
+                    }
+                }.onFailure { error ->
+                    withContext(Dispatchers.Main) {
+                        statusText = "Không thể nhập SOFA: ${error.message ?: "Tệp không hợp lệ"}"
+                    }
+                }
+            }
+        }
+    }
 
     var exoPlayer by remember { mutableStateOf<androidx.media3.exoplayer.ExoPlayer?>(null) }
     var isPlayingBase by remember { mutableStateOf(false) }
@@ -138,7 +176,6 @@ fun OtherScreen(navController: NavController) {
 
     // States for effects
     var enableTimeMocks by rememberSaveable { mutableStateOf(false) }
-    var enable8d by rememberSaveable { mutableStateOf(false) }
     var enableNorm by rememberSaveable { mutableStateOf(false) }
     var enableNg by rememberSaveable { mutableStateOf(false) }
     var enableSpeedPitch by rememberSaveable { mutableStateOf(false) }
@@ -162,10 +199,6 @@ fun OtherScreen(navController: NavController) {
     var ngEndMs by rememberSaveable { mutableStateOf("") }
     var panStartMs by rememberSaveable { mutableStateOf("") }
     var panEndMs by rememberSaveable { mutableStateOf("") }
-    var eightDStartMs by rememberSaveable { mutableStateOf("") }
-    var eightDEndMs by rememberSaveable { mutableStateOf("") }
-    var eightDCycle by rememberSaveable { mutableFloatStateOf(8f) }
-    var eightDRoomSize by rememberSaveable { mutableFloatStateOf(50f) }
     var compStartMs by rememberSaveable { mutableStateOf("") }
     var compEndMs by rememberSaveable { mutableStateOf("") }
     var eqStartMs by rememberSaveable { mutableStateOf("") }
@@ -410,14 +443,6 @@ fun OtherScreen(navController: NavController) {
                 if (enableAutoPan) {
                     audioFilters += "apulsator=mode=sine:hz=${1000f / autoPanCycle}:width=1"
                 }
-                if (enable8d) {
-                    val delay1 = (eightDRoomSize * 0.8f).toInt().coerceAtLeast(1)
-                    val delay2 = eightDRoomSize.toInt().coerceAtLeast(2)
-                    val decay1 = (eightDRoomSize / 100f * 0.4f).coerceIn(0.01f, 0.8f)
-                    val decay2 = (eightDRoomSize / 100f * 0.46f).coerceIn(0.01f, 0.8f)
-                    audioFilters += "apulsator=mode=sine:hz=${1f / eightDCycle}:width=1${enableExpression(eightDStartMs, eightDEndMs)}"
-                    audioFilters += "aecho=0.8:0.9:$delay1|$delay2:$decay1|$decay2"
-                }
                 if (enableEcho) {
                     audioFilters += "aecho=0.8:0.9:${echoDelayMs}:${echoDecay}"
                 }
@@ -454,6 +479,47 @@ fun OtherScreen(navController: NavController) {
 
                 if (audioFilters.isNotEmpty()) {
                     audioFilters += "alimiter=limit=0.9886:level=0:latency=1"
+                }
+
+                if (enableSpatialAudio) {
+                    SpatialAudioPreferences.save(context, spatialAudioConfig)
+                    spatialAudioEngine.process(
+                        inputSaf = inputSaf,
+                        output = output,
+                        sourceDurationMs = sourceDurationMs,
+                        config = spatialAudioConfig,
+                        preFilters = audioFilters,
+                        isVideoMode = isVideoMode,
+                        modeIndex = modeIndex,
+                        extension = extension,
+                        preview = isPreview,
+                    ).collect { state ->
+                        when (state) {
+                            is SpatialAudioEngine.State.Progress -> withContext(Dispatchers.Main) {
+                                statusText = state.message
+                                progress = state.percent
+                            }
+                            is SpatialAudioEngine.State.Success -> withContext(Dispatchers.Main) {
+                                resultPath = output.absolutePath
+                                pendingOutput = null
+                                statusText = if (isPreview) {
+                                    "Đã tạo mẫu Spatial Audio 10 giây"
+                                } else {
+                                    "Spatial Audio hoàn tất • RMS ${String.format(java.util.Locale.US, "%.1f", state.metrics.rmsDbfs)} dBFS"
+                                }
+                                progress = 100f
+                                isProcessing = false
+                                if (isPreview) playAudio(Uri.fromFile(output), true)
+                            }
+                            is SpatialAudioEngine.State.Error -> withContext(Dispatchers.Main) {
+                                output.delete()
+                                statusText = "Lỗi Spatial Audio: ${state.message}"
+                                progress = 0f
+                                isProcessing = false
+                            }
+                        }
+                    }
+                    return@launch
                 }
 
                 val command = buildString {
@@ -705,16 +771,6 @@ fun OtherScreen(navController: NavController) {
                         }
                     }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .toggleable(value = enable8d, onValueChange = { enable8d = it }, role = Role.Checkbox)
-                            .padding(vertical = 4.dp)
-                    ) {
-                        Checkbox(checked = enable8d, onCheckedChange = null)
-                        Text("Âm thanh không gian (Nhạc 8D)", color = MaterialTheme.colorScheme.primary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                    }
                 }
 
                 @Composable
@@ -728,26 +784,17 @@ fun OtherScreen(navController: NavController) {
                     }
                 }
                 
-                if (enable8d) {
-                    TimeBlock(eightDStartMs, { eightDStartMs = it }, eightDEndMs, { eightDEndMs = it }, "Nhạc 8D")
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("Tùy chỉnh Nhạc 8D", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            AccessibleSliderColumn(
-                                label = "Thời gian xoay 1 vòng: ${eightDCycle.roundToInt()} giây",
-                                value = eightDCycle,
-                                onValueChange = { eightDCycle = it },
-                                valueRange = 2f..20f
-                            )
-                            AccessibleSliderColumn(
-                                label = "Độ vang không gian: ${eightDRoomSize.roundToInt()}",
-                                value = eightDRoomSize,
-                                onValueChange = { eightDRoomSize = it },
-                                valueRange = 10f..100f
-                            )
-                        }
-                    }
-                }
+                SpatialAudioControls(
+                    enabled = enableSpatialAudio,
+                    onEnabledChange = { enableSpatialAudio = it },
+                    config = spatialAudioConfig,
+                    onConfigChange = ::updateSpatialAudioConfig,
+                    onPickSofa = { sofaLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
+                    onClearSofa = {
+                        spatialAudioConfig.customSofaPath?.let(::File)?.delete()
+                        updateSpatialAudioConfig(spatialAudioConfig.copy(customSofaPath = null))
+                    },
+                )
 
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

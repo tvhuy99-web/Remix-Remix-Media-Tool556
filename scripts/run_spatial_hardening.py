@@ -17,5 +17,10 @@ else:
     if "reflection_headroom_db" not in patch.read_text(encoding="utf-8"):
         raise RuntimeError("Could not locate the reflection JSON patch block")
 
+for index, line in enumerate(lines):
+    if line.strip() == "alln(p, 'LoudnessMetrics?', 'SpatialLoudnessReading?', 2)":
+        lines[index] = "alln(p, 'LoudnessMetrics?', 'SpatialLoudnessReading?', 3)"
+        break
+
 patch.write_text("\n".join(lines) + "\n", encoding="utf-8")
 subprocess.run([sys.executable, str(patch)], check=True)

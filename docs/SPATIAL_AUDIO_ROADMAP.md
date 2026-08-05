@@ -6,7 +6,7 @@ Tài liệu này chia việc nâng cấp Spatial Audio thành các lát cắt c�
 
 ### 1A. Mô hình phòng và giao diện thân thiện
 
-Trạng thái: đang triển khai trong `agent/room-aware-spatial-audio-phase-1a`.
+Trạng thái: mã nguồn và CI đã hoàn tất trong draft PR #28; còn bài nghe A/B trên thiết bị.
 
 - Sáu preset: Không gian khô, Studio, Phòng nghe nhạc, Nhà hát, Nhà kho và Ngoài trời.
 - Mỗi phòng kín có kích thước, diện tích bề mặt, hấp thụ ba dải và scattering.
@@ -20,28 +20,35 @@ Trạng thái: đang triển khai trong `agent/room-aware-spatial-audio-phase-1a
 
 ### 1B. Steam Audio scene và phản xạ động
 
+Trạng thái: renderer Hybrid đang được xác minh trong draft PR #29.
+
 - Dựng mesh hình hộp từ kích thước preset, với vật liệu riêng cho tường, sàn và trần.
 - Tạo `IPLScene`, `IPLStaticMesh`, `IPLSimulator` và một source phản xạ.
 - Chạy reflections theo keyframe của quỹ đạo thay vì ở mọi block âm thanh.
 - Dùng Hybrid Reflection Effect: convolution cho early reflections, parametric cho late tail.
 - Giải mã IR Ambisonics sang binaural trước khi trộn với direct path.
-- Tính DRR theo khoảng cách, không để automatic makeup xóa cảm giác nguồn ở xa.
-- Ngoài trời bỏ mesh bao quanh và chỉ giữ phản xạ nền tối thiểu.
+- Dùng Mid của stereo gốc làm reflection send để không suy giảm direct path hai lần.
+- Cường độ là outer effect mix thật; 0% bỏ qua direct spatialization và room reflections.
+- Giới hạn automatic makeup còn +3 dB cho nguồn xa và quỹ đạo độ sâu.
+- Ngoài trời không tạo mesh bao quanh và dùng parametric fallback tối thiểu.
+- Diagnostics ghi reflection mode, số lần cập nhật, thời gian simulation, source clamp và cấu hình chất lượng.
 
 Điều kiện hoàn thành:
 
 - cùng một khoảng cách nghe khác nhau hợp lý giữa Studio, Nhà hát và Ngoài trời;
-- quỹ đạo không có zipper noise khi đổi IR;
+- quỹ đạo không có zipper noise khi cập nhật mô phỏng;
 - tail không làm sai thời lượng video;
-- benchmark OnePlus đạt realtime factor phù hợp và không vượt guard RAM/nhiệt.
+- benchmark OnePlus đạt realtime factor phù hợp và không vượt guard RAM/nhiệt;
+- intensity 0% khớp PCM đầu vào trong sai số số học cho phép.
 
 ### 1C. Bảo toàn stereo và độ tin cậy production
 
 - A/B ba chế độ: point stereo hiện tại, Mid/Side và cặp nguồn L/R.
-- Cường độ 0% là bypass thật của toàn bộ spatial path.
 - Vô hiệu hóa Pan, AutoPan, reverb cũ và mono khi Spatial Audio đang bật.
-- Native cancellation, kiểm tra dung lượng trống, kiểm tra lỗi ghi pass hai.
-- Sửa parser LUFS/true peak và thêm native/Kotlin parity tests.
+- Native cancellation và kiểm tra dung lượng trống.
+- Sửa parser LUFS/true peak và thêm native/Kotlin trajectory parity tests.
+- Thay enum ordinal bằng native ID ổn định.
+- Quy định tail riêng cho audio và video.
 
 ## Giai đoạn 2: High Quality Offline
 

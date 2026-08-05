@@ -75,18 +75,17 @@ private fun weightedAbsorption(
 }
 
 /**
- * Room presets are intentionally described by geometry and materials instead of arbitrary
- * reverb knobs. Phase 1B can feed the same dimensions and materials into Steam Audio's scene
- * and reflection simulator without changing the public configuration model.
+ * Room presets are described by geometry and materials, not independent reverb knobs. Public
+ * geometry values form the stable bridge contract used by the native Steam Audio scene builder.
  */
 enum class SpatialRoomPreset(
     val label: String,
     val description: String,
     val nativeId: Int,
-    private val dimensions: SpatialRoomDimensions?,
-    private val walls: SpatialRoomMaterial?,
-    private val floor: SpatialRoomMaterial?,
-    private val ceiling: SpatialRoomMaterial?,
+    val dimensions: SpatialRoomDimensions?,
+    val walls: SpatialRoomMaterial?,
+    val floor: SpatialRoomMaterial?,
+    val ceiling: SpatialRoomMaterial?,
     private val maxReflectionWet: Float,
     private val distanceRolloff: Float,
     private val airAbsorption: Float,

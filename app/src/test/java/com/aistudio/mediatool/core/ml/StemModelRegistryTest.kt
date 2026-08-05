@@ -15,10 +15,11 @@ class StemModelRegistryTest {
     }
 
     @Test
-    fun twoStemKeepsOnlyUvrAndDemucs() {
+    fun twoStemCatalogIncludesUvrMdx23cAndDemucs() {
         assertEquals(
             listOf(
                 StemModelRegistry.UVR_MDX_VOC_FT_LITERT_ID,
+                StemModelRegistry.MDX23C_VOCAL_PERSONAL_ID,
                 StemModelRegistry.DEMUCS_2_STEM_LITE_ID,
             ),
             StemModelRegistry.modelsFor(StemMode.TWO_STEM).map { it.id },
@@ -45,6 +46,37 @@ class StemModelRegistryTest {
         assertEquals(
             "5ef47e3b3bafa14357532c0a3f6c5f18444d94b6efe3fd62b3d13f80051f1e58",
             model.modelSpec.sha256,
+        )
+    }
+
+    @Test
+    fun mdx23cPersonalContractMatchesExportedOnnxGraph() {
+        val model = StemModelRegistry.mdx23cVocalPersonal
+        val mdx = requireNotNull(model.mdx)
+
+        assertEquals(StemInferenceBackend.MDX_ONNX, model.backend)
+        assertEquals(44_100, model.sampleRate)
+        assertEquals(Mdx23cVocalPrototypeContract.tensor, model.tensor)
+        assertEquals(8_192, mdx.nFft)
+        assertEquals(4_096, mdx.frequencyBins)
+        assertEquals(261_120, mdx.chunkFrames)
+        assertEquals(65_280, mdx.strideFrames)
+        assertEquals(195_840, mdx.overlapFrames)
+        assertEquals(26_112, mdx.windowFadeFrames)
+        assertEquals(195_840, mdx.reflectBoundaryFrames)
+        assertEquals(
+            setOf(OnnxAcceleration.CPU, OnnxAcceleration.XNNPACK),
+            model.allowedAccelerators,
+        )
+        assertEquals(448_152_790L, model.modelSpec.expectedBytes)
+        assertEquals(
+            "8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb",
+            model.modelSpec.sha256,
+        )
+        assertEquals(
+            "https://github.com/tvhuy99-web/Remix-Remix-Media-Tool556/releases/download/" +
+                "mdx23c-vocal-personal-v1/mdx23c-vocals-core.onnx",
+            model.modelSpec.url,
         )
     }
 

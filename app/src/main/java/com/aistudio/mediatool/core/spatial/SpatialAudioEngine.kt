@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Debug
+import android.os.SystemClock
 import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
@@ -43,13 +44,50 @@ class SpatialAudioEngine(
         val taskId = UUID.randomUUID().toString()
         val value = config.normalized()
         val workDir = File(context.cacheDir, "spatial_${System.currentTimeMillis()}_${taskId.take(8)}")
+        val localSource = File(workDir, "source_local.bin")
         val decoded = File(workDir, "decoded_stereo_48k.f32")
         val rendered = File(workDir, "rendered_binaural_stereo_48k.f32")
         workDir.mkdirs()
         output.delete()
+        val sourceId = DiagnosticRedactor.stableId(inputSaf)
         val expectedDurationMs = if (preview) sourceDurationMs.coerceAtMost(10_000L) else sourceDurationMs
         val safeFilters = preFilters.filterNot { it.startsWith("alimiter=") }
-        val sourceInfo = withContext(Dispatchers.IO) { probeAudio(inputSaf, taskId, "source") }
+        val sourceCopyStartedAt = SystemClock.elapsedRealtime()
+        val materializedSource = try {
+            emit(State.Progress(2f, "Đang chuẩn bị nguồn Spatial Audio cục bộ"))
+            withContext(Dispatchers.IO) {
+                mediaEngine.materializeInput(inputSaf, localSource)
+            }.also { materialized ->
+                DiagnosticLogger.info(
+                    component = TAG,
+                    event = "spatial_source_materialized",
+                    sessionId = taskId,
+                    fields = mapOf(
+                        "source_id" to sourceId,
+                        "local_source_bytes" to materialized.bytes,
+                        "source_transport" to materialized.transport,
+                        "copy_elapsed_ms" to SystemClock.elapsedRealtime() - sourceCopyStartedAt,
+                    ),
+                )
+            }
+        } catch (error: Exception) {
+            DiagnosticLogger.error(
+                component = TAG,
+                event = "spatial_source_materialization_failed",
+                sessionId = taskId,
+                message = error.message,
+                fields = mapOf(
+                    "source_id" to sourceId,
+                    "copy_elapsed_ms" to SystemClock.elapsedRealtime() - sourceCopyStartedAt,
+                    "failure_type" to error.javaClass.name,
+                ),
+                error = error,
+            )
+            workDir.deleteRecursively()
+            emit(State.Error(error.message ?: "Không thể chuẩn bị tệp nguồn Spatial Audio"))
+            return@flow
+        }
+        val sourceInfo = withContext(Dispatchers.IO) { probeAudio(localSource.absolutePath, taskId, "source") }
         val runtimeBefore = runtimeSnapshot("before")
 
         DiagnosticLogger.info(
@@ -57,7 +95,7 @@ class SpatialAudioEngine(
             event = "spatial_render_start",
             sessionId = taskId,
             fields = value.diagnosticFields() + sourceInfo.diagnosticFields("source") + runtimeBefore + mapOf(
-                "source_id" to DiagnosticRedactor.stableId(inputSaf),
+                "source_id" to sourceId,
                 "source_duration_ms" to sourceDurationMs,
                 "expected_duration_ms" to expectedDurationMs,
                 "preview" to preview,
@@ -66,13 +104,15 @@ class SpatialAudioEngine(
                 "pre_filter_count" to safeFilters.size,
                 "requested_decode_channels" to 2,
                 "requested_decode_sample_rate" to 48_000,
+                "local_source_bytes" to materializedSource.bytes,
+                "source_transport" to materializedSource.transport,
             ),
         )
 
         try {
             emit(State.Progress(5f, "Đang giải mã nguồn stereo 48 kHz"))
             val decodeCommand = buildString {
-                append("-y -i \"").append(inputSaf).append("\" ")
+                append("-y -i \"").append(localSource.absolutePath).append("\" ")
                 if (preview) append("-t 10 ")
                 append("-map 0:a:0? -vn ")
                 if (safeFilters.isNotEmpty()) {
@@ -89,6 +129,7 @@ class SpatialAudioEngine(
                 startPercent = 5f,
                 endPercent = 30f,
                 expectedDurationMs = expectedDurationMs,
+                startupTimeoutMs = DECODE_STARTUP_TIMEOUT_MS,
             ) { progress, message -> emit(State.Progress(progress, message)) }
             require(decoded.isFile && decoded.length() >= 8L) { "Không giải mã được PCM stereo cho spatial audio" }
 
@@ -136,7 +177,7 @@ class SpatialAudioEngine(
 
             emit(State.Progress(80f, "Đang mã hóa kết quả binaural stereo"))
             val encodeCommand = buildEncodeCommand(
-                inputSaf = inputSaf,
+                inputPath = localSource.absolutePath,
                 rendered = rendered,
                 output = output,
                 isVideoMode = isVideoMode,
@@ -197,7 +238,7 @@ class SpatialAudioEngine(
                 component = TAG,
                 event = "spatial_render_cancelled",
                 sessionId = taskId,
-                fields = mapOf("source_id" to DiagnosticRedactor.stableId(inputSaf)),
+                fields = mapOf("source_id" to sourceId),
             )
             throw cancelled
         } catch (error: LinkageError) {
@@ -208,7 +249,7 @@ class SpatialAudioEngine(
                 sessionId = taskId,
                 message = error.message,
                 fields = value.diagnosticFields() + mapOf(
-                    "source_id" to DiagnosticRedactor.stableId(inputSaf),
+                    "source_id" to sourceId,
                     "failure_type" to error.javaClass.name,
                 ),
                 error = error,
@@ -222,7 +263,7 @@ class SpatialAudioEngine(
                 sessionId = taskId,
                 message = error.message,
                 fields = value.diagnosticFields() + mapOf(
-                    "source_id" to DiagnosticRedactor.stableId(inputSaf),
+                    "source_id" to sourceId,
                     "failure_type" to error.javaClass.name,
                 ),
                 error = error,
@@ -239,10 +280,15 @@ class SpatialAudioEngine(
         startPercent: Float,
         endPercent: Float,
         expectedDurationMs: Long,
+        startupTimeoutMs: Long? = null,
         onProgress: suspend (Float, String) -> Unit,
     ): String {
         var outputLog = ""
-        mediaEngine.executeFFmpegCommand(command, diagnosticPhase = phase).collect { state ->
+        mediaEngine.executeFFmpegCommand(
+            command = command,
+            diagnosticPhase = phase,
+            startupTimeoutMs = startupTimeoutMs,
+        ).collect { state ->
             when (state) {
                 is MediaEngine.ExecutionState.Connecting ->
                     onProgress(startPercent, "Đang khởi tạo $phase")
@@ -365,7 +411,7 @@ class SpatialAudioEngine(
     )
 
     private fun buildEncodeCommand(
-        inputSaf: String,
+        inputPath: String,
         rendered: File,
         output: File,
         isVideoMode: Boolean,
@@ -375,7 +421,7 @@ class SpatialAudioEngine(
     ): String = buildString {
         append("-y ")
         if (isVideoMode && modeIndex == 0) {
-            append("-i \"").append(inputSaf).append("\" ")
+            append("-i \"").append(inputPath).append("\" ")
             append("-f f32le -ar 48000 -ac 2 -i \"").append(rendered.absolutePath).append("\" ")
             if (preview) append("-t 10 ")
             append("-map 0:v:0 -map 1:a:0 -c:v copy ")
@@ -437,6 +483,7 @@ class SpatialAudioEngine(
 
     companion object {
         private const val TAG = "SpatialAudioEngine"
+        private const val DECODE_STARTUP_TIMEOUT_MS = 20_000L
         private val LOUDNORM_JSON = Regex("""\{\s*\"input_i\"[\s\S]*?\}""")
     }
 }

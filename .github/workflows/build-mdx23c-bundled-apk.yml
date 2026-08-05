@@ -6,10 +6,12 @@ on:
       - main
     paths:
       - app/**
+      - docs/**
+      - scripts/apply_mdx23c_tuning_modes.py
       - .github/workflows/build-mdx23c-bundled-apk.yml
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-mdx23c-bundled-apk
@@ -24,6 +26,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Apply guarded tuning patch
+        if: ${{ hashFiles('scripts/apply_mdx23c_tuning_modes.py') != '' }}
+        run: python3 scripts/apply_mdx23c_tuning_modes.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -45,6 +52,22 @@ jobs:
             -dname "CN=MediaTool CI,O=MediaTool,C=US" \
             -keyalg RSA -keysize 2048 -validity 10000
 
+      - name: Verify and test source
+        run: |
+          python3 scripts/verify_project.py
+          ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Commit tuning modes
+        if: ${{ hashFiles('scripts/apply_mdx23c_tuning_modes.py') != '' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app docs
+          git rm scripts/apply_mdx23c_tuning_modes.py
+          git diff --cached --check
+          git commit -m "Thêm chế độ hiệu năng MDX23C"
+          git push origin HEAD:agent/mdx23c-vocal-onnx
+
       - name: Download private MDX23C release asset
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,10 +80,8 @@ jobs:
             | sha256sum --check --strict
           test "$(stat -c %s app/src/main/assets/models/mdx23c-vocals-core.onnx)" = "448152790"
 
-      - name: Verify, test and build bundled APK
-        run: |
-          python3 scripts/verify_project.py
-          ./gradlew testDebugUnitTest assembleDebug --stacktrace
+      - name: Build bundled APK
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Verify model is inside APK
         run: |

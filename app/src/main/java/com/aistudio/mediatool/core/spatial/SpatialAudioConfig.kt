@@ -4,17 +4,19 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.pow
 import kotlin.math.sin
 
 /**
- * Cấu hình lõi của renderer binaural. Giao diện thông thường chỉ ánh xạ năm
- * điều khiển thân thiện vào cấu hình này; các tham số kỹ thuật vẫn được giữ cố
- * định và ghi diagnostics để có thể tinh chỉnh bằng dữ liệu thực tế.
+ * Cấu hình lõi của renderer binaural. Giao diện thông thường chỉ ánh xạ các
+ * điều khiển thân thiện vào cấu hình này; tham số phòng được suy ra từ một mô
+ * hình hình học và vật liệu ổn định để chuẩn bị cho reflection simulator.
  */
 data class SpatialAudioConfig(
     val trajectory: SpatialTrajectory = SpatialTrajectory.HORIZONTAL_CIRCLE,
     val interpolation: SpatialInterpolation = SpatialInterpolation.BILINEAR,
     val motionMode: SpatialMotionMode = SpatialMotionMode.LOOP,
+    val roomPreset: SpatialRoomPreset = SpatialRoomPreset.LISTENING_ROOM,
     val startAzimuthDeg: Float = -90f,
     val endAzimuthDeg: Float = 270f,
     val startElevationDeg: Float = 0f,
@@ -194,6 +196,23 @@ data class SpatialAudioConfig(
         }.normalized()
     }
 
+    fun withRoomPreset(next: SpatialRoomPreset): SpatialAudioConfig {
+        val reflectionPosition = friendlyReflectionPosition()
+        val room = next.acoustics
+        return copy(
+            roomPreset = next,
+            distanceRolloff = room.distanceRolloff,
+            airAbsorption = room.airAbsorption,
+            reverbWet = room.maxReflectionWet * reflectionCurve(reflectionPosition),
+            reverbRt60Low = room.rt60Seconds.low,
+            reverbRt60Mid = room.rt60Seconds.mid,
+            reverbRt60High = room.rt60Seconds.high,
+            reverbEqLow = room.reverbEq.low,
+            reverbEqMid = room.reverbEq.mid,
+            reverbEqHigh = room.reverbEq.high,
+        ).normalized()
+    }
+
     fun friendlySpeedPosition(): Float =
         ((FRIENDLY_SPEED_MAX_SECONDS - cycleSeconds) /
             (FRIENDLY_SPEED_MAX_SECONDS - FRIENDLY_SPEED_MIN_SECONDS)).coerceIn(0f, 1f)
@@ -234,11 +253,32 @@ data class SpatialAudioConfig(
         }.normalized()
     }
 
+    fun friendlyReflectionPosition(): Float {
+        val maxWet = roomPreset.acoustics.maxReflectionWet
+        if (maxWet <= 1e-6f) return 0f
+        val curved = (reverbWet / maxWet).coerceIn(0f, 1f)
+        return curved.pow(1f / REFLECTION_CURVE_EXPONENT).coerceIn(0f, 1f)
+    }
+
+    fun withFriendlyReflection(position: Float): SpatialAudioConfig = copy(
+        reverbWet = roomPreset.acoustics.maxReflectionWet * reflectionCurve(position),
+    ).normalized()
+
     fun diagnosticFields(): Map<String, Any?> = normalized().let { value ->
+        val room = value.roomPreset.acoustics
         mapOf(
             "trajectory" to value.trajectory.name,
             "interpolation" to value.interpolation.name,
             "motion_mode" to value.motionMode.name,
+            "room_preset" to value.roomPreset.name,
+            "room_native_id" to value.roomPreset.nativeId,
+            "room_width_m" to room.dimensions?.widthM,
+            "room_depth_m" to room.dimensions?.depthM,
+            "room_height_m" to room.dimensions?.heightM,
+            "room_volume_m3" to room.dimensions?.volumeM3,
+            "room_scattering" to room.averageScattering,
+            "room_first_reflection_ms" to room.firstReflectionMs,
+            "room_outdoor" to room.outdoor,
             "start_azimuth_deg" to value.startAzimuthDeg,
             "end_azimuth_deg" to value.endAzimuthDeg,
             "start_elevation_deg" to value.startElevationDeg,
@@ -253,6 +293,7 @@ data class SpatialAudioConfig(
             "directivity_weight" to value.directivityWeight,
             "directivity_power" to value.directivityPower,
             "source_yaw_deg" to value.sourceYawDeg,
+            "reflection_position" to value.friendlyReflectionPosition(),
             "reverb_wet" to value.reverbWet,
             "reverb_rt60_low" to value.reverbRt60Low,
             "reverb_rt60_mid" to value.reverbRt60Mid,
@@ -268,6 +309,7 @@ data class SpatialAudioConfig(
             "decode_channels" to 2,
             "stereo_render_mode" to "preserve_or_upmix",
             "automatic_loudness_preservation" to true,
+            "room_model_version" to 1,
         )
     }
 
@@ -276,8 +318,12 @@ data class SpatialAudioConfig(
         const val FRIENDLY_SPEED_MAX_SECONDS = 30f
         const val FRIENDLY_DISTANCE_MIN_M = 0.8f
         const val FRIENDLY_DISTANCE_MAX_M = 20f
+        private const val REFLECTION_CURVE_EXPONENT = 1.6f
         private const val NEAR_FAR_RATIO = 0.45f
         private const val FREE_DRIFT_NEAR_RATIO = 0.6f
+
+        private fun reflectionCurve(position: Float): Float =
+            position.coerceIn(0f, 1f).pow(REFLECTION_CURVE_EXPONENT)
     }
 }
 

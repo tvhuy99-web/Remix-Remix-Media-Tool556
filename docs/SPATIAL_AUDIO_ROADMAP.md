@@ -1,0 +1,71 @@
+# Spatial Audio roadmap
+
+Tài liệu này chia việc nâng cấp Spatial Audio thành các lát cắt có thể build, đo và nghe A/B độc lập. Không gộp toàn bộ thay đổi vào một PR vì lỗi trong reflection simulator, convolution hoặc stem routing có thể làm khó xác định nguyên nhân.
+
+## Giai đoạn 1: Room-aware Spatial Audio
+
+### 1A. Mô hình phòng và giao diện thân thiện
+
+Trạng thái: đang triển khai trong `agent/room-aware-spatial-audio-phase-1a`.
+
+- Sáu preset: Không gian khô, Studio, Phòng nghe nhạc, Nhà hát, Nhà kho và Ngoài trời.
+- Mỗi phòng kín có kích thước, diện tích bề mặt, hấp thụ ba dải và scattering.
+- RT60 được ước tính bằng công thức Sabine rồi giới hạn trong miền an toàn cho renderer.
+- Thanh `Phản xạ phòng` ánh xạ phi tuyến vào wet kỹ thuật và không bao giờ cho wet-only.
+- Preset cập nhật đồng bộ RT60, EQ, distance rolloff và air absorption.
+- Diagnostics lưu preset, hình học, thể tích, scattering, thời gian phản xạ đầu và phiên bản mô hình.
+- Migration giữ ý định của cấu hình cũ nhưng chặn giá trị reverb cực đoan.
+
+Đây là nền dữ liệu cho scene hình học. 1A chưa tuyên bố rằng phản xạ đã được ray trace.
+
+### 1B. Steam Audio scene và phản xạ động
+
+- Dựng mesh hình hộp từ kích thước preset, với vật liệu riêng cho tường, sàn và trần.
+- Tạo `IPLScene`, `IPLStaticMesh`, `IPLSimulator` và một source phản xạ.
+- Chạy reflections theo keyframe của quỹ đạo thay vì ở mọi block âm thanh.
+- Dùng Hybrid Reflection Effect: convolution cho early reflections, parametric cho late tail.
+- Giải mã IR Ambisonics sang binaural trước khi trộn với direct path.
+- Tính DRR theo khoảng cách, không để automatic makeup xóa cảm giác nguồn ở xa.
+- Ngoài trời bỏ mesh bao quanh và chỉ giữ phản xạ nền tối thiểu.
+
+Điều kiện hoàn thành:
+
+- cùng một khoảng cách nghe khác nhau hợp lý giữa Studio, Nhà hát và Ngoài trời;
+- quỹ đạo không có zipper noise khi đổi IR;
+- tail không làm sai thời lượng video;
+- benchmark OnePlus đạt realtime factor phù hợp và không vượt guard RAM/nhiệt.
+
+### 1C. Bảo toàn stereo và độ tin cậy production
+
+- A/B ba chế độ: point stereo hiện tại, Mid/Side và cặp nguồn L/R.
+- Cường độ 0% là bypass thật của toàn bộ spatial path.
+- Vô hiệu hóa Pan, AutoPan, reverb cũ và mono khi Spatial Audio đang bật.
+- Native cancellation, kiểm tra dung lượng trống, kiểm tra lỗi ghi pass hai.
+- Sửa parser LUFS/true peak và thêm native/Kotlin parity tests.
+
+## Giai đoạn 2: High Quality Offline
+
+- Preset chất lượng Cân bằng và Cao.
+- Ambisonics bậc 1 cho Cân bằng, bậc 2 cho Cao.
+- Tăng rays, bounces và IR duration theo năng lực thiết bị.
+- Bake probe cho các phòng preset và nội suy dữ liệu theo vị trí nguồn.
+- Cache IR/keyframe để tránh tính lại khi chỉ đổi codec đầu ra.
+- HRTF calibration và lưu profile theo tai nghe.
+
+Mọi tăng chất lượng phải đi kèm benchmark CPU, RAM, nhiệt, dung lượng tạm và kiểm tra seam.
+
+## Giai đoạn 3: Object Music
+
+- Mid/Side là đường mặc định cho nhạc stereo hoàn chỉnh.
+- Chế độ nâng cao dùng stem: vocal, drums, bass, instruments và ambience.
+- Mỗi stem có quỹ đạo, độ rộng và reflection send riêng.
+- Vocal giữ định vị rõ; bass hạn chế chuyển động; ambience đi vào trường Ambisonics.
+- Khi tách stem không đủ tốt, tự động quay về Mid/Side thay vì tạo artifact.
+
+## Nguyên tắc chất lượng
+
+1. Không gọi số mét là phép đo của căn phòng thật khi nguồn chỉ là một file stereo.
+2. Tất cả tín hiệu khoảng cách phải nhất quán: direct gain, DRR, air absorption và early reflection timing.
+3. Không dùng makeup gain để xóa chênh lệch gần/xa.
+4. Không để một slider người dùng tạo wet-only hoặc peak không an toàn.
+5. Không tăng rays hay Ambisonics order trước khi có số đo thiết bị và bài nghe A/B.

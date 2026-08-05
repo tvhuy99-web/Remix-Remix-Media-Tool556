@@ -1,10 +1,11 @@
 package com.aistudio.mediatool.core.ml
 
 /**
- * Verified tensor and overlap contract for the official MSST MDX23C vocal checkpoint.
+ * Verified tensor and overlap contract for the personal-use MSST MDX23C vocal artifact.
  *
- * This is intentionally not registered as a downloadable model until a converted ONNX artifact has
- * passed PyTorch parity, Android operator checks, exact size/SHA pinning and weight-license review.
+ * The exported ONNX graph contains only the learned complex-spectrogram core. Android keeps the
+ * periodic-Hann STFT/iSTFT, reflect padding, 75% overlap-add and residual instrumental path in host
+ * code so the signal-processing contract remains inspectable and testable.
  */
 internal object Mdx23cVocalPrototypeContract {
     const val INPUT_NAME = "spectrogram"

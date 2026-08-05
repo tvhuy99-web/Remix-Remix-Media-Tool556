@@ -361,7 +361,8 @@ private fun StemDownloadSection(
 
 private fun shortModelName(model: StemModelDescriptor): String = when (model.id) {
     StemModelRegistry.UVR_MDX_VOC_FT_LITERT_ID -> "UVR MDX-Net"
-    else -> "Demucs"
+    StemModelRegistry.MDX23C_VOCAL_PERSONAL_ID -> "MDX23C Vocal HQ"
+    else -> model.displayName
 }
 
 private fun buildStemItems(success: SeparationState.Success): List<StemMixerItem> = listOfNotNull(

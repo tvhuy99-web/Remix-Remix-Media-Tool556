@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aistudio.mediatool.core.SettingsManager
+import com.aistudio.mediatool.core.ml.BundledModelInstaller
 import com.aistudio.mediatool.core.ml.DownloadState
 import com.aistudio.mediatool.core.ml.ModelDownloader
 import com.aistudio.mediatool.core.ml.StemMode
@@ -21,6 +22,7 @@ import java.io.File
 class StemViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
     private val downloader = ModelDownloader(appContext)
+    private val bundledInstaller = BundledModelInstaller(appContext)
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
     private val _selectedModel = MutableStateFlow(configuredModel())
@@ -85,7 +87,16 @@ class StemViewModel(application: Application) : AndroidViewModel(application) {
         downloadJob = viewModelScope.launch {
             initializationJob?.join()
             if (_selectedModel.value.id != model.id || _downloadState.value is DownloadState.Success) return@launch
-            downloader.downloadModel(model.modelSpec, model.id).collect { state ->
+            val states = if (model.id == StemModelRegistry.MDX23C_VOCAL_PERSONAL_ID) {
+                bundledInstaller.install(
+                    spec = model.modelSpec,
+                    assetPath = MDX23C_BUNDLED_ASSET,
+                    modelId = model.id,
+                )
+            } else {
+                downloader.downloadModel(model.modelSpec, model.id)
+            }
+            states.collect { state ->
                 if (_selectedModel.value.id == model.id) _downloadState.value = state
             }
         }
@@ -119,5 +130,6 @@ class StemViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val REMOVED_MEL_BAND_PREFIX = "melband-roformer-kj-vocals-"
+        private const val MDX23C_BUNDLED_ASSET = "models/mdx23c-vocals-core.onnx"
     }
 }

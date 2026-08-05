@@ -113,7 +113,7 @@ android {
 
     androidResources {
         // Model được tải vào filesDir, nhưng giữ quy tắc này cho các model LiteRT nhỏ có thể đóng gói sau này.
-        noCompress += "tflite"
+        noCompress += setOf("tflite", "onnx")
     }
 
     packaging {

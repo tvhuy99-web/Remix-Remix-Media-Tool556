@@ -18,17 +18,17 @@ object SpatialAudioPreferences {
     fun load(context: Context): SpatialAudioConfig {
         val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         preferences.getString(KEY_CONFIG, null)?.let { raw ->
-            return runCatching { parseCurrent(raw) }.getOrDefault(SpatialAudioConfig())
+            return runCatching { parseCurrent(raw) }.getOrDefault(defaultConfig())
         }
 
         preferences.getString(PREVIOUS_FINAL_KEY, null)?.let { raw ->
-            val migrated = runCatching { parsePreviousFinal(raw) }.getOrDefault(SpatialAudioConfig())
+            val migrated = runCatching { parsePreviousFinal(raw) }.getOrDefault(defaultConfig())
             save(context, migrated)
             return migrated
         }
 
         preferences.getString(PREVIOUS_SIMPLE_KEY, null)?.let { raw ->
-            val migrated = runCatching { parsePreviousSimple(raw) }.getOrDefault(SpatialAudioConfig())
+            val migrated = runCatching { parsePreviousSimple(raw) }.getOrDefault(defaultConfig())
             save(context, migrated)
             return migrated
         }
@@ -38,7 +38,7 @@ object SpatialAudioPreferences {
             .remove(PREVIOUS_SIMPLE_KEY)
             .remove(LEGACY_KEY)
             .apply()
-        return SpatialAudioConfig()
+        return defaultConfig()
     }
 
     fun save(context: Context, config: SpatialAudioConfig) {
@@ -100,7 +100,7 @@ object SpatialAudioPreferences {
     /** v3 stored technical wet directly. Convert it back to friendly intent before applying the cap. */
     private fun parsePreviousFinal(raw: String): SpatialAudioConfig {
         val json = JSONObject(raw)
-        val base = SpatialAudioConfig().withFriendlyTrajectory(
+        val base = defaultConfig().withFriendlyTrajectory(
             enumValueOrDefault(
                 json.optString("trajectory"),
                 SpatialTrajectory.HORIZONTAL_CIRCLE,
@@ -144,7 +144,7 @@ object SpatialAudioPreferences {
         val oldDistanceM = 0.8f + 3.2f * oldDistancePosition
         val legacyWet = json.optDouble("reverb", 0.12).toFloat()
 
-        return SpatialAudioConfig()
+        return defaultConfig()
             .withFriendlyTrajectory(trajectory)
             .copy(
                 cycleSeconds = oldCycleSeconds,
@@ -154,6 +154,9 @@ object SpatialAudioPreferences {
             .withFriendlyReflection(legacyWetToReflectionPosition(legacyWet))
             .normalized()
     }
+
+    private fun defaultConfig(): SpatialAudioConfig =
+        SpatialAudioConfig().withRoomPreset(SpatialRoomPreset.LISTENING_ROOM)
 
     private fun legacyWetToReflectionPosition(legacyWet: Float): Float {
         val maxWet = SpatialRoomPreset.LISTENING_ROOM.acoustics.maxReflectionWet

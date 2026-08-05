@@ -54,26 +54,20 @@ import com.aistudio.mediatool.core.ml.StemModelDescriptor
 import com.aistudio.mediatool.core.ml.StemModelRegistry
 import com.aistudio.mediatool.core.ml.StemService
 import com.aistudio.mediatool.ui.components.AudioPreviewSource
+import com.aistudio.mediatool.ui.components.AudioResultChoice
+import com.aistudio.mediatool.ui.components.AudioResultContent
 import com.aistudio.mediatool.ui.components.CompactDropdown
 import com.aistudio.mediatool.ui.components.DiagnosticReportCard
 import com.aistudio.mediatool.ui.components.MediaInputCard
-import com.aistudio.mediatool.ui.components.ResultFileActions
 import com.aistudio.mediatool.ui.components.StickyProcessBar
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.ToolSectionCard
 import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
-import java.io.File
 
 private data class PendingStemStart(
     val uriText: String,
     val modelPath: String,
     val modelId: String,
-)
-
-private data class StemMixerItem(
-    val id: String,
-    val label: String,
-    val file: File,
 )
 
 @Composable
@@ -92,6 +86,7 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     var mdxDenoiseEnabled by rememberSaveable {
         mutableStateOf(SettingsManager.isStemMdxDenoiseEnabled(context))
     }
+    var resultSelectionId by rememberSaveable { mutableStateOf("source") }
     var separationProgress by remember { mutableFloatStateOf(0f) }
     var result by remember { mutableStateOf<SeparationState.Success?>(null) }
 
@@ -112,13 +107,17 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     LaunchedEffect(serviceState) {
         when (val state = serviceState) {
             is SeparationState.Progress -> separationProgress = state.value.coerceIn(0f, 1f)
-            is SeparationState.Success -> result = state
+            is SeparationState.Success -> {
+                result = state
+                resultSelectionId = if (selectedAudioUri != null) "source" else "vocals"
+            }
             null -> Unit
         }
     }
 
     fun resetResult() {
         result = null
+        resultSelectionId = "source"
         separationProgress = 0f
         StemService.clearState(context)
     }
@@ -188,22 +187,24 @@ fun StemScreen(onNavigateBack: () -> Unit) {
     }
 
     ToolScaffold(
-        title = "Tách nhạc",
+        title = if (result == null) "Tách nhạc" else "Kết quả",
         onNavigateBack = onNavigateBack,
         bottomBar = {
-            StickyProcessBar(
-                label = if (result == null) "Bắt đầu tách" else "Tách lại",
-                enabled = selectedAudioUri != null && downloadedModel != null,
-                processing = serviceIsProcessing,
-                progress = separationProgress,
-                phase = "Đang tách",
-                onClick = ::startWithPermission,
-                onCancel = {
-                    context.startService(
-                        Intent(context, StemService::class.java).setAction(StemService.ACTION_STOP),
-                    )
-                },
-            )
+            if (result == null) {
+                StickyProcessBar(
+                    label = "Bắt đầu tách",
+                    enabled = selectedAudioUri != null && downloadedModel != null,
+                    processing = serviceIsProcessing,
+                    progress = separationProgress,
+                    phase = "Đang tách",
+                    onClick = ::startWithPermission,
+                    onCancel = {
+                        context.startService(
+                            Intent(context, StemService::class.java).setAction(StemService.ACTION_STOP),
+                        )
+                    },
+                )
+            }
         },
     ) { innerPadding ->
         Column(
@@ -214,104 +215,111 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            MediaInputCard(
-                fileName = selectedAudioName,
-                onChoose = { audioPicker.launch(arrayOf("audio/*", "video/*")) },
-            )
-
-            UnifiedAudioPlayer(
-                sources = selectedAudioUri?.let {
-                    listOf(AudioPreviewSource("source", "Bản gốc", it))
-                }.orEmpty(),
-                title = "Nghe bản gốc",
-            )
-
-            ToolSectionCard(title = "Thiết lập") {
-                CompactDropdown(
-                    label = "Kết quả",
-                    values = listOf(
-                        "Giọng hát và nhạc nền",
-                        "Giọng, trống, bass và phần khác",
-                    ),
-                    selectedIndex = modeIndex,
-                    onSelected = { index ->
-                        if (modeIndex != index) {
-                            modeIndex = index
-                            SettingsManager.setStemModeIndex(context, index)
-                            val mode = StemMode.fromSettingsIndex(index)
-                            val model = StemModelRegistry.resolve(
-                                mode,
-                                SettingsManager.getStemModelId(context, index),
-                            )
-                            stemViewModel.selectModel(model.id)
-                            resetResult()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                CompactDropdown(
-                    label = "Mô hình",
-                    values = modeModels.map(::shortModelName),
-                    selectedIndex = modeModels.indexOfFirst { it.id == selectedModel.id }.coerceAtLeast(0),
-                    onSelected = { index ->
-                        stemViewModel.selectModel(modeModels[index].id)
+            val success = result
+            if (success != null) {
+                val choices = buildStemResultChoices(selectedAudioUri, success)
+                LaunchedEffect(choices.map { it.id }) {
+                    if (choices.none { it.id == resultSelectionId }) {
+                        resultSelectionId = choices.firstOrNull()?.id.orEmpty()
+                    }
+                }
+                AudioResultContent(
+                    choices = choices,
+                    selectedId = resultSelectionId,
+                    onSelected = { resultSelectionId = it },
+                    processAnotherLabel = "Tách video/bài hát khác",
+                    onProcessAnother = {
                         resetResult()
+                        audioPicker.launch(arrayOf("audio/*", "video/*"))
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    onNavigateBack = onNavigateBack,
+                )
+            } else {
+                MediaInputCard(
+                    fileName = selectedAudioName,
+                    onChoose = { audioPicker.launch(arrayOf("audio/*", "video/*")) },
                 )
 
-                if (selectedModel.backend == StemInferenceBackend.MDX_LITERT) {
+                UnifiedAudioPlayer(
+                    sources = selectedAudioUri?.let {
+                        listOf(AudioPreviewSource("source", "Bản gốc", it))
+                    }.orEmpty(),
+                    title = "Nghe bản gốc",
+                )
+
+                ToolSectionCard(title = "Thiết lập") {
                     CompactDropdown(
-                        label = "Chất lượng UVR",
-                        values = listOf("Tiêu chuẩn", "Làm sạch kỹ"),
-                        selectedIndex = if (mdxDenoiseEnabled) 1 else 0,
+                        label = "Kết quả",
+                        values = listOf(
+                            "Giọng hát và nhạc nền",
+                            "Giọng, trống, bass và phần khác",
+                        ),
+                        selectedIndex = modeIndex,
                         onSelected = { index ->
-                            mdxDenoiseEnabled = index == 1
-                            SettingsManager.setStemMdxDenoiseEnabled(context, mdxDenoiseEnabled)
+                            if (modeIndex != index) {
+                                modeIndex = index
+                                SettingsManager.setStemModeIndex(context, index)
+                                val mode = StemMode.fromSettingsIndex(index)
+                                val model = StemModelRegistry.resolve(
+                                    mode,
+                                    SettingsManager.getStemModelId(context, index),
+                                )
+                                stemViewModel.selectModel(model.id)
+                                resetResult()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    CompactDropdown(
+                        label = "Mô hình",
+                        values = modeModels.map(::shortModelName),
+                        selectedIndex = modeModels.indexOfFirst { it.id == selectedModel.id }.coerceAtLeast(0),
+                        onSelected = { index ->
+                            stemViewModel.selectModel(modeModels[index].id)
                             resetResult()
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Text(
-                        if (mdxDenoiseEnabled) {
-                            "Chạy hai lượt đối xứng để giảm nhiễu, thời gian xử lý gần gấp đôi."
-                        } else {
-                            "Một lượt xử lý, nhanh hơn và dùng ít điện hơn."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+
+                    if (selectedModel.backend == StemInferenceBackend.MDX_LITERT) {
+                        CompactDropdown(
+                            label = "Chất lượng UVR",
+                            values = listOf("Tiêu chuẩn", "Làm sạch kỹ"),
+                            selectedIndex = if (mdxDenoiseEnabled) 1 else 0,
+                            onSelected = { index ->
+                                mdxDenoiseEnabled = index == 1
+                                SettingsManager.setStemMdxDenoiseEnabled(context, mdxDenoiseEnabled)
+                                resetResult()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            if (mdxDenoiseEnabled) {
+                                "Chạy hai lượt đối xứng để giảm nhiễu, thời gian xử lý gần gấp đôi."
+                            } else {
+                                "Một lượt xử lý, nhanh hơn và dùng ít điện hơn."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    StemDownloadSection(
+                        selectedModel = selectedModel,
+                        state = downloadState,
+                        onDownload = stemViewModel::downloadModel,
+                        onPause = stemViewModel::pauseDownload,
+                        onDiscard = stemViewModel::discardPartialDownload,
                     )
                 }
 
-                StemDownloadSection(
-                    selectedModel = selectedModel,
-                    state = downloadState,
-                    onDownload = stemViewModel::downloadModel,
-                    onPause = stemViewModel::pauseDownload,
-                    onDiscard = stemViewModel::discardPartialDownload,
-                )
-            }
-
-            result?.let { success ->
-                val items = buildStemItems(success)
-                SynchronizedStemMixerCard(success)
-                ToolSectionCard(title = "Lưu kết quả") {
-                    items.forEach { item ->
-                        ResultFileActions(
-                            file = item.file,
-                            saveLabel = "Lưu ${item.label.lowercase()}",
-                            shareLabel = "Chia sẻ ${item.label.lowercase()}",
-                        )
-                    }
+                serviceError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                    DiagnosticReportCard(errorContext = it)
                 }
+                Spacer(modifier = Modifier.height(12.dp))
             }
-
-            serviceError?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                DiagnosticReportCard(errorContext = it)
-            }
-            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }
@@ -364,10 +372,38 @@ private fun shortModelName(model: StemModelDescriptor): String = when (model.id)
     else -> "Demucs"
 }
 
-private fun buildStemItems(success: SeparationState.Success): List<StemMixerItem> = listOfNotNull(
-    StemMixerItem("vocals", "Giọng hát", success.vocalsFile),
-    StemMixerItem("music", "Nhạc nền", success.musicFile),
-    success.drumsFile?.let { StemMixerItem("drums", "Trống", it) },
-    success.bassFile?.let { StemMixerItem("bass", "Bass", it) },
-    success.otherFile?.let { StemMixerItem("other", "Phần khác", it) },
-).distinctBy { it.file.absolutePath }
+private fun buildStemResultChoices(
+    sourceUri: Uri?,
+    success: SeparationState.Success,
+): List<AudioResultChoice> = buildList {
+    sourceUri?.let { add(AudioResultChoice("source", "Gốc", it)) }
+    add(
+        AudioResultChoice(
+            id = "vocals",
+            label = "Giọng hát",
+            uri = Uri.fromFile(success.vocalsFile),
+            outputFile = success.vocalsFile,
+        ),
+    )
+    val hasFourStems = success.drumsFile != null || success.bassFile != null || success.otherFile != null
+    if (hasFourStems) {
+        success.drumsFile?.let {
+            add(AudioResultChoice("drums", "Trống", Uri.fromFile(it), it))
+        }
+        success.bassFile?.let {
+            add(AudioResultChoice("bass", "Bass", Uri.fromFile(it), it))
+        }
+        success.otherFile?.let {
+            add(AudioResultChoice("other", "Phần khác", Uri.fromFile(it), it))
+        }
+    } else {
+        add(
+            AudioResultChoice(
+                id = "music",
+                label = "Nhạc nền",
+                uri = Uri.fromFile(success.musicFile),
+                outputFile = success.musicFile,
+            ),
+        )
+    }
+}

@@ -5,11 +5,12 @@ import org.json.JSONObject
 import kotlin.math.ln
 import kotlin.math.max
 
-/** Chỉ lưu năm lựa chọn thân thiện; tham số kỹ thuật dùng bộ mặc định đã kiểm chứng. */
+/** Lưu các lựa chọn thân thiện; tham số kỹ thuật được suy ra từ preset phòng. */
 object SpatialAudioPreferences {
     private const val PREFS = "spatial_audio_preferences"
-    private const val KEY_CONFIG = "config_v3_final"
-    private const val PREVIOUS_KEY = "config_v2_simple"
+    private const val KEY_CONFIG = "config_v4_room_aware"
+    private const val PREVIOUS_FINAL_KEY = "config_v3_final"
+    private const val PREVIOUS_SIMPLE_KEY = "config_v2_simple"
     private const val LEGACY_KEY = "config_v1"
 
     fun load(context: Context): SpatialAudioConfig {
@@ -18,14 +19,21 @@ object SpatialAudioPreferences {
             return runCatching { parseCurrent(raw) }.getOrDefault(SpatialAudioConfig())
         }
 
-        preferences.getString(PREVIOUS_KEY, null)?.let { raw ->
-            val migrated = runCatching { parsePrevious(raw) }.getOrDefault(SpatialAudioConfig())
+        preferences.getString(PREVIOUS_FINAL_KEY, null)?.let { raw ->
+            val migrated = runCatching { parsePreviousFinal(raw) }.getOrDefault(SpatialAudioConfig())
+            save(context, migrated)
+            return migrated
+        }
+
+        preferences.getString(PREVIOUS_SIMPLE_KEY, null)?.let { raw ->
+            val migrated = runCatching { parsePreviousSimple(raw) }.getOrDefault(SpatialAudioConfig())
             save(context, migrated)
             return migrated
         }
 
         preferences.edit()
-            .remove(PREVIOUS_KEY)
+            .remove(PREVIOUS_FINAL_KEY)
+            .remove(PREVIOUS_SIMPLE_KEY)
             .remove(LEGACY_KEY)
             .apply()
         return SpatialAudioConfig()
@@ -35,19 +43,60 @@ object SpatialAudioPreferences {
         val value = config.normalized()
         val json = JSONObject()
             .put("trajectory", value.trajectory.name)
+            .put("room_preset", value.roomPreset.name)
             .put("cycle_seconds", value.cycleSeconds)
             .put("distance_m", max(value.startDistanceM, value.endDistanceM))
             .put("intensity", value.spatialBlend)
-            .put("reverb", value.reverbWet)
+            .put("reflection", value.friendlyReflectionPosition())
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_CONFIG, json.toString())
-            .remove(PREVIOUS_KEY)
+            .remove(PREVIOUS_FINAL_KEY)
+            .remove(PREVIOUS_SIMPLE_KEY)
             .remove(LEGACY_KEY)
             .apply()
     }
 
     private fun parseCurrent(raw: String): SpatialAudioConfig {
+        val json = JSONObject(raw)
+        val roomPreset = enumValueOrDefault(
+            json.optString("room_preset"),
+            SpatialRoomPreset.LISTENING_ROOM,
+        )
+        val base = SpatialAudioConfig()
+            .withRoomPreset(roomPreset)
+            .withFriendlyTrajectory(
+                enumValueOrDefault(
+                    json.optString("trajectory"),
+                    SpatialTrajectory.HORIZONTAL_CIRCLE,
+                ),
+            )
+        val cycleSeconds = json.optDouble("cycle_seconds", base.cycleSeconds.toDouble())
+            .toFloat()
+            .coerceIn(
+                SpatialAudioConfig.FRIENDLY_SPEED_MIN_SECONDS,
+                SpatialAudioConfig.FRIENDLY_SPEED_MAX_SECONDS,
+            )
+        val distanceM = json.optDouble(
+            "distance_m",
+            max(base.startDistanceM, base.endDistanceM).toDouble(),
+        ).toFloat()
+
+        return base
+            .copy(
+                cycleSeconds = cycleSeconds,
+                spatialBlend = json.optDouble("intensity", 0.85).toFloat(),
+            )
+            .withFriendlyDistance(distancePosition(distanceM))
+            .withFriendlyReflection(
+                json.optDouble("reflection", base.friendlyReflectionPosition().toDouble())
+                    .toFloat(),
+            )
+            .normalized()
+    }
+
+    /** v3 stored technical wet directly from a 0..100% slider. Treat it as intent, not wet gain. */
+    private fun parsePreviousFinal(raw: String): SpatialAudioConfig {
         val json = JSONObject(raw)
         val base = SpatialAudioConfig().withFriendlyTrajectory(
             enumValueOrDefault(
@@ -67,16 +116,16 @@ object SpatialAudioPreferences {
         ).toFloat()
 
         return base
-            .copy(cycleSeconds = cycleSeconds)
-            .withFriendlyDistance(distancePosition(distanceM))
             .copy(
+                cycleSeconds = cycleSeconds,
                 spatialBlend = json.optDouble("intensity", 0.85).toFloat(),
-                reverbWet = json.optDouble("reverb", 0.12).toFloat(),
             )
+            .withFriendlyDistance(distancePosition(distanceM))
+            .withFriendlyReflection(json.optDouble("reverb", 0.35).toFloat())
             .normalized()
     }
 
-    private fun parsePrevious(raw: String): SpatialAudioConfig {
+    private fun parsePreviousSimple(raw: String): SpatialAudioConfig {
         val json = JSONObject(raw)
         val trajectory = enumValueOrDefault(
             json.optString("trajectory"),
@@ -93,12 +142,12 @@ object SpatialAudioPreferences {
 
         return SpatialAudioConfig()
             .withFriendlyTrajectory(trajectory)
-            .copy(cycleSeconds = oldCycleSeconds)
-            .withFriendlyDistance(distancePosition(oldDistanceM))
             .copy(
+                cycleSeconds = oldCycleSeconds,
                 spatialBlend = json.optDouble("intensity", 0.85).toFloat(),
-                reverbWet = json.optDouble("reverb", 0.12).toFloat(),
             )
+            .withFriendlyDistance(distancePosition(oldDistanceM))
+            .withFriendlyReflection(json.optDouble("reverb", 0.35).toFloat())
             .normalized()
     }
 

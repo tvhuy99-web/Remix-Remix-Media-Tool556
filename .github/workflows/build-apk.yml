@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build-debug:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout source
@@ -52,7 +52,10 @@ jobs:
           ./gradlew assembleDebug --stacktrace --build-cache
 
       - name: Inspect app-debug APK
-        run: python3 scripts/inspect_apks.py app/build/outputs/apk/debug/app-debug.apk
+        run: |
+          python3 scripts/inspect_apks.py app/build/outputs/apk/debug/app-debug.apk
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/libphonon.so'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/libmediatool_spatial.so'
 
       - name: Verify APK signature
         run: |
@@ -60,7 +63,13 @@ jobs:
           test -x "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk
 
+      - name: Lint and unit tests for pull requests
+        if: github.event_name == 'pull_request'
+        run: ./gradlew lintDebug testDebugUnitTest --stacktrace --build-cache
+
+      # Artifact quota must never prevent code, lint, or unit-test validation.
       - name: Upload app-debug APK
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
@@ -69,12 +78,9 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-      - name: Lint and unit tests for pull requests
-        if: github.event_name == 'pull_request'
-        run: ./gradlew lintDebug testDebugUnitTest --stacktrace --build-cache
-
       - name: Upload pull-request reports
         if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: mediatool-reports

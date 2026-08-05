@@ -17,15 +17,18 @@ object SteamAudioBridge {
         output.parentFile?.mkdirs()
         output.delete()
         val value = config.normalized()
-        val response = nativeRender(
+        val room = RoomReflectionNativeSpec.balanced(value.roomPreset)
+        val response = nativeRenderRoomAware(
             inputPath = input.absolutePath,
             outputPath = output.absolutePath,
             sofaPath = value.customSofaPath.orEmpty(),
-            sampleRate = 48_000,
+            sampleRate = SAMPLE_RATE,
             frameSize = value.frameSize,
             trajectory = value.trajectory.ordinal,
             interpolation = value.interpolation.ordinal,
             motionMode = value.motionMode.ordinal,
+            reflectionIntegerPayload = room.integerPayload(),
+            reflectionFloatPayload = room.floatPayload(),
             startAzimuthDeg = value.startAzimuthDeg,
             endAzimuthDeg = value.endAzimuthDeg,
             startElevationDeg = value.startElevationDeg,
@@ -63,7 +66,7 @@ object SteamAudioBridge {
             renderMs = json.optLong("render_ms"),
             inputChannels = json.optInt("input_channels", 2),
             outputChannels = json.optInt("output_channels", 2),
-            stereoMode = json.optString("stereo_mode", "preserve_or_upmix"),
+            stereoMode = json.optString("stereo_mode", "preserve_point_stereo"),
             inputPeak = json.float("input_peak"),
             inputPeakLeft = json.float("input_peak_left"),
             inputPeakRight = json.float("input_peak_right"),
@@ -95,13 +98,23 @@ object SteamAudioBridge {
             clippedSamplesBeforeGain = json.optLong("clipped_samples_before_gain"),
             hrtfType = json.optString("hrtf_type", "unknown"),
             steamAudioVersion = json.optString("steam_audio_version", "unknown"),
+            reflectionMode = json.optString("reflection_mode", "none"),
+            roomId = json.optInt("room_id", value.roomPreset.nativeId),
+            reflectionUpdates = json.optLong("reflection_updates"),
+            reflectionSimulationMs = json.optLong("reflection_simulation_ms"),
+            reflectionSourceClamps = json.optLong("reflection_source_clamps"),
+            reflectionRays = json.optInt("reflection_rays", room.rays),
+            reflectionBounces = json.optInt("reflection_bounces", room.bounces),
+            reflectionOrder = json.optInt("reflection_order", room.order),
+            reflectionDurationSeconds = json.float("reflection_duration_seconds", room.durationSeconds),
+            trueEffectMix = json.optBoolean("true_effect_mix", false),
         )
     }
 
     private fun JSONObject.float(name: String, fallback: Float = 0f): Float =
         optDouble(name, fallback.toDouble()).toFloat().takeIf(Float::isFinite) ?: fallback
 
-    private external fun nativeRender(
+    private external fun nativeRenderRoomAware(
         inputPath: String,
         outputPath: String,
         sofaPath: String,
@@ -110,6 +123,8 @@ object SteamAudioBridge {
         trajectory: Int,
         interpolation: Int,
         motionMode: Int,
+        reflectionIntegerPayload: IntArray,
+        reflectionFloatPayload: FloatArray,
         startAzimuthDeg: Float,
         endAzimuthDeg: Float,
         startElevationDeg: Float,
@@ -135,6 +150,8 @@ object SteamAudioBridge {
         effectStartSeconds: Float,
         effectEndSeconds: Float,
     ): String
+
+    private const val SAMPLE_RATE = 48_000
 }
 
 data class SpatialRenderMetrics(
@@ -176,6 +193,16 @@ data class SpatialRenderMetrics(
     val clippedSamplesBeforeGain: Long,
     val hrtfType: String,
     val steamAudioVersion: String,
+    val reflectionMode: String,
+    val roomId: Int,
+    val reflectionUpdates: Long,
+    val reflectionSimulationMs: Long,
+    val reflectionSourceClamps: Long,
+    val reflectionRays: Int,
+    val reflectionBounces: Int,
+    val reflectionOrder: Int,
+    val reflectionDurationSeconds: Float,
+    val trueEffectMix: Boolean,
 ) {
     fun diagnosticFields(): Map<String, Any?> = mapOf(
         "frames" to frames,
@@ -216,5 +243,15 @@ data class SpatialRenderMetrics(
         "clipped_samples_before_gain" to clippedSamplesBeforeGain,
         "hrtf_type" to hrtfType,
         "steam_audio_version" to steamAudioVersion,
+        "reflection_mode" to reflectionMode,
+        "room_id" to roomId,
+        "reflection_updates" to reflectionUpdates,
+        "reflection_simulation_ms" to reflectionSimulationMs,
+        "reflection_source_clamps" to reflectionSourceClamps,
+        "reflection_rays" to reflectionRays,
+        "reflection_bounces" to reflectionBounces,
+        "reflection_order" to reflectionOrder,
+        "reflection_duration_seconds" to reflectionDurationSeconds,
+        "true_effect_mix" to trueEffectMix,
     )
 }

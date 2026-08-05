@@ -1,0 +1,77 @@
+name: Build MDX23C bundled APK
+
+on:
+  push:
+    branches:
+      - agent/mdx23c-vocal-onnx
+    paths:
+      - app/**
+      - .github/workflows/build-mdx23c-bundled-apk.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-mdx23c-bundled-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore stable CI signing key
+        run: |
+          mkdir -p .ci
+          keytool -genkeypair -v \
+            -keystore .ci/mediatool-ci-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -dname "CN=MediaTool CI,O=MediaTool,C=US" \
+            -keyalg RSA -keysize 2048 -validity 10000
+
+      - name: Download private MDX23C release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p app/src/main/assets/models
+          gh release download mdx23c-vocal-personal-v1 \
+            --pattern mdx23c-vocals-core.onnx \
+            --dir app/src/main/assets/models
+          echo "8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb  app/src/main/assets/models/mdx23c-vocals-core.onnx" \
+            | sha256sum --check --strict
+          test "$(stat -c %s app/src/main/assets/models/mdx23c-vocals-core.onnx)" = "448152790"
+
+      - name: Verify, test and build bundled APK
+        run: |
+          python3 scripts/verify_project.py
+          ./gradlew testDebugUnitTest assembleDebug --stacktrace
+
+      - name: Verify model is inside APK
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          unzip -l "$APK" | grep -F "assets/models/mdx23c-vocals-core.onnx"
+          test "$(unzip -p "$APK" assets/models/mdx23c-vocals-core.onnx | sha256sum | cut -d' ' -f1)" = \
+            "8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb"
+
+      - name: Upload bundled APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaTool-MDX23C-bundled-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

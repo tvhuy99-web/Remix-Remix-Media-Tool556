@@ -12,7 +12,7 @@ internal enum class MdxExecutionBackend {
 }
 
 internal data class MdxEngineOpenResult(
-    val engine: MdxLiteRtEngine,
+    val engine: MdxCoreEngine,
     val failedAttempts: List<String>,
 )
 
@@ -24,11 +24,14 @@ internal class MdxLiteRtEngine private constructor(
     private val outputBuffers: List<TensorBuffer>,
     val backend: MdxExecutionBackend,
     private val tensorElements: Int,
-) : AutoCloseable {
+) : MdxCoreEngine {
     private var invocationPhase = InvocationPhase.READY_FOR_INPUT
 
+    override val backendLabel: String
+        get() = backend.name
+
     /** Copies one host tensor into LiteRT. The caller may release its Java array after this returns. */
-    fun writeInput(input: FloatArray) {
+    override fun writeInput(input: FloatArray) {
         check(invocationPhase == InvocationPhase.READY_FOR_INPUT) {
             "MDX invocation is not ready for input: $invocationPhase"
         }
@@ -40,7 +43,7 @@ internal class MdxLiteRtEngine private constructor(
     }
 
     /** Runs inference using the already-copied input tensor. */
-    fun execute() {
+    override fun execute() {
         check(invocationPhase == InvocationPhase.INPUT_WRITTEN) {
             "MDX input must be written before execute: $invocationPhase"
         }
@@ -52,7 +55,7 @@ internal class MdxLiteRtEngine private constructor(
      * Materializes the native output once. LiteRT 2.1.6 returns a new FloatArray here, so callers
      * should recycle that array as the next input scratch and release the previous input before run.
      */
-    fun readOutput(): FloatArray {
+    override fun readOutput(): FloatArray {
         check(invocationPhase == InvocationPhase.OUTPUT_READY) {
             "MDX output is not ready: $invocationPhase"
         }
@@ -70,10 +73,13 @@ internal class MdxLiteRtEngine private constructor(
     }
 
     private fun warmUpWithoutMaterializingOutput() {
-        // The temporary zero tensor is eligible for collection before native inference starts.
         writeInput(FloatArray(tensorElements))
         execute()
         invocationPhase = InvocationPhase.READY_FOR_INPUT
+    }
+
+    override fun cancel() {
+        // LiteRT does not expose per-invocation termination. Cancellation is checked around run().
     }
 
     override fun close() {
@@ -151,7 +157,6 @@ internal class MdxLiteRtEngine private constructor(
                         backend = backend,
                         tensorElements = tensorElements,
                     )
-                    // Warm-up still accepts/rejects the backend, but avoids a full Java output copy.
                     engine.warmUpWithoutMaterializingOutput()
 
                     return MdxEngineOpenResult(

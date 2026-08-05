@@ -2,6 +2,10 @@ package com.aistudio.mediatool.core.spatial
 
 import kotlin.math.max
 
+private const val SABINE_CONSTANT = 0.161f
+private const val MIN_RT60_SECONDS = 0.10f
+private const val MAX_RT60_SECONDS = 6.0f
+
 /** Three-band acoustic values centered around Steam Audio's low, mid and high bands. */
 data class SpatialAcousticBands(
     val low: Float,
@@ -45,6 +49,31 @@ data class SpatialRoomAcoustics(
     val outdoor: Boolean,
 )
 
+private fun roomMaterial(
+    low: Float,
+    mid: Float,
+    high: Float,
+    scattering: Float,
+) = SpatialRoomMaterial(
+    absorption = SpatialAcousticBands(low, mid, high),
+    scattering = scattering,
+)
+
+private fun weightedAbsorption(
+    dimensions: SpatialRoomDimensions,
+    walls: SpatialRoomMaterial,
+    floor: SpatialRoomMaterial,
+    ceiling: SpatialRoomMaterial,
+    band: (SpatialAcousticBands) -> Float,
+): Float {
+    val totalArea = dimensions.wallAreaM2 + dimensions.floorAreaM2 + dimensions.ceilingAreaM2
+    return (
+        dimensions.wallAreaM2 * band(walls.absorption) +
+            dimensions.floorAreaM2 * band(floor.absorption) +
+            dimensions.ceilingAreaM2 * band(ceiling.absorption)
+        ) / totalArea
+}
+
 /**
  * Room presets are intentionally described by geometry and materials instead of arbitrary
  * reverb knobs. Phase 1B can feed the same dimensions and materials into Steam Audio's scene
@@ -68,9 +97,9 @@ enum class SpatialRoomPreset(
         description = "Hấp thụ mạnh, định vị rõ, gần như không có đuôi vang.",
         nativeId = 0,
         dimensions = SpatialRoomDimensions(5f, 4f, 2.8f),
-        walls = material(0.45f, 0.75f, 0.80f, 0.75f),
-        floor = material(0.15f, 0.55f, 0.70f, 0.60f),
-        ceiling = material(0.50f, 0.80f, 0.90f, 0.80f),
+        walls = roomMaterial(0.45f, 0.75f, 0.80f, 0.75f),
+        floor = roomMaterial(0.15f, 0.55f, 0.70f, 0.60f),
+        ceiling = roomMaterial(0.50f, 0.80f, 0.90f, 0.80f),
         maxReflectionWet = 0.18f,
         distanceRolloff = 0.72f,
         airAbsorption = 0.38f,
@@ -81,9 +110,9 @@ enum class SpatialRoomPreset(
         description = "Phòng kiểm âm cân bằng, phản xạ sớm gọn và đuôi ngắn.",
         nativeId = 1,
         dimensions = SpatialRoomDimensions(6f, 5f, 3f),
-        walls = material(0.25f, 0.55f, 0.65f, 0.65f),
-        floor = material(0.12f, 0.35f, 0.50f, 0.45f),
-        ceiling = material(0.35f, 0.70f, 0.80f, 0.70f),
+        walls = roomMaterial(0.25f, 0.55f, 0.65f, 0.65f),
+        floor = roomMaterial(0.12f, 0.35f, 0.50f, 0.45f),
+        ceiling = roomMaterial(0.35f, 0.70f, 0.80f, 0.70f),
         maxReflectionWet = 0.24f,
         distanceRolloff = 0.68f,
         airAbsorption = 0.36f,
@@ -94,9 +123,9 @@ enum class SpatialRoomPreset(
         description = "Không gian tự nhiên cho nhạc stereo, có chiều sâu nhưng vẫn rõ lời.",
         nativeId = 2,
         dimensions = SpatialRoomDimensions(7f, 5.5f, 3.2f),
-        walls = material(0.18f, 0.35f, 0.45f, 0.55f),
-        floor = material(0.10f, 0.28f, 0.40f, 0.42f),
-        ceiling = material(0.25f, 0.45f, 0.55f, 0.58f),
+        walls = roomMaterial(0.18f, 0.35f, 0.45f, 0.55f),
+        floor = roomMaterial(0.10f, 0.28f, 0.40f, 0.42f),
+        ceiling = roomMaterial(0.25f, 0.45f, 0.55f, 0.58f),
         maxReflectionWet = 0.35f,
         distanceRolloff = 0.65f,
         airAbsorption = 0.35f,
@@ -107,9 +136,9 @@ enum class SpatialRoomPreset(
         description = "Không gian lớn, phản xạ khuếch tán và đuôi vang dài hơn.",
         nativeId = 3,
         dimensions = SpatialRoomDimensions(18f, 13f, 8f),
-        walls = material(0.12f, 0.25f, 0.40f, 0.62f),
-        floor = material(0.08f, 0.22f, 0.35f, 0.50f),
-        ceiling = material(0.18f, 0.30f, 0.45f, 0.68f),
+        walls = roomMaterial(0.12f, 0.25f, 0.40f, 0.62f),
+        floor = roomMaterial(0.08f, 0.22f, 0.35f, 0.50f),
+        ceiling = roomMaterial(0.18f, 0.30f, 0.45f, 0.68f),
         maxReflectionWet = 0.42f,
         distanceRolloff = 0.60f,
         airAbsorption = 0.33f,
@@ -120,9 +149,9 @@ enum class SpatialRoomPreset(
         description = "Bề mặt cứng, phản xạ sáng và đuôi rất dài.",
         nativeId = 4,
         dimensions = SpatialRoomDimensions(25f, 18f, 10f),
-        walls = material(0.02f, 0.03f, 0.04f, 0.30f),
-        floor = material(0.02f, 0.03f, 0.04f, 0.22f),
-        ceiling = material(0.05f, 0.08f, 0.10f, 0.35f),
+        walls = roomMaterial(0.02f, 0.03f, 0.04f, 0.30f),
+        floor = roomMaterial(0.02f, 0.03f, 0.04f, 0.22f),
+        ceiling = roomMaterial(0.05f, 0.08f, 0.10f, 0.35f),
         maxReflectionWet = 0.40f,
         distanceRolloff = 0.55f,
         airAbsorption = 0.30f,
@@ -197,36 +226,5 @@ enum class SpatialRoomPreset(
             firstReflectionMs = firstReflectionMs,
             outdoor = false,
         )
-    }
-
-    companion object {
-        private const val SABINE_CONSTANT = 0.161f
-        private const val MIN_RT60_SECONDS = 0.10f
-        private const val MAX_RT60_SECONDS = 6.0f
-
-        private fun material(
-            low: Float,
-            mid: Float,
-            high: Float,
-            scattering: Float,
-        ) = SpatialRoomMaterial(
-            absorption = SpatialAcousticBands(low, mid, high),
-            scattering = scattering,
-        )
-
-        private fun weightedAbsorption(
-            dimensions: SpatialRoomDimensions,
-            walls: SpatialRoomMaterial,
-            floor: SpatialRoomMaterial,
-            ceiling: SpatialRoomMaterial,
-            band: (SpatialAcousticBands) -> Float,
-        ): Float {
-            val totalArea = dimensions.wallAreaM2 + dimensions.floorAreaM2 + dimensions.ceilingAreaM2
-            return (
-                dimensions.wallAreaM2 * band(walls.absorption) +
-                    dimensions.floorAreaM2 * band(floor.absorption) +
-                    dimensions.ceilingAreaM2 * band(ceiling.absorption)
-                ) / totalArea
-        }
     }
 }

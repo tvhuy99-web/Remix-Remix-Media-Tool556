@@ -1,18 +1,33 @@
 # MDX23C public model hosting
 
-The application repository is private, so unauthenticated Android downloads of its release assets
-return HTTP 404. The final slim APK should download the pinned ONNX file from a separate public
-repository owned by the same personal GitHub account.
+The application repository is now public, so Android can download the pinned MDX23C release asset
+without a GitHub token. The application must keep the APK small and use `ModelDownloader` rather
+than embedding the ONNX file in Android assets.
 
-## Recommended layout
+## Active public artifact
 
-1. Create a public repository such as `tvhuy99-web/MediaTool-Personal-Models`.
-2. Create release tag `mdx23c-vocal-personal-v1`.
-3. Upload `mdx23c-vocals-core.onnx` as a release asset, not as a Git history blob.
-4. Verify the asset is exactly 448,152,790 bytes and SHA-256 is
-   `8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb`.
-5. Open the download URL in a private browser window and confirm it returns the file without login.
-6. Update `StemModelRegistry.mdx23cVocalPersonal.modelSpec.url` to the public release URL.
-7. Remove `BundledModelInstaller`, the bundled APK workflow and ONNX asset packaging.
+- Release tag: `mdx23c-vocal-personal-v1`
+- Asset: `mdx23c-vocals-core.onnx`
+- Download URL:
+  `https://github.com/tvhuy99-web/Remix-Remix-Media-Tool556/releases/download/mdx23c-vocal-personal-v1/mdx23c-vocals-core.onnx`
+- Expected bytes: `448152790`
+- SHA-256: `8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb`
 
-Keep the private application repository private. Only the model-host repository needs to be public.
+## Android behavior
+
+1. `StemViewModel` uses the shared resumable `ModelDownloader` for MDX23C.
+2. The downloader follows GitHub redirects, requests identity encoding and resumes with HTTP Range.
+3. The completed file is accepted only after exact byte-size and SHA-256 validation.
+4. Partial downloads remain in `filesDir/models` so the user can pause and continue later.
+5. The normal APK does not contain the 448 MB ONNX asset.
+
+## Removed bundled path
+
+- `BundledModelInstaller`
+- bundled-model Android asset
+- bundled APK workflow and split artifacts
+- ONNX `noCompress` packaging rule
+
+Keep the release tag and asset name stable. Publishing a replacement model requires a new filename,
+new expected byte count and new SHA-256 in `StemModelRegistry`; never replace the pinned asset
+silently under the same metadata.

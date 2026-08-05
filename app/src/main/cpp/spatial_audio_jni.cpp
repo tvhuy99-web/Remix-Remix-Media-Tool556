@@ -177,42 +177,131 @@ Pose calculatePose(
     float phase = seconds / std::max(0.5f, cycleSeconds);
     if (motionMode == 0) phase = positiveModulo(phase, 1.0f);
     else phase = std::max(0.0f, std::min(1.0f, phase));
+
     const float eased = smoothstep(phase);
     const float distance = lerp(startDistance, endDistance, eased);
+    const float theta = 2.0f * kPi * phase;
 
-    if (trajectory == 1) {
-        const float theta = 2.0f * kPi * phase;
-        const float yaw = startAzimuthDeg * kPi / 180.0f;
-        return Pose{
-            normalize(std::sin(yaw) * std::cos(theta), std::sin(theta), -std::cos(yaw) * std::cos(theta)),
-            distance,
-        };
+    switch (trajectory) {
+        case 1: { // VERTICAL_CIRCLE
+            const float yaw = startAzimuthDeg * kPi / 180.0f;
+            return Pose{
+                normalize(
+                    std::sin(yaw) * std::cos(theta),
+                    std::sin(theta),
+                    -std::cos(yaw) * std::cos(theta)
+                ),
+                distance,
+            };
+        }
+        case 2: { // FIGURE_EIGHT
+            const float azimuth = lerp(
+                startAzimuthDeg,
+                endAzimuthDeg,
+                0.5f + 0.5f * std::sin(theta)
+            );
+            const float elevation = lerp(
+                startElevationDeg,
+                endElevationDeg,
+                0.5f + 0.5f * std::sin(2.0f * theta)
+            );
+            return Pose{directionFromAngles(azimuth, elevation), distance};
+        }
+        case 3: // LINEAR
+            return Pose{
+                directionFromAngles(
+                    lerp(startAzimuthDeg, endAzimuthDeg, eased),
+                    lerp(startElevationDeg, endElevationDeg, eased)
+                ),
+                distance,
+            };
+        case 4: // STATIC
+            return Pose{
+                directionFromAngles(startAzimuthDeg, startElevationDeg),
+                startDistance,
+            };
+        case 5: { // PENDULUM
+            const float swing = 0.5f - 0.5f * std::cos(theta);
+            const float lift = 0.5f - 0.5f * std::cos(2.0f * theta);
+            return Pose{
+                directionFromAngles(
+                    lerp(startAzimuthDeg, endAzimuthDeg, swing),
+                    lerp(startElevationDeg, endElevationDeg, lift)
+                ),
+                distance,
+            };
+        }
+        case 6: { // FRONT_BACK
+            const float sweep = 0.5f - 0.5f * std::cos(theta);
+            const float sine = std::sin(theta);
+            const float arch = sine * sine;
+            return Pose{
+                directionFromAngles(
+                    lerp(startAzimuthDeg, endAzimuthDeg, sweep),
+                    lerp(startElevationDeg, endElevationDeg, arch)
+                ),
+                distance,
+            };
+        }
+        case 7: { // SPIRAL
+            const float elevationWave = 0.5f + 0.5f * std::sin(theta);
+            return Pose{
+                directionFromAngles(
+                    lerp(startAzimuthDeg, endAzimuthDeg, phase),
+                    lerp(startElevationDeg, endElevationDeg, elevationWave)
+                ),
+                distance,
+            };
+        }
+        case 8: { // NEAR_FAR
+            const float breathe = 0.5f - 0.5f * std::cos(theta);
+            return Pose{
+                directionFromAngles(
+                    lerp(startAzimuthDeg, endAzimuthDeg, phase),
+                    lerp(startElevationDeg, endElevationDeg, smoothstep(breathe))
+                ),
+                lerp(startDistance, endDistance, breathe),
+            };
+        }
+        case 9: { // FREE_DRIFT
+            const float azimuthCenter = 0.5f * (startAzimuthDeg + endAzimuthDeg);
+            const float azimuthRadius = 0.5f * (endAzimuthDeg - startAzimuthDeg);
+            const float elevationCenter = 0.5f * (startElevationDeg + endElevationDeg);
+            const float elevationRadius = 0.5f * (endElevationDeg - startElevationDeg);
+            const float azimuthNoise =
+                0.68f * std::sin(theta) +
+                0.22f * std::sin(3.0f * theta + 0.7f) +
+                0.10f * std::sin(5.0f * theta + 1.4f);
+            const float elevationNoise =
+                0.72f * std::sin(2.0f * theta + 1.1f) +
+                0.28f * std::sin(4.0f * theta + 0.3f);
+            const float distanceWave = std::max(
+                0.0f,
+                std::min(
+                    1.0f,
+                    0.5f +
+                        0.32f * std::sin(theta + 0.4f) +
+                        0.18f * std::sin(3.0f * theta + 1.2f)
+                )
+            );
+            return Pose{
+                directionFromAngles(
+                    azimuthCenter + azimuthRadius * azimuthNoise,
+                    elevationCenter + elevationRadius * elevationNoise
+                ),
+                lerp(startDistance, endDistance, distanceWave),
+            };
+        }
+        case 0: // HORIZONTAL_CIRCLE
+        default:
+            return Pose{
+                directionFromAngles(
+                    lerp(startAzimuthDeg, endAzimuthDeg, phase),
+                    lerp(startElevationDeg, endElevationDeg, eased)
+                ),
+                distance,
+            };
     }
-    if (trajectory == 2) {
-        const float theta = 2.0f * kPi * phase;
-        const float azimuth = lerp(startAzimuthDeg, endAzimuthDeg, 0.5f + 0.5f * std::sin(theta));
-        const float elevation = lerp(startElevationDeg, endElevationDeg, 0.5f + 0.5f * std::sin(2.0f * theta));
-        return Pose{directionFromAngles(azimuth, elevation), distance};
-    }
-    if (trajectory == 3) {
-        return Pose{
-            directionFromAngles(
-                lerp(startAzimuthDeg, endAzimuthDeg, eased),
-                lerp(startElevationDeg, endElevationDeg, eased)
-            ),
-            distance,
-        };
-    }
-    if (trajectory == 4) {
-        return Pose{directionFromAngles(startAzimuthDeg, startElevationDeg), startDistance};
-    }
-    return Pose{
-        directionFromAngles(
-            lerp(startAzimuthDeg, endAzimuthDeg, phase),
-            lerp(startElevationDeg, endElevationDeg, eased)
-        ),
-        distance,
-    };
 }
 
 float activeMix(float absoluteSeconds, float startSeconds, float endSeconds) {
@@ -314,7 +403,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
 
     const int sampleRate = std::max(8000, static_cast<int>(sampleRateValue));
     const int frameSize = std::max(256, static_cast<int>(frameSizeValue));
-    const int trajectory = std::max(0, std::min(4, static_cast<int>(trajectoryValue)));
+    const int trajectory = std::max(0, std::min(9, static_cast<int>(trajectoryValue)));
     const int interpolation = std::max(0, std::min(1, static_cast<int>(interpolationValue)));
     const int motionMode = std::max(0, std::min(1, static_cast<int>(motionModeValue)));
     const float startAzimuth = clampFinite(startAzimuthDegValue, -720.0f, 720.0f, -90.0f);

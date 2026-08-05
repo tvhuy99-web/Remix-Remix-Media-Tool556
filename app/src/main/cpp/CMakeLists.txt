@@ -16,6 +16,7 @@ add_library(
     mediatool_spatial
     SHARED
     spatial_audio_jni.cpp
+    room_aware_spatial_jni.cpp
 )
 
 target_include_directories(

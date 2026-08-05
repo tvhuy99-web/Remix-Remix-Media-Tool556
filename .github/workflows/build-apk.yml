@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-debug-${{ github.workflow }}-${{ github.ref }}
@@ -67,7 +67,48 @@ jobs:
         if: github.event_name == 'pull_request'
         run: ./gradlew lintDebug testDebugUnitTest --stacktrace --build-cache
 
-      # Artifact quota must never prevent code, lint, or unit-test validation.
+      - name: Publish Spatial Audio test APK as draft prerelease
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/spatial-audio-engine'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          SHORT_SHA="${HEAD_SHA:0:7}"
+          TAG="spatial-audio-pr26-${SHORT_SHA}"
+          APK="MediaTool-spatial-audio-pr26-${SHORT_SHA}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$APK"
+          APK_BYTES="$(stat -c '%s' "$APK")"
+          APK_SHA256="$(sha256sum "$APK" | cut -d' ' -f1)"
+          cat > spatial-release-notes.md <<EOF
+          Draft APK kiểm thử cho PR #26, nhánh agent/spatial-audio-engine.
+
+          Head: ${HEAD_SHA}
+          Dung lượng: ${APK_BYTES} byte
+          SHA-256: ${APK_SHA256}
+
+          Đã xác minh trong cùng workflow:
+          - CMake/NDK ARM64
+          - libphonon.so và libmediatool_spatial.so trong APK
+          - chữ ký APK v2
+          - Android Lint
+          - toàn bộ unit test
+
+          Chưa hợp nhất vào main. Chỉ dùng để kiểm thử Spatial Audio trên thiết bị.
+          EOF
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --target "$HEAD_SHA" \
+              --title "Spatial Audio PR #26 • ${SHORT_SHA}" \
+              --notes-file spatial-release-notes.md \
+              --draft \
+              --prerelease
+          fi
+          gh release upload "$TAG" "$APK" --clobber
+          echo "SPATIAL_APK_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "SPATIAL_APK_SHA256=$APK_SHA256" >> "$GITHUB_ENV"
+          echo "SPATIAL_APK_BYTES=$APK_BYTES" >> "$GITHUB_ENV"
+
+      # Artifact quota must never prevent code, lint, unit-test, or draft-release validation.
       - name: Upload app-debug APK
         continue-on-error: true
         uses: actions/upload-artifact@v4

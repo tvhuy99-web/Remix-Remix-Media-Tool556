@@ -1,0 +1,48 @@
+name: Bootstrap Spatial Audio SDK
+
+on:
+  push:
+    branches: [agent/spatial-audio-engine]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-spatial-audio
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout spatial branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/spatial-audio-engine
+          fetch-depth: 0
+
+      - name: Download and pin Steam Audio 4.8.1
+        run: python3 scripts/run_bootstrap_spatial_audio.py
+
+      - name: Verify generated SDK files
+        run: |
+          test -s app/src/main/cpp/third_party/steam_audio/include/phonon.h
+          test -s app/src/main/jniLibs/arm64-v8a/libphonon.so
+          test -s app/src/main/cpp/third_party/steam_audio/METADATA.json
+          test -s app/src/main/assets/licenses/steam_audio_apache_2.txt
+          python3 scripts/verify_project.py
+          grep -q 'SpatialAudioControls' app/src/main/java/com/aistudio/mediatool/ui/screens/OtherScreen.kt
+          ! grep -q 'if (enable8d)' app/src/main/java/com/aistudio/mediatool/ui/screens/OtherScreen.kt
+
+      - name: Commit pinned SDK and integration
+        run: |
+          rm .github/workflows/bootstrap-spatial-audio.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Tích hợp Steam Audio binaural 3D'
+          git push origin HEAD:agent/spatial-audio-engine

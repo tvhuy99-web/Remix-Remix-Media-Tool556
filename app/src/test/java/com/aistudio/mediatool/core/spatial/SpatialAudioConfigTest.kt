@@ -6,6 +6,17 @@ import org.junit.Test
 
 class SpatialAudioConfigTest {
     @Test
+    fun defaultsAreTunedForNormalStereoMusic() {
+        val value = SpatialAudioConfig()
+        assertEquals(1.2f, value.startDistanceM, 0f)
+        assertEquals(1.2f, value.endDistanceM, 0f)
+        assertEquals(0.85f, value.spatialBlend, 0f)
+        assertEquals(0.12f, value.reverbWet, 0f)
+        assertEquals(0.65f, value.distanceRolloff, 0f)
+        assertEquals(0.35f, value.airAbsorption, 0f)
+    }
+
+    @Test
     fun normalizesEveryUserControlledParameter() {
         val value = SpatialAudioConfig(
             startAzimuthDeg = Float.NaN,
@@ -42,18 +53,41 @@ class SpatialAudioConfigTest {
         assertEquals(1f, value.spatialBlend, 0f)
         assertEquals(0.1f, value.distanceMinM, 0f)
         assertEquals(4f, value.distanceRolloff, 0f)
-        assertEquals(1f, value.airAbsorption, 0f)
+        assertEquals(0.35f, value.airAbsorption, 0f)
         assertEquals(0f, value.directivityWeight, 0f)
         assertEquals(8f, value.directivityPower, 0f)
         assertEquals(180f, value.sourceYawDeg, 0f)
         assertEquals(0f, value.reverbWet, 0f)
         assertEquals(0.1f, value.reverbRt60Low, 0f)
         assertEquals(10f, value.reverbRt60Mid, 0f)
-        assertEquals(0.5f, value.reverbRt60High, 0f)
+        assertEquals(0.45f, value.reverbRt60High, 0f)
         assertEquals(6f, value.outputGainDb, 0f)
         assertEquals(0f, value.effectStartSeconds, 0f)
         assertEquals(-1f, value.effectEndSeconds, 0f)
         assertEquals(2_048, value.frameSize)
+    }
+
+    @Test
+    fun friendlyControlsStayInsideMusicalRanges() {
+        val slowNear = SpatialAudioConfig().withFriendlySpeed(0f).withFriendlyDistance(0f)
+        val fastFar = SpatialAudioConfig().withFriendlySpeed(1f).withFriendlyDistance(1f)
+        assertEquals(18f, slowNear.cycleSeconds, 0.001f)
+        assertEquals(0.8f, slowNear.startDistanceM, 0.001f)
+        assertEquals(3f, fastFar.cycleSeconds, 0.001f)
+        assertEquals(4f, fastFar.startDistanceM, 0.001f)
+        assertEquals(fastFar.startDistanceM, fastFar.endDistanceM, 0f)
+    }
+
+    @Test
+    fun friendlyTrajectoryAppliesSafePreset() {
+        val figureEight = SpatialAudioConfig().withFriendlyTrajectory(SpatialTrajectory.FIGURE_EIGHT)
+        assertEquals(-110f, figureEight.startAzimuthDeg, 0f)
+        assertEquals(110f, figureEight.endAzimuthDeg, 0f)
+        assertEquals(-30f, figureEight.startElevationDeg, 0f)
+        assertEquals(30f, figureEight.endElevationDeg, 0f)
+
+        val linear = SpatialAudioConfig().withFriendlyTrajectory(SpatialTrajectory.LINEAR)
+        assertEquals(SpatialMotionMode.ONCE, linear.motionMode)
     }
 
     @Test
@@ -64,7 +98,6 @@ class SpatialAudioConfigTest {
             endAzimuthDeg = 360f,
             cycleSeconds = 8f,
         )
-
         assertPose(SpatialTrajectoryMath.pose(config, 0f), 0f, 0f, -1f)
         assertPose(SpatialTrajectoryMath.pose(config, 2f), 1f, 0f, 0f)
         assertPose(SpatialTrajectoryMath.pose(config, 4f), 0f, 0f, 1f)
@@ -78,7 +111,6 @@ class SpatialAudioConfigTest {
             startAzimuthDeg = 0f,
             cycleSeconds = 8f,
         )
-
         assertPose(SpatialTrajectoryMath.pose(config, 2f), 0f, 1f, 0f)
         assertPose(SpatialTrajectoryMath.pose(config, 6f), 0f, -1f, 0f)
     }
@@ -96,7 +128,6 @@ class SpatialAudioConfigTest {
             endDistanceM = 0.5f,
             cycleSeconds = 5f,
         )
-
         val atEnd = SpatialTrajectoryMath.pose(config, 5f)
         val longAfterEnd = SpatialTrajectoryMath.pose(config, 50f)
         assertEquals(atEnd.x, longAfterEnd.x, 1e-5f)

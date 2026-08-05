@@ -5,8 +5,9 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Cấu hình đầy đủ cho renderer binaural. Các giá trị được chuẩn hóa trước khi
- * truyền sang native để không đưa NaN, vô cực hoặc tham số ngoài miền vào DSP.
+ * Cấu hình lõi của renderer binaural. Giao diện thông thường chỉ ánh xạ năm
+ * điều khiển thân thiện vào cấu hình này; các tham số kỹ thuật vẫn được giữ cố
+ * định và ghi diagnostics để có thể tinh chỉnh bằng dữ liệu thực tế.
  */
 data class SpatialAudioConfig(
     val trajectory: SpatialTrajectory = SpatialTrajectory.HORIZONTAL_CIRCLE,
@@ -16,20 +17,20 @@ data class SpatialAudioConfig(
     val endAzimuthDeg: Float = 270f,
     val startElevationDeg: Float = 0f,
     val endElevationDeg: Float = 0f,
-    val startDistanceM: Float = 1.5f,
-    val endDistanceM: Float = 1.5f,
+    val startDistanceM: Float = 1.2f,
+    val endDistanceM: Float = 1.2f,
     val cycleSeconds: Float = 8f,
-    val spatialBlend: Float = 1f,
-    val distanceMinM: Float = 1f,
-    val distanceRolloff: Float = 1f,
-    val airAbsorption: Float = 1f,
+    val spatialBlend: Float = 0.85f,
+    val distanceMinM: Float = 1.2f,
+    val distanceRolloff: Float = 0.65f,
+    val airAbsorption: Float = 0.35f,
     val directivityWeight: Float = 0f,
     val directivityPower: Float = 1f,
     val sourceYawDeg: Float = 0f,
-    val reverbWet: Float = 0f,
-    val reverbRt60Low: Float = 0.8f,
-    val reverbRt60Mid: Float = 0.7f,
-    val reverbRt60High: Float = 0.5f,
+    val reverbWet: Float = 0.12f,
+    val reverbRt60Low: Float = 0.7f,
+    val reverbRt60Mid: Float = 0.6f,
+    val reverbRt60High: Float = 0.45f,
     val reverbEqLow: Float = 1f,
     val reverbEqMid: Float = 1f,
     val reverbEqHigh: Float = 1f,
@@ -49,20 +50,20 @@ data class SpatialAudioConfig(
             endAzimuthDeg = finite(endAzimuthDeg, 270f).coerceIn(-720f, 720f),
             startElevationDeg = finite(startElevationDeg, 0f).coerceIn(-90f, 90f),
             endElevationDeg = finite(endElevationDeg, 0f).coerceIn(-90f, 90f),
-            startDistanceM = finite(startDistanceM, 1.5f).coerceIn(0.2f, 100f),
-            endDistanceM = finite(endDistanceM, 1.5f).coerceIn(0.2f, 100f),
+            startDistanceM = finite(startDistanceM, 1.2f).coerceIn(0.2f, 100f),
+            endDistanceM = finite(endDistanceM, 1.2f).coerceIn(0.2f, 100f),
             cycleSeconds = finite(cycleSeconds, 8f).coerceIn(0.5f, 120f),
-            spatialBlend = finite(spatialBlend, 1f).coerceIn(0f, 1f),
-            distanceMinM = finite(distanceMinM, 1f).coerceIn(0.1f, 20f),
-            distanceRolloff = finite(distanceRolloff, 1f).coerceIn(0.1f, 4f),
-            airAbsorption = finite(airAbsorption, 1f).coerceIn(0f, 2f),
+            spatialBlend = finite(spatialBlend, 0.85f).coerceIn(0f, 1f),
+            distanceMinM = finite(distanceMinM, 1.2f).coerceIn(0.1f, 20f),
+            distanceRolloff = finite(distanceRolloff, 0.65f).coerceIn(0.1f, 4f),
+            airAbsorption = finite(airAbsorption, 0.35f).coerceIn(0f, 2f),
             directivityWeight = finite(directivityWeight, 0f).coerceIn(0f, 1f),
             directivityPower = finite(directivityPower, 1f).coerceIn(1f, 8f),
             sourceYawDeg = finite(sourceYawDeg, 0f).coerceIn(-180f, 180f),
-            reverbWet = finite(reverbWet, 0f).coerceIn(0f, 1f),
-            reverbRt60Low = finite(reverbRt60Low, 0.8f).coerceIn(0.1f, 10f),
-            reverbRt60Mid = finite(reverbRt60Mid, 0.7f).coerceIn(0.1f, 10f),
-            reverbRt60High = finite(reverbRt60High, 0.5f).coerceIn(0.1f, 10f),
+            reverbWet = finite(reverbWet, 0.12f).coerceIn(0f, 1f),
+            reverbRt60Low = finite(reverbRt60Low, 0.7f).coerceIn(0.1f, 10f),
+            reverbRt60Mid = finite(reverbRt60Mid, 0.6f).coerceIn(0.1f, 10f),
+            reverbRt60High = finite(reverbRt60High, 0.45f).coerceIn(0.1f, 10f),
             reverbEqLow = finite(reverbEqLow, 1f).coerceIn(0f, 1f),
             reverbEqMid = finite(reverbEqMid, 1f).coerceIn(0f, 1f),
             reverbEqHigh = finite(reverbEqHigh, 1f).coerceIn(0f, 1f),
@@ -74,6 +75,55 @@ data class SpatialAudioConfig(
                 Integer.highestOneBit(value).coerceAtLeast(256)
             },
         )
+    }
+
+    fun withFriendlyTrajectory(next: SpatialTrajectory): SpatialAudioConfig = when (next) {
+        SpatialTrajectory.HORIZONTAL_CIRCLE -> copy(
+            trajectory = next,
+            motionMode = SpatialMotionMode.LOOP,
+            startAzimuthDeg = -90f,
+            endAzimuthDeg = 270f,
+            startElevationDeg = 0f,
+            endElevationDeg = 0f,
+        )
+        SpatialTrajectory.VERTICAL_CIRCLE -> copy(
+            trajectory = next,
+            motionMode = SpatialMotionMode.LOOP,
+            startAzimuthDeg = 0f,
+            endAzimuthDeg = 0f,
+            startElevationDeg = 0f,
+            endElevationDeg = 0f,
+        )
+        SpatialTrajectory.FIGURE_EIGHT -> copy(
+            trajectory = next,
+            motionMode = SpatialMotionMode.LOOP,
+            startAzimuthDeg = -110f,
+            endAzimuthDeg = 110f,
+            startElevationDeg = -30f,
+            endElevationDeg = 30f,
+        )
+        SpatialTrajectory.LINEAR -> copy(
+            trajectory = next,
+            motionMode = SpatialMotionMode.ONCE,
+            startAzimuthDeg = -100f,
+            endAzimuthDeg = 100f,
+            startElevationDeg = 0f,
+            endElevationDeg = 0f,
+        )
+        SpatialTrajectory.STATIC -> copy(trajectory = next, motionMode = SpatialMotionMode.ONCE)
+    }.normalized()
+
+    fun friendlySpeedPosition(): Float = ((18f - cycleSeconds) / 15f).coerceIn(0f, 1f)
+
+    fun withFriendlySpeed(position: Float): SpatialAudioConfig = copy(
+        cycleSeconds = 18f - 15f * position.coerceIn(0f, 1f),
+    ).normalized()
+
+    fun friendlyDistancePosition(): Float = ((startDistanceM - 0.8f) / 3.2f).coerceIn(0f, 1f)
+
+    fun withFriendlyDistance(position: Float): SpatialAudioConfig {
+        val distance = 0.8f + 3.2f * position.coerceIn(0f, 1f)
+        return copy(startDistanceM = distance, endDistanceM = distance).normalized()
     }
 
     fun diagnosticFields(): Map<String, Any?> = normalized().let { value ->
@@ -107,15 +157,18 @@ data class SpatialAudioConfig(
             "effect_end_seconds" to value.effectEndSeconds,
             "hrtf_type" to if (value.customSofaPath == null) "built_in" else "custom_sofa",
             "frame_size" to value.frameSize,
+            "decode_channels" to 2,
+            "stereo_render_mode" to "preserve_or_upmix",
+            "automatic_loudness_preservation" to true,
         )
     }
 }
 
 enum class SpatialTrajectory(val label: String) {
-    HORIZONTAL_CIRCLE("Vòng ngang 360°"),
-    VERTICAL_CIRCLE("Vòng dọc qua trên đầu"),
-    FIGURE_EIGHT("Quỹ đạo hình số 8"),
-    LINEAR("Điểm đầu → điểm cuối"),
+    HORIZONTAL_CIRCLE("Vòng quanh đầu"),
+    VERTICAL_CIRCLE("Trên và dưới"),
+    FIGURE_EIGHT("Hình số 8"),
+    LINEAR("Đi từ trái sang phải"),
     STATIC("Đứng yên tại một vị trí"),
 }
 
@@ -136,7 +189,6 @@ data class SpatialPose(
     val distanceM: Float,
 )
 
-/** Oracle Kotlin dùng cho unit test và hiển thị; công thức được khóa giống native. */
 object SpatialTrajectoryMath {
     fun pose(config: SpatialAudioConfig, seconds: Float): SpatialPose {
         val value = config.normalized()

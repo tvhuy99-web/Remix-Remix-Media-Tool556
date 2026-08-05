@@ -5,6 +5,7 @@
 - CPU stable
 - XNNPACK experimental with automatic CPU fallback
 - 25%, 50% and 75% host overlap modes
+- default experiment: XNNPACK with balanced 50% overlap
 
 Every separation report must record requested acceleration, effective backend, overlap mode, stride,
 chunk count, per-chunk inference time, peak PSS and native allocation.

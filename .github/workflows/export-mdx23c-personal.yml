@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: export-mdx23c-personal
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   MSST_COMMIT: e247dfe4abc1f17c69dff719207fe045dc04413a

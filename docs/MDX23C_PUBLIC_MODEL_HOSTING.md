@@ -1,6 +1,6 @@
 # MDX23C public model hosting
 
-The application repository is now public, so Android can download the pinned MDX23C release asset
+The application repository is public, so Android can download the pinned MDX23C release asset
 without a GitHub token. The application keeps the APK small and uses `ModelDownloader` rather than
 embedding the ONNX file in Android assets.
 

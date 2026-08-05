@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: apply-mdx23c-phase1
+  cancel-in-progress: true
+
 jobs:
   apply:
     if: github.actor != 'github-actions[bot]'

@@ -99,8 +99,10 @@ jobs:
 
           Chưa hợp nhất vào main. Chỉ dùng để kiểm thử Spatial Audio trên thiết bị.
           EOF
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete "$TAG" --cleanup-tag --yes
+          EXISTING_RELEASE_ID="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+          if [ -n "$EXISTING_RELEASE_ID" ]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$EXISTING_RELEASE_ID"
           fi
           gh release create "$TAG" \
             --target "$HEAD_SHA" \

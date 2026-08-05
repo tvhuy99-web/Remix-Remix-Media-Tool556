@@ -2,7 +2,7 @@
 
 ## Phạm vi
 
-Ứng dụng cung cấp tính năng **Làm sạch giọng** chạy ngoại tuyến bằng ONNX Runtime CPU. Người dùng chọn độ dài ngữ cảnh AI, mức làm sạch, cách giữ âm lượng và limiter; mọi xử lý vẫn dùng cùng một model MossFormer2 có trục thời gian động.
+Ứng dụng cung cấp tính năng **Làm sạch giọng** chạy ngoại tuyến bằng ONNX Runtime CPU. Người dùng chọn độ dài ngữ cảnh AI, mức làm sạch, cách giữ âm lượng và chống vỡ tiếng; mọi xử lý vẫn dùng cùng một model MossFormer2 có trục thời gian động.
 
 ## Model đã ghim
 
@@ -18,9 +18,11 @@ Model không nằm trong APK. Downloader hỗ trợ tiếp tục tải và chỉ
 
 ## Ba chế độ ngữ cảnh
 
-- **Cân bằng, 10 giây:** mặc định, hàng rào RAM khả dụng 1,5 GiB.
-- **Chất lượng cao, 20 giây:** hàng rào RAM khả dụng 2,5 GiB.
-- **Tối đa, 30 giây:** dành cho thiết bị rất mạnh, hàng rào RAM khả dụng 4 GiB.
+- **Cân bằng, 10 giây:** mặc định, hàng rào RAM khả dụng 1 GiB.
+- **Chất lượng cao, 20 giây:** hàng rào RAM khả dụng 1,5 GiB.
+- **Tối đa, 30 giây:** hàng rào RAM khả dụng 2 GiB.
+
+Các mức trên là ngưỡng cho phép bắt đầu tác vụ. RAM thực tế còn phụ thuộc tệp, trạng thái hệ thống và bộ nhớ đang được ứng dụng khác sử dụng.
 
 Chế độ 4 giây đã bị loại khỏi giao diện. Hình học 4 giây chỉ còn được giữ làm fixture tham chiếu cho golden parity test và metadata model.
 
@@ -51,7 +53,7 @@ strength = cleanup_strength_percent / 100
 
 Mask không bị clamp về khoảng 0–1. Giá trị lớn hơn 1 do model tạo ra vẫn được nội suy đúng, tránh làm thay đổi contract của model.
 
-Diagnostics và thẻ phân tích hiển thị mask hiệu dụng đã thực sự áp lên âm thanh, cùng `cleanup_strength_percent` và `cleanup_strength`.
+Diagnostics ghi mask hiệu dụng đã thực sự áp lên âm thanh, cùng `cleanup_strength_percent` và `cleanup_strength`.
 
 ## Contract DSP
 
@@ -100,11 +102,11 @@ Không tự bù loudness. Chỉ gain bổ sung và limiter được áp dụng.
 
 Ứng dụng lấy chênh lệch giữa LUFS mục tiêu và LUFS sau AI rồi áp gain cố định. Không dùng `loudnorm` động để tránh che lấp tác dụng thật của model.
 
-### Gain và limiter
+### Gain và chống vỡ tiếng
 
 - Gain bổ sung: từ -12 đến +12 dB, bước 0,5 dB.
-- Limiter có thể bật hoặc tắt độc lập.
-- Trần limiter: từ -6 đến -0,5 dBFS.
+- Chống vỡ tiếng có thể bật hoặc tắt.
+- Khi bật, trần limiter cố định ở -1 dBFS.
 - Tổng gain tự động và gain bổ sung được chặn trong khoảng -24 đến +24 dB.
 
 ## Diagnostics
@@ -151,4 +153,4 @@ Workflow pull request phải đạt toàn bộ:
 
 ## Xác minh còn cần trên thiết bị
 
-CI không nghe được âm thanh và không mô phỏng được nhiệt hoặc áp lực RAM của điện thoại. Cửa sổ 30 giây vượt xa dải thời gian đã được kiểm tra công khai của bản ONNX, nên PR tiếp tục ở trạng thái draft cho tới khi chạy cùng một bộ audio thật trên điện thoại cao cấp ở cả ba chế độ và nhiều mức strength để kiểm tra peak PSS, nhiệt, tốc độ, chất lượng phụ âm và các điểm nối.
+CI không nghe được âm thanh và không mô phỏng được nhiệt hoặc áp lực RAM của điện thoại. Cửa sổ 30 giây vượt xa dải thời gian đã được kiểm tra công khai của bản ONNX, nên vẫn cần chạy cùng một bộ audio thật trên điện thoại ở cả ba chế độ và nhiều mức strength để kiểm tra peak PSS, nhiệt, tốc độ, chất lượng phụ âm và các điểm nối.

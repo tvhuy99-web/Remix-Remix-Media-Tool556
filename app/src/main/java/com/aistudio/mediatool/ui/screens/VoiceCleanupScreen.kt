@@ -33,7 +33,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -47,20 +46,18 @@ import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
 import com.aistudio.mediatool.core.ml.DownloadState
-import com.aistudio.mediatool.core.ml.VoiceCleanupAudioMetrics
 import com.aistudio.mediatool.core.ml.VoiceCleanupConfig
 import com.aistudio.mediatool.core.ml.VoiceCleanupLoudnessMode
-import com.aistudio.mediatool.core.ml.VoiceCleanupReport
 import com.aistudio.mediatool.core.ml.VoiceCleanupService
 import com.aistudio.mediatool.core.ml.VoiceCleanupState
 import com.aistudio.mediatool.core.ml.VoiceCleanupWindowMode
-import com.aistudio.mediatool.ui.components.AccessibleSwitchRow
 import com.aistudio.mediatool.ui.components.AccessibleValueSlider
 import com.aistudio.mediatool.ui.components.AudioPreviewSource
+import com.aistudio.mediatool.ui.components.AudioResultChoice
+import com.aistudio.mediatool.ui.components.AudioResultContent
 import com.aistudio.mediatool.ui.components.CompactDropdown
 import com.aistudio.mediatool.ui.components.DiagnosticReportCard
 import com.aistudio.mediatool.ui.components.MediaInputCard
-import com.aistudio.mediatool.ui.components.ResultFileActions
 import com.aistudio.mediatool.ui.components.StickyProcessBar
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.ToolSectionCard
@@ -92,12 +89,10 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
     var targetLufs by rememberSaveable { mutableFloatStateOf(-16f) }
     var outputGainDb by rememberSaveable { mutableFloatStateOf(0f) }
     var limiterEnabled by rememberSaveable { mutableStateOf(true) }
-    var limiterCeilingDb by rememberSaveable { mutableFloatStateOf(-1f) }
-    var showAnalysis by rememberSaveable { mutableStateOf(false) }
+    var resultSelectionId by rememberSaveable { mutableStateOf("source") }
     var progress by remember { mutableFloatStateOf(0f) }
     var phase by remember { mutableStateOf("Sẵn sàng") }
     var resultFile by remember { mutableStateOf<File?>(null) }
-    var resultReport by remember { mutableStateOf<VoiceCleanupReport?>(null) }
 
     val selectedUri = selectedUriText?.let(Uri::parse)
     val windowMode = VoiceCleanupWindowMode.fromName(windowModeName)
@@ -110,7 +105,7 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
         targetLufs = targetLufs,
         outputGainDb = outputGainDb,
         limiterEnabled = limiterEnabled,
-        limiterCeilingDb = limiterCeilingDb,
+        limiterCeilingDb = -1f,
     )
 
     LaunchedEffect(Unit) {
@@ -128,7 +123,7 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
                 progress = 1f
                 phase = "Đã hoàn tất"
                 resultFile = state.outputFile
-                resultReport = state.report
+                resultSelectionId = if (selectedUri != null) "source" else "cleaned"
             }
             null -> Unit
         }
@@ -136,8 +131,7 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
 
     fun resetResult() {
         resultFile = null
-        resultReport = null
-        showAnalysis = false
+        resultSelectionId = "source"
         progress = 0f
         phase = "Sẵn sàng"
         VoiceCleanupService.clearState(context)
@@ -211,22 +205,14 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
 
     val downloadedModel = (downloadState as? DownloadState.Success)?.file
     val windowOptions = listOf(
-        "Cân bằng – 10 giây (mặc định)",
-        "Chất lượng cao – 20 giây",
-        "Tối đa – 30 giây",
+        "Cân bằng · 10 giây",
+        "Chất lượng cao · 20 giây",
+        "Tối đa · 30 giây",
     )
     val windowIndex = when (windowMode) {
         VoiceCleanupWindowMode.BALANCED_10S -> 0
         VoiceCleanupWindowMode.QUALITY_20S -> 1
         VoiceCleanupWindowMode.MAXIMUM_30S -> 2
-    }
-    val windowHint = when (windowMode) {
-        VoiceCleanupWindowMode.BALANCED_10S ->
-            "Cân bằng giữa ngữ cảnh, tốc độ và bộ nhớ; phù hợp cho phần lớn điện thoại cao cấp."
-        VoiceCleanupWindowMode.QUALITY_20S ->
-            "Ngữ cảnh dài hơn để giữ câu nói liền mạch, cần nhiều RAM và thời gian xử lý hơn."
-        VoiceCleanupWindowMode.MAXIMUM_30S ->
-            "Ngữ cảnh dài nhất, dành cho điện thoại rất mạnh; cần theo dõi nhiệt và bộ nhớ."
     }
     val strengthHint = when (cleanupStrengthPercent) {
         in 1..35 -> "Tự nhiên"
@@ -246,23 +232,25 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
     }
 
     ToolScaffold(
-        title = "Làm sạch giọng",
+        title = if (resultFile == null) "Làm sạch giọng" else "Kết quả",
         onNavigateBack = onNavigateBack,
         bottomBar = {
-            StickyProcessBar(
-                label = if (resultFile == null) "Bắt đầu làm sạch" else "Xử lý lại",
-                enabled = selectedUri != null && downloadedModel != null,
-                processing = serviceIsProcessing,
-                progress = progress,
-                phase = phase,
-                onClick = { downloadedModel?.let { startWithPermission(it.absolutePath) } },
-                onCancel = {
-                    context.startService(
-                        Intent(context, VoiceCleanupService::class.java)
-                            .setAction(VoiceCleanupService.ACTION_STOP),
-                    )
-                },
-            )
+            if (resultFile == null) {
+                StickyProcessBar(
+                    label = "Bắt đầu làm sạch",
+                    enabled = selectedUri != null && downloadedModel != null,
+                    processing = serviceIsProcessing,
+                    progress = progress,
+                    phase = phase,
+                    onClick = { downloadedModel?.let { startWithPermission(it.absolutePath) } },
+                    onCancel = {
+                        context.startService(
+                            Intent(context, VoiceCleanupService::class.java)
+                                .setAction(VoiceCleanupService.ACTION_STOP),
+                        )
+                    },
+                )
+            }
         },
     ) { innerPadding ->
         Column(
@@ -273,125 +261,113 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            MediaInputCard(
-                fileName = selectedName,
-                onChoose = { picker.launch(arrayOf("audio/*", "video/*")) },
-            )
-
-            val previewSources = buildList {
-                selectedUri?.let { add(AudioPreviewSource("source", "Bản gốc", it)) }
-                resultFile?.let { add(AudioPreviewSource("result", "Kết quả", Uri.fromFile(it))) }
-            }
-            UnifiedAudioPlayer(sources = previewSources, title = "Nghe thử")
-
-            VoiceCleanupDownloadSection(
-                state = downloadState,
-                onDownload = viewModel::downloadModel,
-                onPause = viewModel::pauseDownload,
-                onDiscard = viewModel::discardPartialDownload,
-            )
-
-            ToolSectionCard(title = "Điều chỉnh âm thanh") {
-                CompactDropdown(
-                    label = "Độ dài xử lý AI",
-                    values = windowOptions,
-                    selectedIndex = windowIndex,
-                    onSelected = { index ->
-                        windowModeName = when (index) {
-                            1 -> VoiceCleanupWindowMode.QUALITY_20S.name
-                            2 -> VoiceCleanupWindowMode.MAXIMUM_30S.name
-                            else -> VoiceCleanupWindowMode.BALANCED_10S.name
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    windowHint,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                AccessibleValueSlider(
-                    label = "Mức làm sạch",
-                    valueDescription = "$cleanupStrengthPercent% • $strengthHint",
-                    value = cleanupStrength,
-                    valueRange = 1f..100f,
-                    steps = 98,
-                    onValueChange = { cleanupStrength = it.roundToInt().toFloat() },
-                )
-                Text(
-                    "100% dùng toàn bộ sức lọc của MossFormer2; mức thấp hơn giữ lại nhiều chi tiết giọng và âm nền hơn.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                CompactDropdown(
-                    label = "Giữ âm lượng",
-                    values = loudnessOptions,
-                    selectedIndex = loudnessIndex,
-                    onSelected = { index ->
-                        loudnessModeName = when (index) {
-                            1 -> VoiceCleanupLoudnessMode.RAW.name
-                            2 -> VoiceCleanupLoudnessMode.TARGET_LUFS.name
-                            else -> VoiceCleanupLoudnessMode.MATCH_SOURCE.name
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (loudnessMode == VoiceCleanupLoudnessMode.TARGET_LUFS) {
-                    AccessibleValueSlider(
-                        label = "Âm lượng mong muốn",
-                        valueDescription = "${targetLufs.roundToInt()} LUFS",
-                        value = targetLufs,
-                        valueRange = -30f..-8f,
-                        steps = 21,
-                        onValueChange = { targetLufs = it.roundToInt().toFloat() },
-                    )
-                }
-                AccessibleValueSlider(
-                    label = "Tăng hoặc giảm âm lượng",
-                    valueDescription = formatSigned(outputGainDb, "dB"),
-                    value = outputGainDb,
-                    valueRange = -12f..12f,
-                    steps = 47,
-                    onValueChange = { outputGainDb = (it * 2f).roundToInt() / 2f },
-                )
-                AccessibleSwitchRow(
-                    label = "Chống vỡ tiếng",
-                    checked = limiterEnabled,
-                    onCheckedChange = { limiterEnabled = it },
-                )
-                if (limiterEnabled) {
-                    AccessibleValueSlider(
-                        label = "Mức âm lượng cao nhất",
-                        valueDescription = String.format(Locale.US, "%.1f dB", limiterCeilingDb),
-                        value = limiterCeilingDb,
-                        valueRange = -6f..-0.5f,
-                        steps = 10,
-                        onValueChange = { limiterCeilingDb = (it * 2f).roundToInt() / 2f },
-                    )
-                }
-            }
-
-            resultFile?.let { file ->
-                ToolSectionCard(title = "Kết quả") {
-                    ResultFileActions(file = file)
-                    resultReport?.let {
-                        TextButton(
-                            onClick = { showAnalysis = !showAnalysis },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(if (showAnalysis) "Ẩn thông tin lần xử lý" else "Xem thông tin lần xử lý")
-                        }
+            val output = resultFile
+            if (output != null) {
+                val choices = buildVoiceCleanupResultChoices(selectedUri, output)
+                LaunchedEffect(choices.map { it.id }) {
+                    if (choices.none { it.id == resultSelectionId }) {
+                        resultSelectionId = choices.firstOrNull()?.id.orEmpty()
                     }
                 }
-            }
+                AudioResultContent(
+                    choices = choices,
+                    selectedId = resultSelectionId,
+                    onSelected = { resultSelectionId = it },
+                    processAnotherLabel = "Làm sạch video/bài hát khác",
+                    onProcessAnother = {
+                        resetResult()
+                        picker.launch(arrayOf("audio/*", "video/*"))
+                    },
+                    onNavigateBack = onNavigateBack,
+                )
+            } else {
+                MediaInputCard(
+                    fileName = selectedName,
+                    onChoose = { picker.launch(arrayOf("audio/*", "video/*")) },
+                )
 
-            if (showAnalysis) resultReport?.let { VoiceCleanupAnalysisCard(it) }
+                UnifiedAudioPlayer(
+                    sources = selectedUri?.let {
+                        listOf(AudioPreviewSource("source", "Bản gốc", it))
+                    }.orEmpty(),
+                    title = "Nghe bản gốc",
+                )
 
-            serviceError?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                DiagnosticReportCard(errorContext = it)
+                VoiceCleanupDownloadSection(
+                    state = downloadState,
+                    onDownload = viewModel::downloadModel,
+                    onPause = viewModel::pauseDownload,
+                    onDiscard = viewModel::discardPartialDownload,
+                )
+
+                ToolSectionCard(title = "Điều chỉnh âm thanh") {
+                    CompactDropdown(
+                        label = "Độ dài xử lý AI",
+                        values = windowOptions,
+                        selectedIndex = windowIndex,
+                        onSelected = { index ->
+                            windowModeName = when (index) {
+                                1 -> VoiceCleanupWindowMode.QUALITY_20S.name
+                                2 -> VoiceCleanupWindowMode.MAXIMUM_30S.name
+                                else -> VoiceCleanupWindowMode.BALANCED_10S.name
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    AccessibleValueSlider(
+                        label = "Mức làm sạch",
+                        valueDescription = "$cleanupStrengthPercent% · $strengthHint",
+                        value = cleanupStrength,
+                        valueRange = 1f..100f,
+                        steps = 98,
+                        onValueChange = { cleanupStrength = it.roundToInt().toFloat() },
+                    )
+                    CompactDropdown(
+                        label = "Giữ âm lượng",
+                        values = loudnessOptions,
+                        selectedIndex = loudnessIndex,
+                        onSelected = { index ->
+                            loudnessModeName = when (index) {
+                                1 -> VoiceCleanupLoudnessMode.RAW.name
+                                2 -> VoiceCleanupLoudnessMode.TARGET_LUFS.name
+                                else -> VoiceCleanupLoudnessMode.MATCH_SOURCE.name
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (loudnessMode == VoiceCleanupLoudnessMode.TARGET_LUFS) {
+                        AccessibleValueSlider(
+                            label = "Âm lượng mong muốn",
+                            valueDescription = "${targetLufs.roundToInt()} LUFS",
+                            value = targetLufs,
+                            valueRange = -30f..-8f,
+                            steps = 21,
+                            onValueChange = { targetLufs = it.roundToInt().toFloat() },
+                        )
+                    }
+                    AccessibleValueSlider(
+                        label = "Tăng hoặc giảm âm lượng",
+                        valueDescription = formatSigned(outputGainDb, "dB"),
+                        value = outputGainDb,
+                        valueRange = -12f..12f,
+                        steps = 47,
+                        onValueChange = { outputGainDb = (it * 2f).roundToInt() / 2f },
+                    )
+                    CompactDropdown(
+                        label = "Chống vỡ tiếng",
+                        values = listOf("Tắt", "Bật"),
+                        selectedIndex = if (limiterEnabled) 1 else 0,
+                        onSelected = { limiterEnabled = it == 1 },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
+                serviceError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                    DiagnosticReportCard(errorContext = it)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
             }
-            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }
@@ -443,67 +419,20 @@ private fun VoiceCleanupDownloadSection(
     }
 }
 
-@Composable
-private fun VoiceCleanupAnalysisCard(report: VoiceCleanupReport) {
-    ToolSectionCard(title = "Thông tin lần xử lý") {
-        MetricsLine("Bản gốc", report.source)
-        MetricsLine("Sau khi lọc", report.afterAi)
-        MetricsLine("Tệp cuối", report.finalOutput)
-        Column(
-            modifier = Modifier.semantics(mergeDescendants = true) {
-                contentDescription = buildString {
-                    append("Mức tác động của bộ lọc. ")
-                    append("Trung bình ${formatNumber(report.mask.mean)}. ")
-                    append("Mức thấp ${formatNumber(report.mask.p10)}. ")
-                    append("Mức giữa ${formatNumber(report.mask.p50)}. ")
-                    append("Mức cao ${formatNumber(report.mask.p90)}. ")
-                    append("Lọc mạnh ${formatNumber(report.mask.belowPointFivePercent)} phần trăm. ")
-                    append("Gần như giữ nguyên ${formatNumber(report.mask.nearUnityPercent)} phần trăm.")
-                }
-            },
-        ) {
-            Text("Mức tác động của bộ lọc", modifier = Modifier.clearAndSetSemantics { })
-            Text(
-                "Trung bình ${formatNumber(report.mask.mean)} • thấp ${formatNumber(report.mask.p10)} • " +
-                    "giữa ${formatNumber(report.mask.p50)} • cao ${formatNumber(report.mask.p90)}",
-                modifier = Modifier.clearAndSetSemantics { },
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                "Lọc mạnh ${formatNumber(report.mask.belowPointFivePercent)}% • " +
-                    "gần như giữ nguyên ${formatNumber(report.mask.nearUnityPercent)}%",
-                modifier = Modifier.clearAndSetSemantics { },
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-@Composable
-private fun MetricsLine(label: String, metrics: VoiceCleanupAudioMetrics) {
-    val description = "$label. Âm lượng ${formatNullable(metrics.integratedLufs)} LUFS. " +
-        "Mức trung bình ${formatNullable(metrics.rmsDbfs)} dB. " +
-        "Đỉnh ${formatNullable(metrics.samplePeakDbfs)} dB. " +
-        "Đỉnh thực ${formatNullable(metrics.truePeakDbfs)} dB."
-    Column(
-        modifier = Modifier.semantics(mergeDescendants = true) { contentDescription = description },
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Text(label, modifier = Modifier.clearAndSetSemantics { })
-        Text(
-            "Âm lượng ${formatNullable(metrics.integratedLufs)} LUFS • " +
-                "trung bình ${formatNullable(metrics.rmsDbfs)} dB • " +
-                "đỉnh ${formatNullable(metrics.samplePeakDbfs)} dB • " +
-                "đỉnh thực ${formatNullable(metrics.truePeakDbfs)} dB",
-            modifier = Modifier.clearAndSetSemantics { },
-            style = MaterialTheme.typography.bodySmall,
-        )
-    }
+private fun buildVoiceCleanupResultChoices(
+    sourceUri: Uri?,
+    outputFile: File,
+): List<AudioResultChoice> = buildList {
+    sourceUri?.let { add(AudioResultChoice("source", "Gốc", it)) }
+    add(
+        AudioResultChoice(
+            id = "cleaned",
+            label = "Đã làm sạch",
+            uri = Uri.fromFile(outputFile),
+            outputFile = outputFile,
+        ),
+    )
 }
 
 private fun formatSigned(value: Float, unit: String): String =
     String.format(Locale.US, "%+.1f %s", value, unit)
-
-private fun formatNumber(value: Double): String = String.format(Locale.US, "%.2f", value)
-
-private fun formatNullable(value: Double?): String = value?.let(::formatNumber) ?: "không có"

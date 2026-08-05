@@ -28,19 +28,19 @@ enum class VoiceCleanupWindowMode(
         seconds = 10,
         segmentSamples = 10 * MossFormer2Dsp.SAMPLE_RATE,
         onePassLimitSamples = 10 * MossFormer2Dsp.SAMPLE_RATE,
-        minimumAvailableRamBytes = 1_536L * 1024L * 1024L,
+        minimumAvailableRamBytes = 1_024L * 1024L * 1024L,
     ),
     QUALITY_20S(
         seconds = 20,
         segmentSamples = 20 * MossFormer2Dsp.SAMPLE_RATE,
         onePassLimitSamples = 20 * MossFormer2Dsp.SAMPLE_RATE,
-        minimumAvailableRamBytes = 2_560L * 1024L * 1024L,
+        minimumAvailableRamBytes = 1_536L * 1024L * 1024L,
     ),
     MAXIMUM_30S(
         seconds = 30,
         segmentSamples = 30 * MossFormer2Dsp.SAMPLE_RATE,
         onePassLimitSamples = 30 * MossFormer2Dsp.SAMPLE_RATE,
-        minimumAvailableRamBytes = 4_096L * 1024L * 1024L,
+        minimumAvailableRamBytes = 2_048L * 1024L * 1024L,
     ),
     ;
 

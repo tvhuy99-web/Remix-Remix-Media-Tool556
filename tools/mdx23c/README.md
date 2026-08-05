@@ -7,6 +7,7 @@ Nguồn kiến trúc và config được khóa theo commit MSST `e247dfe4abc1f17
 ## Artifact dùng cá nhân đã xác minh
 
 - Release tag: `mdx23c-vocal-personal-v1`.
+- URL tải: `https://github.com/tvhuy99-web/Remix-Remix-Media-Tool556/releases/download/mdx23c-vocal-personal-v1/mdx23c-vocals-core.onnx`.
 - Tệp: `mdx23c-vocals-core.onnx`.
 - Kích thước: `448152790` byte.
 - SHA-256 ONNX: `8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb`.

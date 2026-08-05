@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONObject
 import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.pow
 
 /** Lưu các lựa chọn thân thiện; tham số kỹ thuật được suy ra từ preset phòng. */
 object SpatialAudioPreferences {
@@ -12,6 +13,7 @@ object SpatialAudioPreferences {
     private const val PREVIOUS_FINAL_KEY = "config_v3_final"
     private const val PREVIOUS_SIMPLE_KEY = "config_v2_simple"
     private const val LEGACY_KEY = "config_v1"
+    private const val REFLECTION_CURVE_EXPONENT = 1.6f
 
     fun load(context: Context): SpatialAudioConfig {
         val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -95,7 +97,7 @@ object SpatialAudioPreferences {
             .normalized()
     }
 
-    /** v3 stored technical wet directly from a 0..100% slider. Treat it as intent, not wet gain. */
+    /** v3 stored technical wet directly. Convert it back to friendly intent before applying the cap. */
     private fun parsePreviousFinal(raw: String): SpatialAudioConfig {
         val json = JSONObject(raw)
         val base = SpatialAudioConfig().withFriendlyTrajectory(
@@ -114,6 +116,7 @@ object SpatialAudioPreferences {
             "distance_m",
             max(base.startDistanceM, base.endDistanceM).toDouble(),
         ).toFloat()
+        val legacyWet = json.optDouble("reverb", 0.12).toFloat()
 
         return base
             .copy(
@@ -121,7 +124,7 @@ object SpatialAudioPreferences {
                 spatialBlend = json.optDouble("intensity", 0.85).toFloat(),
             )
             .withFriendlyDistance(distancePosition(distanceM))
-            .withFriendlyReflection(json.optDouble("reverb", 0.35).toFloat())
+            .withFriendlyReflection(legacyWetToReflectionPosition(legacyWet))
             .normalized()
     }
 
@@ -139,6 +142,7 @@ object SpatialAudioPreferences {
             .coerceIn(0f, 1f)
         val oldCycleSeconds = 18f - 15f * oldSpeedPosition
         val oldDistanceM = 0.8f + 3.2f * oldDistancePosition
+        val legacyWet = json.optDouble("reverb", 0.12).toFloat()
 
         return SpatialAudioConfig()
             .withFriendlyTrajectory(trajectory)
@@ -147,8 +151,14 @@ object SpatialAudioPreferences {
                 spatialBlend = json.optDouble("intensity", 0.85).toFloat(),
             )
             .withFriendlyDistance(distancePosition(oldDistanceM))
-            .withFriendlyReflection(json.optDouble("reverb", 0.35).toFloat())
+            .withFriendlyReflection(legacyWetToReflectionPosition(legacyWet))
             .normalized()
+    }
+
+    private fun legacyWetToReflectionPosition(legacyWet: Float): Float {
+        val maxWet = SpatialRoomPreset.LISTENING_ROOM.acoustics.maxReflectionWet
+        val curved = (legacyWet / maxWet).coerceIn(0f, 1f)
+        return curved.pow(1f / REFLECTION_CURVE_EXPONENT)
     }
 
     private fun distancePosition(distanceM: Float): Float {

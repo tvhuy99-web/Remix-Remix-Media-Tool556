@@ -213,6 +213,8 @@ data class SpatialAudioConfig(
         ).normalized()
     }
 
+    fun fitToRoom(): SpatialAudioConfig = SpatialRoomTrajectoryPolicy.fit(normalized()).config
+
     fun friendlySpeedPosition(): Float =
         ((FRIENDLY_SPEED_MAX_SECONDS - cycleSeconds) /
             (FRIENDLY_SPEED_MAX_SECONDS - FRIENDLY_SPEED_MIN_SECONDS)).coerceIn(0f, 1f)
@@ -221,6 +223,47 @@ data class SpatialAudioConfig(
         cycleSeconds = FRIENDLY_SPEED_MAX_SECONDS -
             (FRIENDLY_SPEED_MAX_SECONDS - FRIENDLY_SPEED_MIN_SECONDS) * position.coerceIn(0f, 1f),
     ).normalized()
+
+    fun friendlyDistanceUpperBound(): Float =
+        SpatialRoomTrajectoryPolicy.maximumDistance(normalized())
+            .coerceIn(FRIENDLY_DISTANCE_MIN_M, FRIENDLY_DISTANCE_MAX_M)
+
+    fun roomAwareFriendlyDistancePosition(): Float {
+        val upperBound = friendlyDistanceUpperBound()
+        if (upperBound <= FRIENDLY_DISTANCE_MIN_M + 1e-4f) return 0f
+        val distance = max(startDistanceM, endDistanceM)
+            .coerceIn(FRIENDLY_DISTANCE_MIN_M, upperBound)
+        return (
+            ln((distance / FRIENDLY_DISTANCE_MIN_M).toDouble()) /
+                ln((upperBound / FRIENDLY_DISTANCE_MIN_M).toDouble())
+            ).toFloat().coerceIn(0f, 1f)
+    }
+
+    fun withRoomAwareFriendlyDistance(position: Float): SpatialAudioConfig {
+        val upperBound = friendlyDistanceUpperBound()
+        val distance = if (upperBound <= FRIENDLY_DISTANCE_MIN_M + 1e-4f) {
+            FRIENDLY_DISTANCE_MIN_M
+        } else {
+            (
+                FRIENDLY_DISTANCE_MIN_M *
+                    kotlin.math.exp(
+                        ln((upperBound / FRIENDLY_DISTANCE_MIN_M).toDouble()) *
+                            position.coerceIn(0f, 1f),
+                    ).toFloat()
+                ).coerceIn(FRIENDLY_DISTANCE_MIN_M, upperBound)
+        }
+        return when (trajectory) {
+            SpatialTrajectory.NEAR_FAR -> copy(
+                startDistanceM = max(FRIENDLY_DISTANCE_MIN_M, distance * NEAR_FAR_RATIO),
+                endDistanceM = distance,
+            )
+            SpatialTrajectory.FREE_DRIFT -> copy(
+                startDistanceM = max(FRIENDLY_DISTANCE_MIN_M, distance * FREE_DRIFT_NEAR_RATIO),
+                endDistanceM = distance,
+            )
+            else -> copy(startDistanceM = distance, endDistanceM = distance)
+        }.normalized().fitToRoom()
+    }
 
     fun friendlyDistancePosition(): Float {
         val distance = max(startDistanceM, endDistanceM)

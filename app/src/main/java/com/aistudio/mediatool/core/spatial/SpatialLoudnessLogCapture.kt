@@ -14,6 +14,10 @@ internal object SpatialLoudnessLogCapture {
             session.failStackTrace?.takeIf(String::isNotBlank)
                 ?: "FFmpeg loudness analysis failed: $returnCode"
         }
-        session.logsAsString.orEmpty()
+        session.logsAsString.orEmpty().also { logs ->
+            check(logs.contains("\"input_i\"")) {
+                "FFmpeg loudness analysis returned no loudnorm JSON"
+            }
+        }
     }
 }

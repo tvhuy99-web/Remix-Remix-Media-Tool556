@@ -16,6 +16,8 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTargetPeak = 0.89125094f;
 constexpr float kPeakCeilingDbfs = -1.0f;
+constexpr float kReflectionHeadroom = 0.70794578f;
+constexpr float kReflectionHeadroomDb = -3.0f;
 constexpr int kPayloadVersion = 1;
 constexpr const char* kTag = "MediaToolRoomSpatial";
 
@@ -953,7 +955,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
                                   rt60Low, rt60Mid, rt60High, eqLow, eqMid, eqHigh);
         }
         const float dryGain = reverbWet > 0.0f ? std::sqrt(1.0f - reverbWet) : 1.0f;
-        const float wetGain = reverbWet > 0.0f ? std::sqrt(reverbWet) : 0.0f;
+        const float wetGain = reverbWet > 0.0f ? std::sqrt(reverbWet) * kReflectionHeadroom : 0.0f;
         for (int i = 0; i < framesRead; ++i) {
             float pair[2]{};
             for (int channel = 0; channel < 2; ++channel) {
@@ -996,7 +998,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
         tailBinaural.spatialBlend = 1.0f;
         tailBinaural.hrtf = resources.hrtf;
         const float dryGain = reverbWet > 0.0f ? std::sqrt(1.0f - reverbWet) : 1.0f;
-        const float wetGain = reverbWet > 0.0f ? std::sqrt(reverbWet) : 0.0f;
+        const float wetGain = reverbWet > 0.0f ? std::sqrt(reverbWet) * kReflectionHeadroom : 0.0f;
         const int maximumTailBlocks = std::max(32, static_cast<int>(
             std::ceil((std::max({rt60Low, rt60Mid, rt60High, room.duration}) + 1.0f) *
                       sampleRate / frameSize)) + 16);
@@ -1171,6 +1173,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
          << ",\"reflection_bounces\":" << room.bounces
          << ",\"reflection_order\":" << room.order
          << ",\"reflection_duration_seconds\":" << room.duration
+         << ",\"reflection_headroom_db\":" << kReflectionHeadroomDb
          << ",\"true_effect_mix\":true}"
          ;
     return env->NewStringUTF(json.str().c_str());

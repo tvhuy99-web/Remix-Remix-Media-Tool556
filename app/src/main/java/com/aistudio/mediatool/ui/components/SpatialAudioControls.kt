@@ -13,6 +13,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -21,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.core.spatial.SpatialAudioConfig
 import com.aistudio.mediatool.core.spatial.SpatialRoomPreset
+import com.aistudio.mediatool.core.spatial.SpatialRoomTrajectoryPolicy
 import com.aistudio.mediatool.core.spatial.SpatialTrajectory
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -37,7 +39,11 @@ fun SpatialAudioControls(
     onClearSofa: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val value = config.normalized()
+    val roomFit = SpatialRoomTrajectoryPolicy.fit(config.normalized())
+    val value = roomFit.config
+    LaunchedEffect(roomFit.adjusted, value) {
+        if (roomFit.adjusted) onConfigChange(value)
+    }
     AccessibleCheckboxRow(
         checked = enabled,
         onCheckedChange = onEnabledChange,
@@ -69,7 +75,7 @@ fun SpatialAudioControls(
                     SpatialTrajectory.STATIC,
                 ),
                 entryLabel = { it.label },
-                onSelect = { onConfigChange(value.withFriendlyTrajectory(it)) },
+                onSelect = { onConfigChange(value.withFriendlyTrajectory(it).fitToRoom()) },
             )
 
             EnumDropdown(
@@ -77,7 +83,7 @@ fun SpatialAudioControls(
                 valueLabel = value.roomPreset.label,
                 entries = SpatialRoomPreset.entries.toList(),
                 entryLabel = { it.label },
-                onSelect = { onConfigChange(value.withRoomPreset(it)) },
+                onSelect = { onConfigChange(value.withRoomPreset(it).fitToRoom()) },
             )
 
             if (value.trajectory != SpatialTrajectory.STATIC) {
@@ -95,11 +101,13 @@ fun SpatialAudioControls(
                 )
             }
 
-            val distance = value.friendlyDistancePosition()
+            val distance = value.roomAwareFriendlyDistancePosition()
+            val distanceUpperBound = value.friendlyDistanceUpperBound()
             AccessibleSliderColumn(
-                label = "Độ xa ước tính • ${formatDistance(max(value.startDistanceM, value.endDistanceM))}",
+                label = "Độ xa ước tính • ${formatDistance(max(value.startDistanceM, value.endDistanceM))} " +
+                    "• tối đa ${formatDistance(distanceUpperBound)} trong không gian này",
                 value = distance,
-                onValueChange = { onConfigChange(value.withFriendlyDistance(it)) },
+                onValueChange = { onConfigChange(value.withRoomAwareFriendlyDistance(it)) },
                 valueRange = 0f..1f,
             )
 

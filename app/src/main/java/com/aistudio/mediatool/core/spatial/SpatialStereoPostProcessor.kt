@@ -36,7 +36,8 @@ internal data class SpatialStereoPostMetrics(
  */
 internal object SpatialStereoPostProcessor {
     private const val TARGET_PEAK = 0.89125094f
-    private const val MAX_SIDE_PRESERVATION = 0.40f
+    private const val MAX_SIDE_PRESERVATION = 0.45f
+    private const val MIN_SIDE_PRESERVATION = 0.22f
     private const val FRAMES_PER_BLOCK = 4_096
     private const val BYTES_PER_FRAME = 8
 
@@ -59,9 +60,11 @@ internal object SpatialStereoPostProcessor {
         output.delete()
 
         val distanceScale = distanceWidthScale(max(startDistanceM, endDistanceM))
-        val preservation = if (inputDualMono) 0f else {
-            MAX_SIDE_PRESERVATION * spatialBlend.coerceIn(0f, 1f) * distanceScale
-        }
+        val preservation = sidePreservation(
+            distanceM = max(startDistanceM, endDistanceM),
+            spatialBlend = spatialBlend,
+            inputDualMono = inputDualMono,
+        )
         if (preservation <= 1e-6f) {
             moveOrCopy(pointRenderedStereo, output)
             return SpatialStereoPostMetrics(
@@ -124,6 +127,17 @@ internal object SpatialStereoPostProcessor {
     internal fun distanceWidthScale(distanceM: Float): Float {
         val distance = distanceM.coerceAtLeast(0.8f)
         return (1f / (1f + 0.08f * (distance - 1f))).coerceIn(0.35f, 1f)
+    }
+
+    internal fun sidePreservation(
+        distanceM: Float,
+        spatialBlend: Float,
+        inputDualMono: Boolean,
+    ): Float {
+        if (inputDualMono) return 0f
+        val width = (MAX_SIDE_PRESERVATION * distanceWidthScale(distanceM))
+            .coerceAtLeast(MIN_SIDE_PRESERVATION)
+        return width * spatialBlend.coerceIn(0f, 1f)
     }
 
     private data class ScanResult(val peak: Float, val frames: Long)

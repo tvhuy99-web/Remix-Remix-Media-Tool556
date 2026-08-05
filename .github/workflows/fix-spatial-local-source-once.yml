@@ -1,0 +1,241 @@
+name: Apply Spatial Audio local-source fix once
+
+on:
+  push:
+    branches: [agent/spatial-audio-engine]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/spatial-audio-engine
+          fetch-depth: 0
+
+      - name: Patch Spatial Audio source handling and startup watchdog
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              return text.replace(old, new, 1)
+
+          engine_path = Path("app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioEngine.kt")
+          engine = engine_path.read_text()
+          engine = replace_once(engine, "import android.content.IntentFilter\n", "import android.content.IntentFilter\nimport android.net.Uri\n", "SpatialAudioEngine Uri import")
+          engine = replace_once(engine, "import android.os.Debug\n", "import android.os.Debug\nimport android.os.SystemClock\n", "SpatialAudioEngine SystemClock import")
+          engine = replace_once(engine, "        inputSaf: String,\n", "        inputUri: Uri,\n", "SpatialAudioEngine process parameter")
+          engine = replace_once(
+              engine,
+              '        val rendered = File(workDir, "rendered_binaural_stereo_48k.f32")\n',
+              '        val rendered = File(workDir, "rendered_binaural_stereo_48k.f32")\n        val localSource = File(workDir, "source_local.bin")\n',
+              "SpatialAudioEngine local source declaration",
+          )
+          engine = replace_once(
+              engine,
+              '        workDir.mkdirs()\n        output.delete()\n        val expectedDurationMs = if (preview) sourceDurationMs.coerceAtMost(10_000L) else sourceDurationMs\n',
+              '''        workDir.mkdirs()
+        output.delete()
+        val sourceId = DiagnosticRedactor.stableId(inputUri.toString())
+        val sourceCopyStartedAt = SystemClock.elapsedRealtime()
+        try {
+            withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(inputUri)?.use { input ->
+                    localSource.outputStream().buffered().use { outputStream ->
+                        input.copyTo(outputStream)
+                    }
+                } ?: error("Không mở được tệp nguồn Spatial Audio")
+            }
+            require(localSource.isFile && localSource.length() > 0L) {
+                "Tệp nguồn Spatial Audio cục bộ rỗng"
+            }
+            DiagnosticLogger.info(
+                component = TAG,
+                event = "spatial_source_materialized",
+                sessionId = taskId,
+                fields = mapOf(
+                    "source_id" to sourceId,
+                    "local_source_bytes" to localSource.length(),
+                    "copy_elapsed_ms" to SystemClock.elapsedRealtime() - sourceCopyStartedAt,
+                    "source_transport" to "content_uri_to_private_cache",
+                ),
+            )
+        } catch (error: Exception) {
+            DiagnosticLogger.error(
+                component = TAG,
+                event = "spatial_source_materialization_failed",
+                sessionId = taskId,
+                message = error.message,
+                fields = mapOf(
+                    "source_id" to sourceId,
+                    "copy_elapsed_ms" to SystemClock.elapsedRealtime() - sourceCopyStartedAt,
+                    "failure_type" to error.javaClass.name,
+                ),
+                error = error,
+            )
+            workDir.deleteRecursively()
+            emit(State.Error(error.message ?: "Không thể chuẩn bị tệp nguồn Spatial Audio"))
+            return@flow
+        }
+        val expectedDurationMs = if (preview) sourceDurationMs.coerceAtMost(10_000L) else sourceDurationMs
+''',
+              "SpatialAudioEngine source materialization block",
+          )
+          engine = replace_once(engine, 'probeAudio(inputSaf, taskId, "source")', 'probeAudio(localSource.absolutePath, taskId, "source")', "SpatialAudioEngine local probe")
+          engine = engine.replace('DiagnosticRedactor.stableId(inputSaf)', 'sourceId')
+          engine = replace_once(engine, 'append("-y -i \\\"").append(inputSaf).append("\\\" ")', 'append("-y -i \\\"").append(localSource.absolutePath).append("\\\" ")', "SpatialAudioEngine local decode input")
+          engine = replace_once(
+              engine,
+              '                expectedDurationMs = expectedDurationMs,\n            ) { progress, message -> emit(State.Progress(progress, message)) }\n',
+              '                expectedDurationMs = expectedDurationMs,\n                startupTimeoutMs = DECODE_STARTUP_TIMEOUT_MS,\n            ) { progress, message -> emit(State.Progress(progress, message)) }\n',
+              "SpatialAudioEngine decode startup timeout",
+          )
+          engine = replace_once(engine, '                inputSaf = inputSaf,\n', '                inputPath = localSource.absolutePath,\n', "SpatialAudioEngine encode local input")
+          engine = replace_once(
+              engine,
+              '        expectedDurationMs: Long,\n        onProgress: suspend (Float, String) -> Unit,\n',
+              '        expectedDurationMs: Long,\n        startupTimeoutMs: Long? = null,\n        onProgress: suspend (Float, String) -> Unit,\n',
+              "SpatialAudioEngine runFfmpeg timeout parameter",
+          )
+          engine = replace_once(
+              engine,
+              '        mediaEngine.executeFFmpegCommand(command, diagnosticPhase = phase).collect { state ->\n',
+              '''        mediaEngine.executeFFmpegCommand(
+            command = command,
+            diagnosticPhase = phase,
+            startupTimeoutMs = startupTimeoutMs,
+        ).collect { state ->
+''',
+              "SpatialAudioEngine pass startup timeout",
+          )
+          engine = replace_once(engine, '        inputSaf: String,\n        rendered: File,\n', '        inputPath: String,\n        rendered: File,\n', "SpatialAudioEngine encode signature")
+          engine = replace_once(engine, 'append("-i \\\"").append(inputSaf).append("\\\" ")', 'append("-i \\\"").append(inputPath).append("\\\" ")', "SpatialAudioEngine encode input path")
+          engine = replace_once(
+              engine,
+              '        private const val TAG = "SpatialAudioEngine"\n',
+              '        private const val TAG = "SpatialAudioEngine"\n        private const val DECODE_STARTUP_TIMEOUT_MS = 20_000L\n',
+              "SpatialAudioEngine timeout constant",
+          )
+          engine_path.write_text(engine)
+
+          media_path = Path("app/src/main/java/com/aistudio/mediatool/core/media/MediaEngine.kt")
+          media = media_path.read_text()
+          media = replace_once(media, 'import kotlinx.coroutines.channels.awaitClose\n', 'import kotlinx.coroutines.Job\nimport kotlinx.coroutines.channels.awaitClose\nimport kotlinx.coroutines.delay\n', "MediaEngine watchdog imports")
+          media = replace_once(media, 'import kotlinx.coroutines.flow.callbackFlow\n', 'import kotlinx.coroutines.flow.callbackFlow\nimport kotlinx.coroutines.launch\n', "MediaEngine launch import")
+          media = replace_once(
+              media,
+              '        diagnosticPhase: String = "media_command",\n    ): Flow<ExecutionState> = callbackFlow {\n',
+              '        diagnosticPhase: String = "media_command",\n        startupTimeoutMs: Long? = null,\n    ): Flow<ExecutionState> = callbackFlow {\n',
+              "MediaEngine startup timeout parameter",
+          )
+          media = replace_once(
+              media,
+              '                "command_adjustments" to sanitization.adjustments.sorted().joinToString(","),\n',
+              '                "command_adjustments" to sanitization.adjustments.sorted().joinToString(","),\n                "startup_timeout_ms" to startupTimeoutMs,\n',
+              "MediaEngine startup timeout diagnostic",
+          )
+          media = replace_once(media, '        var session: FFmpegSession? = null\n', '        var session: FFmpegSession? = null\n        var startupWatchdog: Job? = null\n', "MediaEngine watchdog variable")
+          media = replace_once(
+              media,
+              '                { completed ->\n                    if (!terminal.compareAndSet(false, true)) return@executeAsync\n',
+              '                { completed ->\n                    if (!terminal.compareAndSet(false, true)) return@executeAsync\n                    startupWatchdog?.cancel()\n',
+              "MediaEngine completion cancels watchdog",
+          )
+          media = replace_once(
+              media,
+              '                { statistics ->\n                    lastMediaTimeMs.set(statistics.time.toLong().coerceAtLeast(0L))\n                    lastOutputBytes.set(statistics.size.toLong().coerceAtLeast(0L))\n',
+              '''                { statistics ->
+                    lastMediaTimeMs.set(statistics.time.toLong().coerceAtLeast(0L))
+                    lastOutputBytes.set(statistics.size.toLong().coerceAtLeast(0L))
+                    if (lastMediaTimeMs.get() > 0L || lastOutputBytes.get() > 0L) {
+                        startupWatchdog?.cancel()
+                        startupWatchdog = null
+                    }
+''',
+              "MediaEngine statistics cancel watchdog",
+          )
+          media = replace_once(
+              media,
+              '            )\n            if (terminal.get()) session?.let { FFmpegKit.cancel(it.sessionId) }\n',
+              '''            )
+            startupWatchdog = startupTimeoutMs
+                ?.takeIf { it > 0L }
+                ?.let { timeoutMs ->
+                    launch {
+                        delay(timeoutMs)
+                        if (terminal.compareAndSet(false, true)) {
+                            val nativeSessionId = session?.sessionId
+                            session?.let { FFmpegKit.cancel(it.sessionId) }
+                            val message = "FFmpeg không bắt đầu đọc nguồn trong ${timeoutMs / 1_000L} giây"
+                            DiagnosticLogger.error(
+                                component = TAG,
+                                event = "ffmpeg_startup_timeout",
+                                sessionId = taskId,
+                                message = message,
+                                fields = mapOf(
+                                    "phase" to diagnosticPhase,
+                                    "command_id" to commandId,
+                                    "elapsed_ms" to SystemClock.elapsedRealtime() - startedAt,
+                                    "media_time_ms" to lastMediaTimeMs.get(),
+                                    "output_bytes" to lastOutputBytes.get(),
+                                    "ffmpeg_session_id" to nativeSessionId,
+                                    "startup_timeout_ms" to timeoutMs,
+                                ),
+                            )
+                            trySend(ExecutionState.Error(null, message, null))
+                            close()
+                        }
+                    }
+                }
+            if (terminal.get()) session?.let { FFmpegKit.cancel(it.sessionId) }
+''',
+              "MediaEngine startup watchdog",
+          )
+          media = replace_once(
+              media,
+              '        awaitClose {\n            if (terminal.compareAndSet(false, true)) {\n',
+              '        awaitClose {\n            startupWatchdog?.cancel()\n            if (terminal.compareAndSet(false, true)) {\n',
+              "MediaEngine awaitClose cancels watchdog",
+          )
+          media_path.write_text(media)
+
+          screen_path = Path("app/src/main/java/com/aistudio/mediatool/ui/screens/OtherScreen.kt")
+          screen = screen_path.read_text()
+          screen = replace_once(
+              screen,
+              '''                val inputSaf = mediaEngine.getSafParameter(sourceUri)
+                    ?: error("Không thể đọc tệp đã chọn")
+''',
+              '''                val inputSaf by lazy(kotlin.LazyThreadSafetyMode.NONE) {
+                    mediaEngine.getSafParameter(sourceUri)
+                        ?: error("Không thể đọc tệp đã chọn")
+                }
+''',
+              "OtherScreen lazy SAF",
+          )
+          screen = replace_once(screen, '                        inputSaf = inputSaf,\n', '                        inputUri = sourceUri,\n', "OtherScreen Spatial Audio URI")
+          screen_path.write_text(screen)
+
+          workflow = Path(".github/workflows/fix-spatial-local-source-once.yml")
+          workflow.unlink()
+          PY
+
+      - name: Commit fix to feature branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioEngine.kt \
+                  app/src/main/java/com/aistudio/mediatool/core/media/MediaEngine.kt \
+                  app/src/main/java/com/aistudio/mediatool/ui/screens/OtherScreen.kt \
+                  .github/workflows/fix-spatial-local-source-once.yml
+          git commit -m "Fix Spatial Audio SAF decode stall"
+          git push origin HEAD:agent/spatial-audio-engine

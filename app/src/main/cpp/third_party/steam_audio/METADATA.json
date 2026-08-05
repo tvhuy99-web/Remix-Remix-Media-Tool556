@@ -1,0 +1,12 @@
+{
+  "name": "Steam Audio SDK",
+  "version": "4.8.1",
+  "release_asset": "steamaudio_4.8.1.zip",
+  "release_url": "https://github.com/ValveSoftware/steam-audio/releases/download/v4.8.1/steamaudio_4.8.1.zip",
+  "archive_bytes": 181171027,
+  "archive_sha256": "4a0aa5ec1176f38f0b0993a37c2259d9e86f27e22d5e24f83ec4c3cb9a1d5449",
+  "header_sha256": "cfab67684fe1ed75a16bb9bccb81c31276b6fb3bad904073407db900045229e7",
+  "android_arm64_library_bytes": 21522384,
+  "android_arm64_library_sha256": "05b953634ad38fb6b1307cadd4d3be78e61c07205e38db958789ca14f4c70487",
+  "license": "Apache-2.0"
+}

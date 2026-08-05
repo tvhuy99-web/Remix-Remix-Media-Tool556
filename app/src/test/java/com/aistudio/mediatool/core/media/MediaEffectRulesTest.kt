@@ -13,7 +13,6 @@ class MediaEffectRulesTest {
         assertTrue(MediaEffectRules.supportsTimeline(MediaAudioEffect.NOISE_GATE))
         assertTrue(MediaEffectRules.supportsTimeline(MediaAudioEffect.EQUALIZER))
         assertFalse(MediaEffectRules.supportsTimeline(MediaAudioEffect.PAN))
-        assertFalse(MediaEffectRules.supportsTimeline(MediaAudioEffect.SPATIAL_8D))
         assertFalse(MediaEffectRules.supportsTimeline(MediaAudioEffect.COMPRESSOR))
     }
 

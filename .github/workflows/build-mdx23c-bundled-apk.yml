@@ -1,9 +1,9 @@
 name: Build MDX23C bundled APK
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/mdx23c-vocal-onnx
+      - main
     paths:
       - app/**
       - .github/workflows/build-mdx23c-bundled-apk.yml
@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

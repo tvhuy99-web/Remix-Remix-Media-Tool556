@@ -42,7 +42,9 @@ class SpatialAudioEngine(
         preview: Boolean,
     ): Flow<State> = flow {
         val taskId = UUID.randomUUID().toString()
-        val value = config.normalized()
+        val normalizedConfig = config.normalized()
+        val roomFit = SpatialRoomTrajectoryPolicy.fit(normalizedConfig)
+        val value = roomFit.config
         val workDir = File(context.cacheDir, "spatial_${System.currentTimeMillis()}_${taskId.take(8)}")
         val localSource = File(workDir, "source_local.bin")
         val decoded = File(workDir, "decoded_stereo_48k.f32")
@@ -51,7 +53,25 @@ class SpatialAudioEngine(
         output.delete()
         val sourceId = DiagnosticRedactor.stableId(inputSaf)
         val expectedDurationMs = if (preview) sourceDurationMs.coerceAtMost(10_000L) else sourceDurationMs
-        val safeFilters = preFilters.filterNot { it.startsWith("alimiter=") }
+        val tailPolicy = SpatialTailPolicy.resolve(isVideoMode = isVideoMode, preview = preview)
+        val prefilterDecision = SpatialPrefilterPolicy.apply(preFilters)
+        val safeFilters = prefilterDecision.allowed
+        if (prefilterDecision.suppressed.isNotEmpty()) {
+            DiagnosticLogger.warn(
+                component = TAG,
+                event = "spatial_prefilters_suppressed",
+                sessionId = taskId,
+                fields = prefilterDecision.diagnosticFields(),
+            )
+        }
+        if (roomFit.adjusted) {
+            DiagnosticLogger.info(
+                component = TAG,
+                event = "spatial_room_trajectory_fitted",
+                sessionId = taskId,
+                fields = roomFit.diagnosticFields(),
+            )
+        }
         val sourceCopyStartedAt = SystemClock.elapsedRealtime()
         val materializedSource = try {
             emit(State.Progress(2f, "Đang chuẩn bị nguồn Spatial Audio cục bộ"))
@@ -94,14 +114,16 @@ class SpatialAudioEngine(
             component = TAG,
             event = "spatial_render_start",
             sessionId = taskId,
-            fields = value.diagnosticFields() + sourceInfo.diagnosticFields("source") + runtimeBefore + mapOf(
+            fields = value.diagnosticFields() + roomFit.diagnosticFields() +
+                prefilterDecision.diagnosticFields() + tailPolicy.diagnosticFields() +
+                sourceInfo.diagnosticFields("source") + runtimeBefore + mapOf(
                 "source_id" to sourceId,
                 "source_duration_ms" to sourceDurationMs,
                 "expected_duration_ms" to expectedDurationMs,
                 "preview" to preview,
                 "video_mode" to isVideoMode,
                 "mode_index" to modeIndex,
-                "pre_filter_count" to safeFilters.size,
+                "allowed_pre_filter_count" to safeFilters.size,
                 "requested_decode_channels" to 2,
                 "requested_decode_sample_rate" to 48_000,
                 "local_source_bytes" to materializedSource.bytes,
@@ -135,7 +157,7 @@ class SpatialAudioEngine(
 
             val decodedDurationMs = decoded.length() * 1_000L / (48_000L * 2L * 4L)
             val inputLoudness = analyzeLoudness(
-                command = "-hide_banner -f f32le -ar 48000 -ac 2 -i \"${decoded.absolutePath}\" " +
+                command = "-hide_banner -nostats -f f32le -ar 48000 -ac 2 -i \"${decoded.absolutePath}\" " +
                     "-af \"loudnorm=I=-16:TP=-1:LRA=11:print_format=json\" -f null -",
                 phase = "spatial_input_loudness",
                 taskId = taskId,
@@ -164,7 +186,8 @@ class SpatialAudioEngine(
                 component = TAG,
                 event = "spatial_native_complete",
                 sessionId = taskId,
-                fields = metrics.diagnosticFields() + nativeBefore + nativeAfter + mapOf(
+                fields = metrics.diagnosticFields() + roomFit.diagnosticFields() +
+                    nativeBefore + nativeAfter + mapOf(
                     "decoded_bytes" to decoded.length(),
                     "rendered_bytes" to rendered.length(),
                     "decoded_duration_ms" to decodedDurationMs,
@@ -196,7 +219,7 @@ class SpatialAudioEngine(
 
             emit(State.Progress(97f, "Đang đo loudness và true peak"))
             val outputLoudness = analyzeLoudness(
-                command = "-hide_banner -i \"${output.absolutePath}\" -map 0:a:0? " +
+                command = "-hide_banner -nostats -i \"${output.absolutePath}\" -map 0:a:0? " +
                     "-af \"loudnorm=I=-16:TP=-1:LRA=11:print_format=json\" -f null -",
                 phase = "spatial_output_loudness",
                 taskId = taskId,
@@ -221,7 +244,8 @@ class SpatialAudioEngine(
                 component = TAG,
                 event = "spatial_render_success",
                 sessionId = taskId,
-                fields = metrics.diagnosticFields() + inputLoudness.diagnosticFields("input") +
+                fields = metrics.diagnosticFields() + roomFit.diagnosticFields() +
+                    tailPolicy.diagnosticFields() + inputLoudness.diagnosticFields("input") +
                     outputLoudness.diagnosticFields("output") + qualityDelta + mapOf(
                         "output_bytes" to output.length(),
                         "output_extension" to extension,
@@ -317,15 +341,22 @@ class SpatialAudioEngine(
         command: String,
         phase: String,
         taskId: String,
-    ): LoudnessMetrics? = try {
-        val logs = runFfmpeg(
-            command = command,
-            phase = phase,
-            startPercent = 0f,
-            endPercent = 0f,
-            expectedDurationMs = 0L,
-        ) { _, _ -> }
-        parseLoudnorm(logs)
+    ): SpatialLoudnessReading? = try {
+        val logs = SpatialLoudnessLogCapture.execute(command)
+        SpatialLoudnessParser.parse(logs).also { reading ->
+            if (reading == null) {
+                DiagnosticLogger.warn(
+                    component = TAG,
+                    event = "spatial_loudness_parse_failed",
+                    sessionId = taskId,
+                    fields = mapOf(
+                        "phase" to phase,
+                        "log_chars" to logs.length,
+                        "contains_input_i" to logs.contains("\"input_i\""),
+                    ),
+                )
+            }
+        }
     } catch (error: Exception) {
         DiagnosticLogger.warn(
             component = TAG,
@@ -336,18 +367,6 @@ class SpatialAudioEngine(
             error = error,
         )
         null
-    }
-
-    private fun parseLoudnorm(logs: String): LoudnessMetrics? {
-        val block = LOUDNORM_JSON.findAll(logs).lastOrNull()?.value ?: return null
-        val json = JSONObject(block)
-        fun number(name: String): Double? = json.optString(name).toDoubleOrNull()?.takeIf(Double::isFinite)
-        return LoudnessMetrics(
-            integratedLufs = number("input_i"),
-            truePeakDbtp = number("input_tp"),
-            loudnessRangeLu = number("input_lra"),
-            thresholdLufs = number("input_thresh"),
-        )
     }
 
     private fun probeAudio(path: String, taskId: String, role: String): AudioProbeInfo = try {
@@ -399,8 +418,8 @@ class SpatialAudioEngine(
     }
 
     private fun qualityDeltaFields(
-        input: LoudnessMetrics?,
-        output: LoudnessMetrics?,
+        input: SpatialLoudnessReading?,
+        output: SpatialLoudnessReading?,
     ): Map<String, Any?> = mapOf(
         "integrated_loudness_delta_lu" to if (input?.integratedLufs != null && output?.integratedLufs != null) {
             output.integratedLufs - input.integratedLufs
@@ -429,6 +448,7 @@ class SpatialAudioEngine(
             append("-shortest -movflags +faststart ")
         } else {
             append("-f f32le -ar 48000 -ac 2 -i \"").append(rendered.absolutePath).append("\" ")
+            if (preview) append("-t 10 ")
             append("-vn ")
             append(audioEncodingArgs(extension))
         }
@@ -458,28 +478,6 @@ class SpatialAudioEngine(
             "${prefix}_duration_ms" to durationMs,
         )
     }
-
-    private data class LoudnessMetrics(
-        val integratedLufs: Double?,
-        val truePeakDbtp: Double?,
-        val loudnessRangeLu: Double?,
-        val thresholdLufs: Double?,
-    ) {
-        fun diagnosticFields(prefix: String): Map<String, Any?> = mapOf(
-            "${prefix}_integrated_lufs" to integratedLufs,
-            "${prefix}_true_peak_dbtp" to truePeakDbtp,
-            "${prefix}_loudness_range_lu" to loudnessRangeLu,
-            "${prefix}_loudness_threshold_lufs" to thresholdLufs,
-        )
-    }
-
-    private fun LoudnessMetrics?.diagnosticFields(prefix: String): Map<String, Any?> =
-        this?.diagnosticFields(prefix) ?: mapOf(
-            "${prefix}_integrated_lufs" to null,
-            "${prefix}_true_peak_dbtp" to null,
-            "${prefix}_loudness_range_lu" to null,
-            "${prefix}_loudness_threshold_lufs" to null,
-        )
 
     companion object {
         private const val TAG = "SpatialAudioEngine"

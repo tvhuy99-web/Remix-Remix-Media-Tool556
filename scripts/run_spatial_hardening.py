@@ -24,3 +24,4 @@ for index, line in enumerate(lines):
 
 patch.write_text("\n".join(lines) + "\n", encoding="utf-8")
 subprocess.run([sys.executable, str(patch)], check=True)
+subprocess.run([sys.executable, str(Path(__file__).with_name("patch_spatial_compat.py"))], check=True)

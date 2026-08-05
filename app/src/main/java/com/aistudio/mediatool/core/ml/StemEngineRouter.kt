@@ -5,7 +5,7 @@ import android.net.Uri
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 
-/** Keeps the stable ONNX waveform path isolated from the experimental MDX LiteRT path. */
+/** Routes waveform and spectrogram-core models without leaking backend details into the UI. */
 class StemEngineRouter(
     context: Context,
     modelFile: File,
@@ -22,7 +22,9 @@ class StemEngineRouter(
                 mdxDelegate = null
             }
 
-            StemInferenceBackend.MDX_LITERT -> {
+            StemInferenceBackend.MDX_LITERT,
+            StemInferenceBackend.MDX_ONNX,
+            -> {
                 onnxDelegate = null
                 mdxDelegate = MdxAudioSeparator(context, modelFile, model, taskId)
             }

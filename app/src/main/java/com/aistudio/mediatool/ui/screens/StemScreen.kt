@@ -294,15 +294,13 @@ fun StemScreen(onNavigateBack: () -> Unit) {
                             },
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        Text(
-                            if (mdxDenoiseEnabled) {
-                                "Chạy hai lượt đối xứng để giảm nhiễu, thời gian xử lý gần gấp đôi."
-                            } else {
-                                "Một lượt xử lý, nhanh hơn và dùng ít điện hơn."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        if (mdxDenoiseEnabled) {
+                            Text(
+                                "Chạy hai lượt đối xứng để giảm nhiễu, thời gian xử lý gần gấp đôi.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
 
                     StemDownloadSection(

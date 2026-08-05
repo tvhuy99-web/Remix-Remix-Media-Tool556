@@ -1,0 +1,166 @@
+name: Cleanup Actions storage and publish Room-aware APK
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: actions-storage-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup-and-publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'agent/actions-storage-cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Delete all Actions artifacts and caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+
+          artifacts_json="$(gh api --paginate --slurp "repos/$REPO/actions/artifacts?per_page=100")"
+          artifact_count="$(jq '[.[].artifacts[]?] | length' <<<"$artifacts_json")"
+          artifact_bytes="$(jq '[.[].artifacts[]?.size_in_bytes] | add // 0' <<<"$artifacts_json")"
+          while IFS= read -r artifact_id; do
+            [ -z "$artifact_id" ] || gh api --method DELETE "repos/$REPO/actions/artifacts/$artifact_id"
+          done < <(jq -r '.[].artifacts[]?.id' <<<"$artifacts_json")
+
+          caches_json="$(gh api --paginate --slurp "repos/$REPO/actions/caches?per_page=100")"
+          cache_count="$(jq '[.[].actions_caches[]?] | length' <<<"$caches_json")"
+          cache_bytes="$(jq '[.[].actions_caches[]?.size_in_bytes] | add // 0' <<<"$caches_json")"
+          while IFS= read -r cache_id; do
+            [ -z "$cache_id" ] || gh api --method DELETE "repos/$REPO/actions/caches/$cache_id"
+          done < <(jq -r '.[].actions_caches[]?.id' <<<"$caches_json")
+
+          remaining_artifacts="$(gh api --paginate --slurp "repos/$REPO/actions/artifacts?per_page=100" --jq '[.[].artifacts[]?] | length')"
+          remaining_caches="$(gh api --paginate --slurp "repos/$REPO/actions/caches?per_page=100" --jq '[.[].actions_caches[]?] | length')"
+          test "$remaining_artifacts" -eq 0
+          test "$remaining_caches" -eq 0
+
+          {
+            echo "## Actions storage cleanup"
+            echo
+            echo "- Artifacts deleted: $artifact_count"
+            echo "- Artifact bytes deleted: $artifact_bytes"
+            echo "- Caches deleted: $cache_count"
+            echo "- Cache bytes deleted: $cache_bytes"
+            echo "- Remaining artifacts: $remaining_artifacts"
+            echo "- Remaining caches: $remaining_caches"
+            echo
+            echo "GitHub may take 6–12 hours to recalculate the Actions storage quota."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout latest Room-aware source
+        uses: actions/checkout@v4
+        with:
+          ref: agent/room-aware-spatial-audio-phase-1c
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Restore stable CI signing key
+        run: |
+          base64 --decode .ci/mediatool-ci-debug.keystore.b64 > .ci/mediatool-ci-debug.keystore
+          keytool -list \
+            -keystore .ci/mediatool-ci-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey >/dev/null
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+          cache-disabled: true
+
+      - name: Verify project
+        run: python3 scripts/verify_project.py
+
+      - name: Build and test Room-aware APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug lintDebug testDebugUnitTest --stacktrace --no-build-cache
+
+      - name: Inspect and verify APK
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          python3 scripts/inspect_apks.py "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libphonon.so'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libmediatool_spatial.so'
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+      - name: Publish verified APK to one Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          SHORT_SHA="${SOURCE_SHA:0:7}"
+          TAG="room-aware-spatial-audio-pr30-latest"
+          APK_NAME="MediaTool-room-aware-pr30-latest.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$APK_NAME"
+          APK_BYTES="$(stat -c '%s' "$APK_NAME")"
+          APK_SHA256="$(sha256sum "$APK_NAME" | cut -d' ' -f1)"
+
+          existing_release_id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+          if [ -n "$existing_release_id" ]; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$existing_release_id"
+          fi
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1 || true
+
+          cat > room-aware-release-notes.md <<EOF
+          APK kiểm thử Room-aware Spatial Audio mới nhất từ PR #30.
+
+          Source branch: agent/room-aware-spatial-audio-phase-1c
+          Source commit: ${SOURCE_SHA}
+          Dung lượng: ${APK_BYTES} byte
+          SHA-256: ${APK_SHA256}
+
+          Đã xác minh trong cùng workflow:
+          - Android/Kotlin build
+          - CMake/NDK ARM64
+          - libphonon.so và libmediatool_spatial.so trong APK
+          - chữ ký APK v2
+          - Android Lint
+          - toàn bộ unit test
+
+          Đây là debug APK để thử nghiệm trên thiết bị, chưa hợp nhất vào main.
+          EOF
+
+          gh release create "$TAG" \
+            --target "$SOURCE_SHA" \
+            --title "Room-aware Spatial Audio PR #30 • latest (${SHORT_SHA})" \
+            --notes-file room-aware-release-notes.md \
+            --draft \
+            --prerelease
+          gh release upload "$TAG" "$APK_NAME" --clobber
+
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          gh release download "$TAG" --pattern "$APK_NAME" --dir "$verify_dir"
+          downloaded_sha="$(sha256sum "$verify_dir/$APK_NAME" | cut -d' ' -f1)"
+          test "$downloaded_sha" = "$APK_SHA256"
+
+          {
+            echo "## Room-aware APK Draft Release"
+            echo
+            echo "- Tag: $TAG"
+            echo "- Asset: $APK_NAME"
+            echo "- Bytes: $APK_BYTES"
+            echo "- SHA-256: $APK_SHA256"
+            echo "- Download verification: passed"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

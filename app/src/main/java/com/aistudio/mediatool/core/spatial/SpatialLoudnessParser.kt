@@ -1,7 +1,5 @@
 package com.aistudio.mediatool.core.spatial
 
-import org.json.JSONObject
-
 internal data class SpatialLoudnessReading(
     val integratedLufs: Double?,
     val truePeakDbtp: Double?,
@@ -24,27 +22,34 @@ internal fun SpatialLoudnessReading?.diagnosticFields(prefix: String): Map<Strin
         "${prefix}_loudness_threshold_lufs" to null,
     )
 
-/** Extracts the last complete loudnorm JSON object without depending on FFmpeg log formatting. */
+/** Extracts the last complete loudnorm JSON object without Android JSON runtime dependencies. */
 internal object SpatialLoudnessParser {
+    private val numericValue = Regex(
+        """\"([a-zA-Z0-9_]+)\"\s*:\s*\"?([-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?)\"?""",
+    )
+
     fun parse(logs: String): SpatialLoudnessReading? {
         var result: SpatialLoudnessReading? = null
         for (block in jsonObjects(logs)) {
-            val json = runCatching { JSONObject(block) }.getOrNull() ?: continue
-            if (!json.has("input_i") || !json.has("input_tp")) continue
+            val values = numericValue.findAll(block).associate { match ->
+                match.groupValues[1] to match.groupValues[2]
+            }
+            if (!values.containsKey("input_i") || !values.containsKey("input_tp")) continue
             result = SpatialLoudnessReading(
-                integratedLufs = number(json, "input_i"),
-                truePeakDbtp = number(json, "input_tp"),
-                loudnessRangeLu = number(json, "input_lra"),
-                thresholdLufs = number(json, "input_thresh"),
+                integratedLufs = number(values, "input_i"),
+                truePeakDbtp = number(values, "input_tp"),
+                loudnessRangeLu = number(values, "input_lra"),
+                thresholdLufs = number(values, "input_thresh"),
             )
         }
         return result
     }
 
-    private fun number(json: JSONObject, name: String): Double? =
-        json.optString(name).toDoubleOrNull()?.takeIf(Double::isFinite)
+    private fun number(values: Map<String, String>, name: String): Double? =
+        values[name]?.toDoubleOrNull()?.takeIf(Double::isFinite)
 
-    private fun jsonObjects(text: String): Sequence<String> = sequence {
+    private fun jsonObjects(text: String): List<String> {
+        val objects = mutableListOf<String>()
         var start = -1
         var depth = 0
         var inString = false
@@ -71,11 +76,12 @@ internal object SpatialLoudnessParser {
                 '}' -> {
                     depth--
                     if (depth == 0) {
-                        yield(text.substring(start, index + 1))
+                        objects += text.substring(start, index + 1)
                         start = -1
                     }
                 }
             }
         }
+        return objects
     }
 }

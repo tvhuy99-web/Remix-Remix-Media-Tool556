@@ -41,8 +41,8 @@ jobs:
             [ -z "$cache_id" ] || gh api --method DELETE "repos/$REPO/actions/caches/$cache_id"
           done < <(jq -r '.[].actions_caches[]?.id' <<<"$caches_json")
 
-          remaining_artifacts="$(gh api --paginate --slurp "repos/$REPO/actions/artifacts?per_page=100" --jq '[.[].artifacts[]?] | length')"
-          remaining_caches="$(gh api --paginate --slurp "repos/$REPO/actions/caches?per_page=100" --jq '[.[].actions_caches[]?] | length')"
+          remaining_artifacts="$(gh api --paginate --slurp "repos/$REPO/actions/artifacts?per_page=100" | jq '[.[].artifacts[]?] | length')"
+          remaining_caches="$(gh api --paginate --slurp "repos/$REPO/actions/caches?per_page=100" | jq '[.[].actions_caches[]?] | length')"
           test "$remaining_artifacts" -eq 0
           test "$remaining_caches" -eq 0
 

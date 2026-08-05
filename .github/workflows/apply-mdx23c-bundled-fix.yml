@@ -1,15 +1,19 @@
 name: Apply MDX23C bundled fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/mdx23c-vocal-onnx
+      - main
     paths:
       - scripts/apply_mdx23c_bundled_fix.py
       - .github/workflows/apply-mdx23c-bundled-fix.yml
 
 permissions:
   contents: write
+
+concurrency:
+  group: apply-mdx23c-bundled-fix
+  cancel-in-progress: true
 
 jobs:
   apply:

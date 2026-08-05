@@ -23,6 +23,7 @@ object StemModelRegistry {
         timeFrames = 256,
         overlapRatio = 0.10f,
         compensation = 1.0f,
+        supportsPolarityDenoise = true,
     )
 
     val uvrMdxVocFtLiteRt = StemModelDescriptor(

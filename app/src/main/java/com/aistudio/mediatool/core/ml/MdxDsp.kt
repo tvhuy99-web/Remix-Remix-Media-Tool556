@@ -5,7 +5,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.min
 
-/** Host-side STFT/iSTFT used by the UVR MDX-Net LiteRT graph. */
+/** Host-side STFT/iSTFT used by MDX-family learned spectrogram graphs. */
 internal class MdxDsp(private val contract: MdxSpectrogramContract) {
     private val n = contract.nFft
     private val hop = contract.hopLength
@@ -114,11 +114,11 @@ internal class MdxDsp(private val contract: MdxSpectrogramContract) {
 
     companion object {
         /** Reference trapezoid. Strictly positive at both outer edges. */
-        fun buildCrossfadeWindow(generatedFrames: Int, overlapFrames: Int): FloatArray {
+        fun buildCrossfadeWindow(generatedFrames: Int, fadeFrames: Int): FloatArray {
             require(generatedFrames > 0)
-            require(overlapFrames in 0 until generatedFrames)
-            if (overlapFrames == 0) return FloatArray(generatedFrames) { 1f }
-            val denominator = (overlapFrames + 1).toFloat()
+            require(fadeFrames in 0 until generatedFrames)
+            if (fadeFrames == 0) return FloatArray(generatedFrames) { 1f }
+            val denominator = (fadeFrames + 1).toFloat()
             return FloatArray(generatedFrames) { index ->
                 val up = (index + 1).toFloat() / denominator
                 val down = (generatedFrames - index).toFloat() / denominator

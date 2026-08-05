@@ -51,7 +51,6 @@ import com.aistudio.mediatool.core.ml.VoiceCleanupLoudnessMode
 import com.aistudio.mediatool.core.ml.VoiceCleanupService
 import com.aistudio.mediatool.core.ml.VoiceCleanupState
 import com.aistudio.mediatool.core.ml.VoiceCleanupWindowMode
-import com.aistudio.mediatool.ui.components.AccessibleSwitchRow
 import com.aistudio.mediatool.ui.components.AccessibleValueSlider
 import com.aistudio.mediatool.ui.components.AudioPreviewSource
 import com.aistudio.mediatool.ui.components.AudioResultChoice
@@ -90,7 +89,6 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
     var targetLufs by rememberSaveable { mutableFloatStateOf(-16f) }
     var outputGainDb by rememberSaveable { mutableFloatStateOf(0f) }
     var limiterEnabled by rememberSaveable { mutableStateOf(true) }
-    var limiterCeilingDb by rememberSaveable { mutableFloatStateOf(-1f) }
     var resultSelectionId by rememberSaveable { mutableStateOf("source") }
     var progress by remember { mutableFloatStateOf(0f) }
     var phase by remember { mutableStateOf("Sẵn sàng") }
@@ -107,7 +105,7 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
         targetLufs = targetLufs,
         outputGainDb = outputGainDb,
         limiterEnabled = limiterEnabled,
-        limiterCeilingDb = limiterCeilingDb,
+        limiterCeilingDb = -1f,
     )
 
     LaunchedEffect(Unit) {
@@ -207,22 +205,14 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
 
     val downloadedModel = (downloadState as? DownloadState.Success)?.file
     val windowOptions = listOf(
-        "Cân bằng – 10 giây (mặc định)",
-        "Chất lượng cao – 20 giây",
-        "Tối đa – 30 giây",
+        "Cân bằng · 10 giây",
+        "Chất lượng cao · 20 giây",
+        "Tối đa · 30 giây",
     )
     val windowIndex = when (windowMode) {
         VoiceCleanupWindowMode.BALANCED_10S -> 0
         VoiceCleanupWindowMode.QUALITY_20S -> 1
         VoiceCleanupWindowMode.MAXIMUM_30S -> 2
-    }
-    val windowHint = when (windowMode) {
-        VoiceCleanupWindowMode.BALANCED_10S ->
-            "Cân bằng giữa ngữ cảnh, tốc độ và bộ nhớ; phù hợp cho phần lớn điện thoại cao cấp."
-        VoiceCleanupWindowMode.QUALITY_20S ->
-            "Ngữ cảnh dài hơn để giữ câu nói liền mạch, cần nhiều RAM và thời gian xử lý hơn."
-        VoiceCleanupWindowMode.MAXIMUM_30S ->
-            "Ngữ cảnh dài nhất, dành cho điện thoại rất mạnh; cần theo dõi nhiệt và bộ nhớ."
     }
     val strengthHint = when (cleanupStrengthPercent) {
         in 1..35 -> "Tự nhiên"
@@ -324,23 +314,13 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Text(
-                        windowHint,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                     AccessibleValueSlider(
                         label = "Mức làm sạch",
-                        valueDescription = "$cleanupStrengthPercent% • $strengthHint",
+                        valueDescription = "$cleanupStrengthPercent% · $strengthHint",
                         value = cleanupStrength,
                         valueRange = 1f..100f,
                         steps = 98,
                         onValueChange = { cleanupStrength = it.roundToInt().toFloat() },
-                    )
-                    Text(
-                        "100% dùng toàn bộ sức lọc của MossFormer2; mức thấp hơn giữ lại nhiều chi tiết giọng và âm nền hơn.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     CompactDropdown(
                         label = "Giữ âm lượng",
@@ -373,21 +353,13 @@ fun VoiceCleanupScreen(onNavigateBack: () -> Unit) {
                         steps = 47,
                         onValueChange = { outputGainDb = (it * 2f).roundToInt() / 2f },
                     )
-                    AccessibleSwitchRow(
+                    CompactDropdown(
                         label = "Chống vỡ tiếng",
-                        checked = limiterEnabled,
-                        onCheckedChange = { limiterEnabled = it },
+                        values = listOf("Tắt", "Bật"),
+                        selectedIndex = if (limiterEnabled) 1 else 0,
+                        onSelected = { limiterEnabled = it == 1 },
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                    if (limiterEnabled) {
-                        AccessibleValueSlider(
-                            label = "Mức âm lượng cao nhất",
-                            valueDescription = String.format(Locale.US, "%.1f dB", limiterCeilingDb),
-                            value = limiterCeilingDb,
-                            valueRange = -6f..-0.5f,
-                            steps = 10,
-                            onValueChange = { limiterCeilingDb = (it * 2f).roundToInt() / 2f },
-                        )
-                    }
                 }
 
                 serviceError?.let {

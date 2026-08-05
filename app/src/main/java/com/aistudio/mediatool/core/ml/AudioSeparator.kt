@@ -404,6 +404,7 @@ class AudioSeparator(
         var outputsCommitted = false
 
         val is4StemMode = model.mode == StemMode.FOUR_STEM
+        val seamFrames = mutableListOf<Long>()
 
         logInfo(
             event = "pipeline_start",
@@ -688,6 +689,9 @@ class AudioSeparator(
                             break
                         }
                         if (actualFramesRead == 0 && isFirstChunk) break
+                        if (!isFirstChunk) {
+                            seamFrames += chunkIndex.toLong() * stepSize.toLong()
+                        }
 
                         if (!isFirstChunk) {
                             System.arraycopy(chunkBufferFloat, stepSize * channels, chunkBufferFloat, 0, overlapSize * channels)
@@ -980,17 +984,65 @@ class AudioSeparator(
                 }
             }
 
+            val activeJob = coroutineContext[kotlinx.coroutines.Job]
+            if (!is4StemMode) {
+                StemPcmToolkit.createResidual(
+                    mixFile = inferencePcm,
+                    vocalsFile = tempRawVocals,
+                    destination = tempRawMusic,
+                    channels = channels,
+                    cancellationCheck = {
+                        if (activeJob?.isActive == false) {
+                            throw CancellationException("Đã hủy xử lý")
+                        }
+                    },
+                )
+                logInfo(
+                    event = "two_stem_residual_complete",
+                    fields = mapOf("pcm_bytes" to tempRawMusic.length()),
+                )
+            }
+
+            val qualityStemFiles = linkedMapOf(
+                "vocals" to tempRawVocals,
+                "music" to tempRawMusic,
+            ).apply {
+                if (is4StemMode) {
+                    put("drums", tempRawDrums)
+                    put("bass", tempRawBass)
+                    put("other", tempRawOther)
+                }
+            }
+            val qualityStartedAt = SystemClock.elapsedRealtime()
+            val qualityReport = StemPcmToolkit.analyze(
+                referenceMix = inferencePcm,
+                stemFiles = qualityStemFiles,
+                reconstructionStemNames = if (is4StemMode) {
+                    setOf("vocals", "drums", "bass", "other")
+                } else {
+                    setOf("vocals", "music")
+                },
+                channels = channels,
+                seamFrames = seamFrames,
+            )
+            StemPcmToolkit.logDiagnostics(
+                component = TAG,
+                taskId = taskId,
+                modelId = model.id,
+                report = qualityReport,
+                analysisElapsedMs = SystemClock.elapsedRealtime() - qualityStartedAt,
+            )
+
             checkpoint("encoding", 0.90f)
             emit(SeparationState.Progress(0.9f))
 
             val ext = SettingsManager.getAudioFormatExt(context)
             val encodingArgs = SettingsManager.getAudioEncodingArgs(context)
-            val trimArgs = if (boundaryPaddingFrames > 0) {
-                val endSample = boundaryPaddingFrames.toLong() + originalFrames
-                "-af \"atrim=start_sample=$boundaryPaddingFrames:end_sample=$endSample,asetpts=N/SR/TB\""
-            } else {
-                ""
-            }
+            val outputFilterArgs = StemPcmToolkit.buildOutputFilterArguments(
+                trimStartFrames = boundaryPaddingFrames.toLong(),
+                trimFrameCount = originalFrames.takeIf { boundaryPaddingFrames > 0 },
+                sharedGainDb = qualityReport.sharedGainDb,
+            )
 
             val outVocals = FileExportManager.resultFile(context, "vocals", ext).also(createdOutputs::add)
             val outMusic = FileExportManager.resultFile(context, "music", ext).also(createdOutputs::add)
@@ -1002,8 +1054,8 @@ class AudioSeparator(
                 event = "encoding_start",
                 fields = mapOf("format" to ext, "stem_count" to model.mode.stemCount),
             )
-            val encVocalCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawVocals.absolutePath}\" $trimArgs $encodingArgs \"${outVocals.absolutePath}\""
-            val encMusicCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawMusic.absolutePath}\" $trimArgs $encodingArgs \"${outMusic.absolutePath}\""
+            val encVocalCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawVocals.absolutePath}\" $outputFilterArgs $encodingArgs \"${outVocals.absolutePath}\""
+            val encMusicCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawMusic.absolutePath}\" $outputFilterArgs $encodingArgs \"${outMusic.absolutePath}\""
 
             val res1 = executeFfmpeg(encVocalCmd, phase = "encode_vocals")
             val res2 = executeFfmpeg(encMusicCmd, phase = "encode_music")
@@ -1020,9 +1072,9 @@ class AudioSeparator(
                 outBass = bassTarget.also(createdOutputs::add)
                 outOther = otherTarget.also(createdOutputs::add)
 
-                val encDrumsCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawDrums.absolutePath}\" $trimArgs $encodingArgs \"${drumsTarget.absolutePath}\""
-                val encBassCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawBass.absolutePath}\" $trimArgs $encodingArgs \"${bassTarget.absolutePath}\""
-                val encOtherCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawOther.absolutePath}\" $trimArgs $encodingArgs \"${otherTarget.absolutePath}\""
+                val encDrumsCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawDrums.absolutePath}\" $outputFilterArgs $encodingArgs \"${drumsTarget.absolutePath}\""
+                val encBassCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawBass.absolutePath}\" $outputFilterArgs $encodingArgs \"${bassTarget.absolutePath}\""
+                val encOtherCmd = "-y -f f32le -ac $channels -ar $sampleRate -i \"${tempRawOther.absolutePath}\" $outputFilterArgs $encodingArgs \"${otherTarget.absolutePath}\""
                 
                 val resD = executeFfmpeg(encDrumsCmd, phase = "encode_drums")
                 val resB = executeFfmpeg(encBassCmd, phase = "encode_bass")
@@ -1043,6 +1095,7 @@ class AudioSeparator(
                     "output_count" to createdOutputs.size,
                     "output_bytes" to createdOutputs.sumOf(File::length),
                     "format" to ext,
+                    "shared_output_gain_db" to qualityReport.sharedGainDb,
                     "elapsed_ms" to SystemClock.elapsedRealtime() - pipelineStartedAt,
                 ),
             )

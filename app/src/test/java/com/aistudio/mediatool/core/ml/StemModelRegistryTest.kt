@@ -2,6 +2,7 @@ package com.aistudio.mediatool.core.ml
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertSame
 import org.junit.Test
 
@@ -15,10 +16,11 @@ class StemModelRegistryTest {
     }
 
     @Test
-    fun twoStemKeepsOnlyUvrAndDemucs() {
+    fun twoStemKeepsUvrAndDemucsChoices() {
         assertEquals(
             listOf(
                 StemModelRegistry.UVR_MDX_VOC_FT_LITERT_ID,
+                StemModelRegistry.DEMUCS_FT_VOCALS_SPECIALIST_ID,
                 StemModelRegistry.DEMUCS_2_STEM_LITE_ID,
             ),
             StemModelRegistry.modelsFor(StemMode.TWO_STEM).map { it.id },
@@ -49,13 +51,36 @@ class StemModelRegistryTest {
     }
 
     @Test
+    fun htdemucsFtVocalsContractMatchesPinnedOnnxGraph() {
+        val model = StemModelRegistry.demucsFtVocalsSpecialist
+
+        assertEquals(StemMode.TWO_STEM, model.mode)
+        assertEquals(AudioNormalization.NONE, model.normalization)
+        assertEquals(343_980, model.chunking.frames)
+        assertEquals(85_995, model.chunking.overlapFrames)
+        assertEquals(OverlapProfile.REFERENCE_LINEAR_WINDOW, model.chunking.overlapProfile)
+        assertEquals("mix", model.tensor.inputName)
+        assertEquals("stems", model.tensor.outputName)
+        assertEquals(4, model.tensor.sourceCount)
+        assertEquals(listOf(3), model.sources.vocals.sourceIndices)
+        assertEquals(listOf(0, 1, 2), model.sources.music.sourceIndices)
+        assertEquals(316_446_953L, model.modelSpec.expectedBytes)
+        assertEquals(
+            "8c5d5e2da1f27050240bb80236673307ee3b40d4b064066d9350f4d64bfd544d",
+            model.modelSpec.sha256,
+        )
+        assertNotEquals(StemModelRegistry.demucsTwoStemLite.modelSpec, model.modelSpec)
+    }
+
+    @Test
     fun demucsUsesCpuProviderOnly() {
+        val specialist = StemModelRegistry.demucsFtVocalsSpecialist
         val twoStem = StemModelRegistry.demucsTwoStemLite
         val fourStem = StemModelRegistry.demucsFourStem
 
         assertEquals(StemMode.TWO_STEM, twoStem.mode)
         assertEquals(fourStem.modelSpec, twoStem.modelSpec)
-        listOf(twoStem, fourStem).forEach { model ->
+        listOf(specialist, twoStem, fourStem).forEach { model ->
             assertEquals(setOf(OnnxAcceleration.CPU), model.allowedAccelerators)
             assertFalse(OnnxAcceleration.XNNPACK in model.allowedAccelerators)
         }

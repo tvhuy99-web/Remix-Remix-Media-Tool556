@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: apply-mdx23c-tuning-modes
+  cancel-in-progress: true
+
 jobs:
   apply:
     runs-on: ubuntu-latest

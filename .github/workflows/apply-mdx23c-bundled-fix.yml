@@ -32,13 +32,13 @@ jobs:
       - name: Verify generated source
         run: python3 scripts/verify_project.py
 
-      - name: Commit implementation
+      - name: Commit application changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app .github/workflows/build-mdx23c-bundled-apk.yml
+          git add app
           git diff --cached --check
-          git commit -m "Sửa tên và đóng gói MDX23C trong APK"
+          git commit -m "Sửa tên và cài MDX23C từ APK"
           git push origin HEAD:agent/mdx23c-vocal-onnx
 
-# Trigger synchronized PR run after temporarily targeting main.
+# The bundled-build workflow is written separately through the GitHub connector.

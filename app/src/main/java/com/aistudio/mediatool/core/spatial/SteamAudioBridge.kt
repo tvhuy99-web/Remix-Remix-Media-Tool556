@@ -18,15 +18,16 @@ object SteamAudioBridge {
         output.delete()
         val value = config.normalized()
         val room = RoomReflectionNativeSpec.balanced(value.roomPreset)
+        val diskBudget = SpatialDiskBudgetEstimator.requireCapacity(input, output, value)
         val response = nativeRenderRoomAware(
             inputPath = input.absolutePath,
             outputPath = output.absolutePath,
             sofaPath = value.customSofaPath.orEmpty(),
             sampleRate = SAMPLE_RATE,
             frameSize = value.frameSize,
-            trajectory = value.trajectory.ordinal,
-            interpolation = value.interpolation.ordinal,
-            motionMode = value.motionMode.ordinal,
+            trajectory = value.trajectory.nativeId,
+            interpolation = value.interpolation.nativeId,
+            motionMode = value.motionMode.nativeId,
             reflectionIntegerPayload = room.integerPayload(),
             reflectionFloatPayload = room.floatPayload(),
             startAzimuthDeg = value.startAzimuthDeg,
@@ -108,6 +109,9 @@ object SteamAudioBridge {
             reflectionOrder = json.optInt("reflection_order", room.order),
             reflectionDurationSeconds = json.float("reflection_duration_seconds", room.durationSeconds),
             trueEffectMix = json.optBoolean("true_effect_mix", false),
+            diskAdditionalRequiredBytes = diskBudget.additionalRequiredBytes,
+            diskUsableBytes = diskBudget.usableBytes,
+            diskGuardPassed = diskBudget.hasCapacity,
         )
     }
 
@@ -203,6 +207,9 @@ data class SpatialRenderMetrics(
     val reflectionOrder: Int,
     val reflectionDurationSeconds: Float,
     val trueEffectMix: Boolean,
+    val diskAdditionalRequiredBytes: Long,
+    val diskUsableBytes: Long,
+    val diskGuardPassed: Boolean,
 ) {
     fun diagnosticFields(): Map<String, Any?> = mapOf(
         "frames" to frames,
@@ -253,5 +260,8 @@ data class SpatialRenderMetrics(
         "reflection_order" to reflectionOrder,
         "reflection_duration_seconds" to reflectionDurationSeconds,
         "true_effect_mix" to trueEffectMix,
+        "disk_additional_required_bytes" to diskAdditionalRequiredBytes,
+        "disk_usable_bytes" to diskUsableBytes,
+        "disk_guard_passed" to diskGuardPassed,
     )
 }

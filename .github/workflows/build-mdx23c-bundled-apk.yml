@@ -69,11 +69,41 @@ jobs:
           test "$(unzip -p "$APK" assets/models/mdx23c-vocals-core.onnx | sha256sum | cut -d' ' -f1)" = \
             "8925ece1f0da006d342856f93e75ba2dea9058d44c286c4cd6a98a41c67367bb"
 
-      - name: Upload bundled APK
+      - name: Split APK for artifact transport
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p /tmp/mdx23c-apk-parts
+          sha256sum "$APK" | sed 's#  .*#  MediaTool-MDX23C-bundled-debug.apk#' \
+            > /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.sha256
+          stat -c '%s' "$APK" > /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.bytes
+          split -b 300M -d -a 2 "$APK" /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.part-
+          test -f /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.part-00
+          test -f /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.part-01
+
+      - name: Upload APK part 00
         uses: actions/upload-artifact@v4
         with:
-          name: MediaTool-MDX23C-bundled-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: MediaTool-MDX23C-bundled-part-00
+          path: /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.part-00
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+
+      - name: Upload APK part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaTool-MDX23C-bundled-part-01
+          path: /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.part-01
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload APK checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaTool-MDX23C-bundled-checksum
+          path: |
+            /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.sha256
+            /tmp/mdx23c-apk-parts/MediaTool-MDX23C-bundled-debug.apk.bytes
+          if-no-files-found: error
+          retention-days: 30

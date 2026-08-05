@@ -27,6 +27,9 @@ enum class StemInferenceBackend {
 
     /** MDX-Net learned spectrogram core executed by LiteRT; STFT/iSTFT stay in host code. */
     MDX_LITERT,
+
+    /** MDX-family learned spectrogram core executed by ONNX Runtime. */
+    MDX_ONNX,
 }
 
 enum class TensorAudioLayout {
@@ -60,7 +63,7 @@ enum class OverlapProfile {
     /** Equal-power complementary crossfade used by the legacy Demucs export. */
     COMPLEMENTARY_SINE,
 
-    /** Window/counter normalization used by the reference Mel-Band RoFormer inference. */
+    /** Window/counter normalization used by reference spectrogram-model inference. */
     REFERENCE_LINEAR_WINDOW,
 }
 
@@ -90,10 +93,10 @@ data class TensorContract(
 )
 
 /**
- * Static host-DSP contract for an MDX-Net LiteRT graph.
+ * Static host-DSP contract for an MDX-family learned spectrogram graph.
  *
- * The graph sees only the learned complex-as-channels spectrogram core. Audio framing, periodic Hann
- * STFT, inverse STFT and overlap-add are implemented by [MdxAudioSeparator].
+ * The graph sees only complex-as-channels spectrograms. Audio framing, periodic Hann STFT, inverse
+ * STFT, boundary padding and overlap-add are implemented by [MdxAudioSeparator].
  */
 data class MdxSpectrogramContract(
     val nFft: Int,
@@ -102,22 +105,29 @@ data class MdxSpectrogramContract(
     val timeFrames: Int,
     val overlapRatio: Float,
     val compensation: Float = 1f,
+    val contributionTrimFrames: Int = nFft / 2,
+    val strideFramesOverride: Int? = null,
+    val windowFadeFramesOverride: Int? = null,
+    val reflectBoundaryFrames: Int = 0,
+    val supportsPolarityDenoise: Boolean = false,
 ) {
     /** Native waveform samples represented by one static MDX tensor. */
     val chunkFrames: Int = Math.multiplyExact(hopLength, timeFrames - 1)
 
-    /** center=True STFT trim on each side. */
+    /** center=True STFT padding removed by the host iSTFT. */
     val trimFrames: Int = nFft / 2
 
-    /** Central samples contributed by one model invocation after dropping both center trims. */
-    val generatedFrames: Int = chunkFrames - 2 * trimFrames
+    /** Samples contributed to the full-song overlap accumulator by one invocation. */
+    val generatedFrames: Int = chunkFrames - 2 * contributionTrimFrames
 
-    /** Fixed overlap stride used by the reference pipeline. */
-    val strideFrames: Int = (generatedFrames * (1f - overlapRatio))
-        .roundToInt()
-        .coerceIn(1, generatedFrames)
+    /** Fixed overlap stride used by the model's reference inference. */
+    val strideFrames: Int = strideFramesOverride
+        ?: (generatedFrames * (1f - overlapRatio)).roundToInt().coerceIn(1, generatedFrames)
 
     val overlapFrames: Int = generatedFrames - strideFrames
+
+    /** Linear edge ramp, independent from overlap for high-overlap MDX23C inference. */
+    val windowFadeFrames: Int = windowFadeFramesOverride ?: overlapFrames
 
     /** [1, 4, frequencyBins, timeFrames], float32 NCHW. */
     val tensorElements: Int = Math.multiplyExact(4, Math.multiplyExact(frequencyBins, timeFrames))
@@ -129,9 +139,14 @@ data class MdxSpectrogramContract(
             "MDX contract drops exactly the Nyquist bin: frequencyBins must equal nFft/2"
         }
         require(timeFrames >= 2)
-        require(overlapRatio >= 0f && overlapRatio < 0.5f)
+        require(overlapRatio >= 0f && overlapRatio < 1f)
         require(compensation.isFinite() && compensation > 0f)
+        require(contributionTrimFrames in 0 until chunkFrames / 2)
         require(generatedFrames > 0)
+        require(strideFramesOverride == null || strideFramesOverride in 1..generatedFrames)
+        require(strideFrames in 1..generatedFrames)
+        require(windowFadeFrames in 0 until generatedFrames)
+        require(reflectBoundaryFrames >= 0)
     }
 }
 
@@ -193,13 +208,25 @@ data class StemModelDescriptor(
                 require(OnnxAcceleration.CPU in allowedAccelerators) { "Mọi model ONNX phải có fallback CPU" }
             }
 
-            StemInferenceBackend.MDX_LITERT -> {
-                require(mode == StemMode.TWO_STEM) { "Pipeline MDX LiteRT hiện chỉ xuất vocals/instrumental" }
-                requireNotNull(mdx) { "Model MDX LiteRT phải có contract STFT" }
+            StemInferenceBackend.MDX_LITERT,
+            StemInferenceBackend.MDX_ONNX,
+            -> {
+                require(mode == StemMode.TWO_STEM) { "Pipeline MDX hiện chỉ xuất vocals/instrumental" }
+                requireNotNull(mdx) { "Model MDX phải có contract STFT" }
                 require(mdx.chunkFrames == chunking.frames) {
                     "ChunkingSpec.frames phải khớp chunkFrames của MDX"
                 }
                 require(tensor.sourceCount == 2) { "Descriptor MDX biểu diễn hai đầu ra vocals/instrumental" }
+                if (backend == StemInferenceBackend.MDX_ONNX) {
+                    require(OnnxAcceleration.CPU in allowedAccelerators) {
+                        "Model MDX ONNX phải có fallback CPU"
+                    }
+                    require(allowedAccelerators.all {
+                        it == OnnxAcceleration.CPU || it == OnnxAcceleration.XNNPACK
+                    }) {
+                        "MDX ONNX giai đoạn đầu chỉ cho phép CPU hoặc XNNPACK"
+                    }
+                }
             }
         }
     }

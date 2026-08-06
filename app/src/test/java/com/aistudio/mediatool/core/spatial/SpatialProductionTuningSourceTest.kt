@@ -1,12 +1,23 @@
 package com.aistudio.mediatool.core.spatial
 
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SpatialProductionTuningSourceTest {
     private val source by lazy {
         File("src/main/cpp/room_aware_spatial_jni.cpp").readText()
+    }
+
+    @Test
+    fun kotlinAndNativeRoomPayloadVersionsStayAligned() {
+        assertEquals(2, RoomReflectionNativeSpec.PAYLOAD_VERSION)
+        assertTrue(
+            source.contains(
+                "constexpr int kPayloadVersion = ${RoomReflectionNativeSpec.PAYLOAD_VERSION};",
+            ),
+        )
     }
 
     @Test

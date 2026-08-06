@@ -18,10 +18,6 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: spatial-room-production-fix
-  cancel-in-progress: false
-
 jobs:
   apply-and-verify:
     if: github.actor != 'github-actions[bot]'

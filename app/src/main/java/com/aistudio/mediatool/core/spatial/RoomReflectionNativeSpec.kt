@@ -60,7 +60,7 @@ data class RoomReflectionNativeSpec(
     }
 
     companion object {
-        const val PAYLOAD_VERSION = 1
+        const val PAYLOAD_VERSION = 2
         const val INTEGER_PAYLOAD_SIZE = 7
         const val FLOAT_PAYLOAD_SIZE = 20
 

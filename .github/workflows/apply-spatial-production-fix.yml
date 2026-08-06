@@ -7,6 +7,13 @@ on:
     paths:
       - scripts/apply_spatial_production_fix.py
       - .github/workflows/apply-spatial-production-fix.yml
+  pull_request:
+    branches:
+      - agent/spatial-room-presence-front-back-v3
+    types: [opened, synchronize, reopened]
+    paths:
+      - scripts/apply_spatial_production_fix.py
+      - .github/workflows/apply-spatial-production-fix.yml
 
 permissions:
   contents: write

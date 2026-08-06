@@ -1,0 +1,1 @@
+Temporary scope marker. The validation workflow removes only patch scaffolding; this file may be removed after CI verification.

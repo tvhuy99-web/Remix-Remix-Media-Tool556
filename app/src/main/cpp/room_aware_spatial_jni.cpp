@@ -21,9 +21,21 @@ constexpr float kReflectionHeadroomDb = -4.5f;
 constexpr float kObjectLateralCueDb = 4.5f;
 constexpr float kObjectAmbienceBedMin = 0.06f;
 constexpr float kObjectAmbienceBedMax = 0.14f;
-constexpr float kFrontDirectLowpassHz = 18000.0f;
-constexpr float kRearDirectLowpassHz = 6800.0f;
+constexpr float kFrontDirectLowpassHz = 19000.0f;
+constexpr float kRearDirectLowpassHz = 9200.0f;
+constexpr float kFrontPresenceHz = 2800.0f;
+constexpr float kFrontPresenceGain = 0.32f;
+constexpr float kRearNotchLowHz = 4200.0f;
+constexpr float kRearNotchHighHz = 9500.0f;
+constexpr float kRearNotchDepth = 0.62f;
+constexpr float kRearDirectAttenuation = 0.24f;
+constexpr float kRearWetBoost = 0.55f;
 constexpr float kReflectionLowpassHz = 9000.0f;
+constexpr float kEarlyReflectionLowpassHz = 7200.0f;
+constexpr float kEarlyReflectionMaxGain = 0.42f;
+constexpr float kEarlyReflectionMinDelaySeconds = 0.008f;
+constexpr float kEarlyReflectionMaxDelaySeconds = 0.060f;
+constexpr float kSpeedOfSoundMps = 343.0f;
 constexpr float kReflectionGateFloorDbfs = -62.0f;
 constexpr float kReflectionGateOpenDbfs = -42.0f;
 constexpr int kPayloadVersion = 1;
@@ -136,6 +148,7 @@ struct Resources {
     IPLAudioBuffer reflectionInput{};
     IPLAudioBuffer reflectionField{};
     IPLAudioBuffer reflectionStereo{};
+    IPLAudioBuffer earlyReflectionStereo{};
     bool sourceAdded = false;
     ReflectionMode reflectionMode = ReflectionMode::None;
     IPLReflectionEffectParams reflectionParams{};
@@ -145,8 +158,14 @@ struct Resources {
     long long reflectionSourceClamps = 0;
     long long reflectionSimulationMs = 0;
     float directLowpassState[2] = {0.0f, 0.0f};
+    float frontPresenceLowpassState[2] = {0.0f, 0.0f};
+    float rearNotchLowpassState[2] = {0.0f, 0.0f};
+    float rearNotchHighpassState[2] = {0.0f, 0.0f};
     float reflectionSendLowpassState = 0.0f;
     float reflectionWetLowpassState[2] = {0.0f, 0.0f};
+    float earlyReflectionLowpassState[2] = {0.0f, 0.0f};
+    std::vector<float> earlyReflectionDelay;
+    size_t earlyReflectionWriteIndex = 0u;
 
     ~Resources() {
         if (context) {
@@ -157,6 +176,7 @@ struct Resources {
             freeBuffer(reflectionInput);
             freeBuffer(reflectionField);
             freeBuffer(reflectionStereo);
+            freeBuffer(earlyReflectionStereo);
         }
         if (fallbackWetBinaural) iplBinauralEffectRelease(&fallbackWetBinaural);
         if (ambisonicsDecode) iplAmbisonicsDecodeEffectRelease(&ambisonicsDecode);
@@ -272,6 +292,112 @@ void filterReflectionStereo(Resources* resources, int frameSize, int sampleRate)
         }
     }
 }
+
+
+void clearBuffer(IPLAudioBuffer& buffer, int frameSize);
+
+float shapeFrontRearSample(Resources* resources, int channel, float sample,
+                           float frontAmount, float rearAmount, int sampleRate) {
+    const float presenceLow = lowpassSample(
+        sample, onePoleAlpha(kFrontPresenceHz, sampleRate),
+        &resources->frontPresenceLowpassState[channel]);
+    const float frontHigh = sample - presenceLow;
+    const float notchLow = lowpassSample(
+        sample, onePoleAlpha(kRearNotchLowHz, sampleRate),
+        &resources->rearNotchLowpassState[channel]);
+    const float notchHigh = lowpassSample(
+        sample, onePoleAlpha(kRearNotchHighHz, sampleRate),
+        &resources->rearNotchHighpassState[channel]);
+    const float rearBand = notchHigh - notchLow;
+    float shaped = sample + kFrontPresenceGain * frontAmount * frontHigh -
+        kRearNotchDepth * rearAmount * rearBand;
+    shaped = lowpassSample(
+        shaped,
+        onePoleAlpha(lerp(kFrontDirectLowpassHz, kRearDirectLowpassHz, rearAmount), sampleRate),
+        &resources->directLowpassState[channel]);
+    return shaped * (1.0f + 0.08f * frontAmount) *
+        (1.0f - kRearDirectAttenuation * rearAmount);
+}
+
+float roomMidReflectivity(const RoomSpec& room) {
+    const float absorption = (room.walls.mid + room.floor.mid + room.ceiling.mid) / 3.0f;
+    return std::max(0.10f, std::min(0.98f, 1.0f - absorption));
+}
+
+int earlyDelaySamples(float seconds, int sampleRate, size_t bufferSize) {
+    if (bufferSize < 2u) return 1;
+    const int requested = static_cast<int>(std::lround(seconds * sampleRate));
+    return std::max(1, std::min(static_cast<int>(bufferSize) - 1, requested));
+}
+
+float readEarlyDelay(const Resources* resources, int delaySamples) {
+    const size_t size = resources->earlyReflectionDelay.size();
+    if (size < 2u) return 0.0f;
+    const size_t delay = static_cast<size_t>(std::max(1, delaySamples));
+    const size_t index = (resources->earlyReflectionWriteIndex + size - delay % size) % size;
+    return resources->earlyReflectionDelay[index];
+}
+
+float earlyReflectionGain(const RoomSpec& room, float roomPresence) {
+    if (!room.enabled || roomPresence <= 1e-6f) return 0.0f;
+    const float reflectivityScale = lerp(0.58f, 1.0f, roomMidReflectivity(room));
+    return kEarlyReflectionMaxGain * smoothstep(roomPresence) * reflectivityScale;
+}
+
+bool renderEarlyReflectionBlock(Resources* resources, const RoomSpec& room, const Pose& pose,
+                                int framesRead, int frameSize, int sampleRate,
+                                float roomPresence) {
+    clearBuffer(resources->earlyReflectionStereo, frameSize);
+    const float gain = earlyReflectionGain(room, roomPresence);
+    if (gain <= 1e-6f || resources->earlyReflectionDelay.size() < 2u) return false;
+
+    const float sideBase = std::max(kEarlyReflectionMinDelaySeconds,
+        std::min(kEarlyReflectionMaxDelaySeconds, 0.78f * room.width / kSpeedOfSoundMps));
+    const float depthBase = std::max(kEarlyReflectionMinDelaySeconds,
+        std::min(kEarlyReflectionMaxDelaySeconds, 0.92f * room.depth / kSpeedOfSoundMps));
+    const float ceilingBase = std::max(kEarlyReflectionMinDelaySeconds,
+        std::min(0.035f, 1.15f * room.height / kSpeedOfSoundMps));
+    const int leftDelay = earlyDelaySamples(
+        sideBase * (1.0f + 0.16f * pose.direction.x), sampleRate,
+        resources->earlyReflectionDelay.size());
+    const int rightDelay = earlyDelaySamples(
+        sideBase * (1.0f - 0.16f * pose.direction.x), sampleRate,
+        resources->earlyReflectionDelay.size());
+    const int depthDelay = earlyDelaySamples(
+        depthBase * (1.0f - 0.10f * pose.direction.z), sampleRate,
+        resources->earlyReflectionDelay.size());
+    const int ceilingDelay = earlyDelaySamples(
+        ceilingBase * (1.0f - 0.08f * pose.direction.y), sampleRate,
+        resources->earlyReflectionDelay.size());
+    const float alpha = onePoleAlpha(kEarlyReflectionLowpassHz, sampleRate);
+    bool active = false;
+
+    for (int i = 0; i < framesRead; ++i) {
+        resources->earlyReflectionDelay[resources->earlyReflectionWriteIndex] =
+            resources->objectMono.data[0][i];
+        const float leftWall = readEarlyDelay(resources, leftDelay);
+        const float rightWall = readEarlyDelay(resources, rightDelay);
+        const float depthWall = readEarlyDelay(resources, depthDelay);
+        const float ceiling = readEarlyDelay(resources, ceilingDelay);
+        const float rawLeft = gain * (
+            0.52f * leftWall + 0.12f * rightWall +
+            0.20f * depthWall + 0.10f * ceiling);
+        const float rawRight = gain * (
+            0.12f * leftWall + 0.52f * rightWall +
+            0.20f * depthWall + 0.10f * ceiling);
+        const float left = lowpassSample(
+            rawLeft, alpha, &resources->earlyReflectionLowpassState[0]);
+        const float right = lowpassSample(
+            rawRight, alpha, &resources->earlyReflectionLowpassState[1]);
+        resources->earlyReflectionStereo.data[0][i] = left;
+        resources->earlyReflectionStereo.data[1][i] = right;
+        active = active || std::fabs(left) > 1e-7f || std::fabs(right) > 1e-7f;
+        resources->earlyReflectionWriteIndex =
+            (resources->earlyReflectionWriteIndex + 1u) % resources->earlyReflectionDelay.size();
+    }
+    return active;
+}
+
 
 IPLVector3 normalize(float x, float y, float z) {
     const float length = std::sqrt(x * x + y * y + z * z);
@@ -827,6 +953,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
     jfloat directivityPowerValue,
     jfloat sourceYawDegValue,
     jfloat reverbWetValue,
+    jfloat roomPresenceValue,
     jfloat reverbRt60LowValue,
     jfloat reverbRt60MidValue,
     jfloat reverbRt60HighValue,
@@ -867,7 +994,8 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
     const float directivityWeight = clampFinite(directivityWeightValue, 0.0f, 1.0f, 0.0f);
     const float directivityPower = clampFinite(directivityPowerValue, 1.0f, 8.0f, 1.0f);
     const float sourceYaw = clampFinite(sourceYawDegValue, -180.0f, 180.0f, 0.0f);
-    const float reverbWet = clampFinite(reverbWetValue, 0.0f, 0.49f, 0.12f);
+    const float reverbWet = clampFinite(reverbWetValue, 0.0f, 0.60f, 0.12f);
+    const float roomPresence = clampFinite(roomPresenceValue, 0.0f, 1.0f, 0.5f);
     const float rt60Low = clampFinite(reverbRt60LowValue, 0.1f, 10.0f, 0.7f);
     const float rt60Mid = clampFinite(reverbRt60MidValue, 0.1f, 10.0f, 0.6f);
     const float rt60High = clampFinite(reverbRt60HighValue, 0.1f, 10.0f, 0.45f);
@@ -920,10 +1048,16 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
         !allocateBuffer(&resources, 2, frameSize, &resources.inputBuffer, "Cấp input stereo", &steamError) ||
         !allocateBuffer(&resources, 1, frameSize, &resources.objectMono, "Cấp moving mono object", &steamError) ||
         !allocateBuffer(&resources, 1, frameSize, &resources.directBuffer, "Cấp direct mono", &steamError) ||
-        !allocateBuffer(&resources, 2, frameSize, &resources.directStereo, "Cấp binaural output", &steamError)) {
+        !allocateBuffer(&resources, 2, frameSize, &resources.directStereo, "Cấp binaural output", &steamError) ||
+        !allocateBuffer(&resources, 2, frameSize, &resources.earlyReflectionStereo,
+                        "Cấp early reflection stereo", &steamError)) {
         std::remove(tempPath.c_str());
         return errorJson(env, steamError);
     }
+
+    resources.earlyReflectionDelay.assign(
+        static_cast<size_t>(std::ceil(kEarlyReflectionMaxDelaySeconds * sampleRate)) + 2u,
+        0.0f);
 
     if (reverbWet > 0.0f) {
         bool initialized = false;
@@ -988,11 +1122,10 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
             2.0f / std::max(1e-6f, leftCue * leftCue + rightCue * rightCue));
         leftCue *= cueNormalization;
         rightCue *= cueNormalization;
+        const float frontAmount = std::max(0.0f, std::min(1.0f, -pose.direction.z));
         const float rearAmount = std::max(0.0f, std::min(1.0f, pose.direction.z));
-        const float rearDirectScale = 1.0f - 0.18f * rearAmount;
-        const float rearWetScale = 1.0f + 0.25f * rearAmount;
-        const float directAlpha = onePoleAlpha(
-            lerp(kFrontDirectLowpassHz, kRearDirectLowpassHz, rearAmount), sampleRate);
+        const float rearWetScale = 1.0f + kRearWetBoost * rearAmount;
+        const float earlyRearScale = 1.0f + 0.22f * rearAmount;
         clearBuffer(resources.directBuffer, frameSize);
         clearBuffer(resources.directStereo, frameSize);
         IPLDirectEffectParams directParams{};
@@ -1028,25 +1161,29 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
             renderReflectionBlock(&resources, room, pose, interpolation, framesRead, frameSize,
                                   sampleRate, rt60Low, rt60Mid, rt60High, eqLow, eqMid, eqHigh);
         }
+        renderEarlyReflectionBlock(
+            &resources, room, pose, framesRead, frameSize, sampleRate, roomPresence);
         const float dryGain = reverbWet > 0.0f ? std::sqrt(1.0f - reverbWet) : 1.0f;
         const float wetGain = reverbWet > 0.0f ? std::sqrt(reverbWet) * kReflectionHeadroom : 0.0f;
         for (int i = 0; i < framesRead; ++i) {
             const float originalLeft = resources.inputBuffer.data[0][i];
             const float originalRight = resources.inputBuffer.data[1][i];
             const float sourceSide = 0.5f * (originalLeft - originalRight);
-            const float directLeft = rearDirectScale * leftCue * lowpassSample(
-                resources.directStereo.data[0][i], directAlpha,
-                &resources.directLowpassState[0]);
-            const float directRight = rearDirectScale * rightCue * lowpassSample(
-                resources.directStereo.data[1][i], directAlpha,
-                &resources.directLowpassState[1]);
+            const float directLeft = leftCue * shapeFrontRearSample(
+                &resources, 0, resources.directStereo.data[0][i],
+                frontAmount, rearAmount, sampleRate);
+            const float directRight = rightCue * shapeFrontRearSample(
+                &resources, 1, resources.directStereo.data[1][i],
+                frontAmount, rearAmount, sampleRate);
             const float wetLeft = reverbWet > 0.0f
                 ? rearWetScale * resources.reflectionStereo.data[0][i] : 0.0f;
             const float wetRight = reverbWet > 0.0f
                 ? rearWetScale * resources.reflectionStereo.data[1][i] : 0.0f;
             const float processedLeft = dryGain * directLeft + wetGain * wetLeft +
+                earlyRearScale * resources.earlyReflectionStereo.data[0][i] +
                 ambienceBedGain * sourceSide;
-            const float processedRight = dryGain * directRight + wetGain * wetRight -
+            const float processedRight = dryGain * directRight + wetGain * wetRight +
+                earlyRearScale * resources.earlyReflectionStereo.data[1][i] -
                 ambienceBedGain * sourceSide;
             const float mixedLeft = (1.0f - effectiveSpatialBlend) * originalLeft +
                 effectiveSpatialBlend * processedLeft;
@@ -1089,11 +1226,10 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
             2.0f / std::max(1e-6f, tailLeftCue * tailLeftCue + tailRightCue * tailRightCue));
         tailLeftCue *= tailCueNormalization;
         tailRightCue *= tailCueNormalization;
+        const float tailFront = std::max(0.0f, std::min(1.0f, -tailPose.direction.z));
         const float tailRear = std::max(0.0f, std::min(1.0f, tailPose.direction.z));
-        const float tailDirectScale = 1.0f - 0.18f * tailRear;
-        const float tailWetScale = 1.0f + 0.25f * tailRear;
-        const float tailDirectAlpha = onePoleAlpha(
-            lerp(kFrontDirectLowpassHz, kRearDirectLowpassHz, tailRear), sampleRate);
+        const float tailWetScale = 1.0f + kRearWetBoost * tailRear;
+        const float tailEarlyScale = 1.0f + 0.22f * tailRear;
         IPLBinauralEffectParams tailBinaural{};
         tailBinaural.direction = tailPose.direction;
         tailBinaural.interpolation = interpolation == 0
@@ -1106,6 +1242,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
             std::ceil((std::max({rt60Low, rt60Mid, rt60High, room.duration}) + 1.0f) *
                       sampleRate / frameSize)) + 16);
         for (int block = 0; block < maximumTailBlocks; ++block) {
+            clearBuffer(resources.objectMono, frameSize);
             clearBuffer(resources.directBuffer, frameSize);
             clearBuffer(resources.directStereo, frameSize);
             bool hasDirect = false;
@@ -1121,21 +1258,27 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
             const bool hasReflection = reverbWet > 0.0f && renderReflectionTail(
                 &resources, room, tailPose, interpolation, frameSize, sampleRate,
                 rt60Low, rt60Mid, rt60High, eqLow, eqMid, eqHigh);
-            if (!hasDirect && !hasReflection) break;
+            const bool hasEarlyReflection = renderEarlyReflectionBlock(
+                &resources, room, tailPose, frameSize, frameSize, sampleRate, roomPresence);
+            if (!hasDirect && !hasReflection && !hasEarlyReflection) break;
             for (int i = 0; i < frameSize; ++i) {
                 float left = 0.0f;
                 float right = 0.0f;
                 if (hasDirect) {
-                    left += dryGain * tailDirectScale * tailLeftCue * lowpassSample(
-                        resources.directStereo.data[0][i], tailDirectAlpha,
-                        &resources.directLowpassState[0]);
-                    right += dryGain * tailDirectScale * tailRightCue * lowpassSample(
-                        resources.directStereo.data[1][i], tailDirectAlpha,
-                        &resources.directLowpassState[1]);
+                    left += dryGain * tailLeftCue * shapeFrontRearSample(
+                        &resources, 0, resources.directStereo.data[0][i],
+                        tailFront, tailRear, sampleRate);
+                    right += dryGain * tailRightCue * shapeFrontRearSample(
+                        &resources, 1, resources.directStereo.data[1][i],
+                        tailFront, tailRear, sampleRate);
                 }
                 if (hasReflection) {
                     left += wetGain * tailWetScale * resources.reflectionStereo.data[0][i];
                     right += wetGain * tailWetScale * resources.reflectionStereo.data[1][i];
+                }
+                if (hasEarlyReflection) {
+                    left += tailEarlyScale * resources.earlyReflectionStereo.data[0][i];
+                    right += tailEarlyScale * resources.earlyReflectionStereo.data[1][i];
                 }
                 left *= effectiveSpatialBlend;
                 right *= effectiveSpatialBlend;
@@ -1288,6 +1431,14 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
          << ",\"reflection_order\":" << room.order
          << ",\"reflection_duration_seconds\":" << room.duration
          << ",\"reflection_headroom_db\":" << kReflectionHeadroomDb
+         << ",\"room_presence\":" << roomPresence
+         << ",\"early_reflection_gain\":" << earlyReflectionGain(room, roomPresence)
+         << ",\"early_reflection_lowpass_hz\":" << kEarlyReflectionLowpassHz
+         << ",\"front_presence_gain\":" << kFrontPresenceGain
+         << ",\"rear_notch_depth\":" << kRearNotchDepth
+         << ",\"rear_notch_low_hz\":" << kRearNotchLowHz
+         << ",\"rear_notch_high_hz\":" << kRearNotchHighHz
+         << ",\"rear_wet_boost\":" << kRearWetBoost
          << ",\"effective_spatial_blend\":" << effectiveSpatialBlend
          << ",\"object_ambience_bed_gain\":" << ambienceBedGain
          << ",\"object_lateral_cue_db\":" << kObjectLateralCueDb

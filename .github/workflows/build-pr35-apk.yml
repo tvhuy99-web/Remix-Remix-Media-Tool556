@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - build/pr35-apk-4989257
+  pull_request:
+    branches:
+      - agent/spatial-room-production-fix
 
 permissions:
   contents: write
@@ -60,6 +63,7 @@ jobs:
           retention-days: 30
 
       - name: Publish prerelease APK
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

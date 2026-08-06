@@ -25,11 +25,14 @@ jobs:
           fetch-depth: 0
 
       - name: Apply deterministic room-presence patch
-        run: python3 scripts/patch_spatial_room_presence_v3.py
+        run: |
+          python3 scripts/fix_spatial_room_presence_forward_decl.py
+          python3 scripts/patch_spatial_room_presence_v3.py
 
       - name: Verify architecture markers
         run: |
           grep -q 'renderEarlyReflectionBlock' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'void clearBuffer(IPLAudioBuffer& buffer, int frameSize);' app/src/main/cpp/room_aware_spatial_jni.cpp
           grep -q 'kRearNotchDepth = 0.62f' app/src/main/cpp/room_aware_spatial_jni.cpp
           grep -q 'roomPresence = value.friendlyReflectionPosition()' app/src/main/java/com/aistudio/mediatool/core/spatial/SteamAudioBridge.kt
           grep -q 'REFLECTION_CURVE_EXPONENT = 1.25f' app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioConfig.kt

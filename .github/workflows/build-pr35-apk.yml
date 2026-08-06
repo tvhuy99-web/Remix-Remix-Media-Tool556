@@ -20,7 +20,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- pr35-apk-build-start:4989257 --> APK PR #35 đã bắt đầu build từ commit sản phẩm \`49892576e81f6616dd22f58f3e862f795b69946a\`. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- pr35-apk-release-start:4989257 --> Đang build và phát hành APK PR #35 trực tiếp qua GitHub Release từ commit sản phẩm \`49892576e81f6616dd22f58f3e862f795b69946a\`. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Checkout exact PR35 product commit
         uses: actions/checkout@v4
@@ -59,14 +59,6 @@ jobs:
           sha256sum "dist/$APK_NAME" | tee "dist/$APK_NAME.sha256"
           unzip -l "dist/$APK_NAME" | grep -E 'lib/arm64-v8a/(libphonon|libmediatool_spatial)\.so'
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: MediaTool-spatial-room-production-pr35-4989257
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 30
-
       - name: Publish prerelease APK
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,10 +72,10 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target 49892576e81f6616dd22f58f3e862f795b69946a \
             --title "Spatial Room Production PR #35 • 4989257" \
-            --notes "APK kiểm thử được build từ commit sản phẩm 49892576e81f6616dd22f58f3e862f795b69946a của PR #35. Đã chạy verify_project, unit tests, lintDebug, assembleDebug và kiểm tra hai native library arm64-v8a." \
+            --notes "APK kiểm thử được build từ commit sản phẩm 49892576e81f6616dd22f58f3e862f795b69946a của PR #35. Đã chạy verify_project, unit tests, lintDebug, assembleDebug và kiểm tra hai native library arm64-v8a. Phát hành trực tiếp qua Release vì Actions Artifact storage của repository đã đầy." \
             --prerelease
 
-      - name: Report successful APK build to PR35
+      - name: Report successful APK release to PR35
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -91,8 +83,8 @@ jobs:
           APK_NAME="MediaTool-spatial-room-production-pr35-4989257.apk"
           CHECKSUM="$(cut -d ' ' -f1 "dist/$APK_NAME.sha256")"
           cat > /tmp/pr35-apk-comment.md <<EOF
-          <!-- pr35-apk-build:4989257-final -->
-          ## APK PR #35 đã build thành công
+          <!-- pr35-apk-release:4989257-final -->
+          ## APK PR #35 đã build và phát hành thành công
 
           - Commit sản phẩm: \`49892576e81f6616dd22f58f3e862f795b69946a\`
           - Tệp: \`$APK_NAME\`
@@ -105,9 +97,9 @@ jobs:
           EOF
           gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body-file /tmp/pr35-apk-comment.md
 
-      - name: Report build failure to PR35
+      - name: Report release failure to PR35
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- pr35-apk-build-failed:4989257 --> APK PR #35 build thất bại. Xem workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- pr35-apk-release-failed:4989257 --> APK PR #35 chưa phát hành được. Xem workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

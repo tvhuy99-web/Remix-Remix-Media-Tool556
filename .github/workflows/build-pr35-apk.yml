@@ -16,6 +16,12 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Report build start to PR35
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- pr35-apk-build-start:4989257 --> APK PR #35 đã bắt đầu build từ commit sản phẩm \`49892576e81f6616dd22f58f3e862f795b69946a\`. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
       - name: Checkout exact PR35 product commit
         uses: actions/checkout@v4
         with:
@@ -98,3 +104,10 @@ jobs:
           Đã hoàn thành \`verify_project.py\`, unit tests, \`lintDebug\`, \`assembleDebug\` và kiểm tra \`libphonon.so\` cùng \`libmediatool_spatial.so\` trong APK.
           EOF
           gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body-file /tmp/pr35-apk-comment.md
+
+      - name: Report build failure to PR35
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- pr35-apk-build-failed:4989257 --> APK PR #35 build thất bại. Xem workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

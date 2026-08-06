@@ -1,0 +1,168 @@
+name: Finalize room presence v3
+
+on:
+  pull_request:
+    branches: [agent/spatial-object-renderer-v2]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: room-presence-v3-final-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    if: github.event.pull_request.head.ref == 'agent/spatial-room-presence-front-back-v3'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout latest tuning branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Settle earlier validation runs and refresh branch
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          sleep 30
+          git fetch origin "$BRANCH"
+          git reset --hard "origin/$BRANCH"
+
+      - name: Apply production patch if still pending
+        run: |
+          if grep -q 'kEarlyReflectionMaxGain = 0.34f' app/src/main/cpp/room_aware_spatial_jni.cpp; then
+            echo 'Production patch already committed.'
+          elif [ -f scripts/apply_room_presence_front_back_v3.py ]; then
+            python3 scripts/apply_room_presence_front_back_v3.py
+          else
+            echo 'Room presence patch is absent and its deterministic patcher is unavailable.' >&2
+            exit 1
+          fi
+
+      - name: Verify required production markers
+        run: |
+          grep -q 'renderEarlyReflectionSample' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'kEarlyReflectionMaxGain = 0.34f' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'kRearDirectLowpassHz = 4200.0f' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'kReflectionLowpassHz = 7200.0f' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'maxReflectionWet = 0.46f' app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialRoomPreset.kt
+          grep -q 'private const val REFLECTION_CURVE_EXPONENT = 1.25f' app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioConfig.kt
+          grep -q 'class SpatialRoomPresenceTuningTest' app/src/test/java/com/aistudio/mediatool/core/spatial/SpatialRoomPresenceTuningTest.kt
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore stable CI signing key
+        run: |
+          base64 --decode .ci/mediatool-ci-debug.keystore.b64 > .ci/mediatool-ci-debug.keystore
+          keytool -list -keystore .ci/mediatool-ci-debug.keystore -storepass android -alias androiddebugkey >/dev/null
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+
+      - name: Build, lint and unit test
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug lintDebug testDebugUnitTest --stacktrace --build-cache
+
+      - name: Inspect native payload and APK signature
+        run: |
+          APK='app/build/outputs/apk/debug/app-debug.apk'
+          python3 scripts/inspect_apks.py "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libphonon.so'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libmediatool_spatial.so'
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+      - name: Commit production files and purge temporary scaffolding
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main app/src/test docs/ROOM_PRESENCE_V3_TEST_NOTES.md 2>/dev/null || true
+          for path in \
+            .github/workflows/apply-room-presence-front-back-v3.yml \
+            .github/workflows/validate-publish-room-presence-v3.yml \
+            .github/workflows/finalize-room-presence-v3.yml \
+            .github/ROOM_PRESENCE_V3_SCOPE.txt \
+            scripts/apply_room_presence_front_back_v3.py \
+            scripts/patch_spatial_room_presence_v3.py \
+            docs/ROOM_PRESENCE_V3_IMPLEMENTATION.md \
+            docs/ROOM_PRESENCE_V3_CHANGELOG.md \
+            docs/ROOM_PRESENCE_V3_README.md \
+            docs/ROOM_PRESENCE_V3_DEVICE_CHECKLIST.md \
+            docs/ROOM_PRESENCE_V3_STATUS.md \
+            docs/ROOM_PRESENCE_V3_CI.md; do
+            if [ -e "$path" ]; then git rm -f "$path"; fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m 'Finalize clean room presence and front-back cues'
+            git push origin "HEAD:$BRANCH"
+          fi
+
+      - name: Publish and verify Draft Release APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          SHORT_SHA="${SOURCE_SHA:0:7}"
+          TAG='spatial-room-presence-v3-pr34-latest'
+          APK_NAME='MediaTool-room-presence-front-back-v3-pr34.apk'
+          cp app/build/outputs/apk/debug/app-debug.apk "$APK_NAME"
+          APK_BYTES="$(stat -c '%s' "$APK_NAME")"
+          APK_SHA256="$(sha256sum "$APK_NAME" | cut -d' ' -f1)"
+
+          existing_release_id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+          if [ -n "$existing_release_id" ]; then gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$existing_release_id"; fi
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1 || true
+
+          cat > release-notes.md <<EOF
+          APK kiểm thử Room Presence + Front/Back v3 từ PR #34.
+
+          Source commit: ${SOURCE_SHA}
+          Dung lượng: ${APK_BYTES} byte
+          SHA-256: ${APK_SHA256}
+
+          - early reflections xác định để tạo phòng mạnh nhưng sạch;
+          - late ray tail 7,2 kHz, gate chặt và 12.288 rays;
+          - room slider có trần và đường cong mới;
+          - front/back nằm ngang, rear spectral cue 4,2 kHz;
+          - debug APK, chưa merge vào main.
+          EOF
+
+          gh release create "$TAG" --target "$SOURCE_SHA" \
+            --title "Room Presence + Front/Back v3 PR #34 • latest (${SHORT_SHA})" \
+            --notes-file release-notes.md --draft --prerelease
+          gh release upload "$TAG" "$APK_NAME" --clobber
+
+          VERIFY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+          gh release download "$TAG" --pattern "$APK_NAME" --dir "$VERIFY_DIR"
+          DOWNLOADED_SHA="$(sha256sum "$VERIFY_DIR/$APK_NAME" | cut -d' ' -f1)"
+          test "$DOWNLOADED_SHA" = "$APK_SHA256"
+
+          gh pr comment "${{ github.event.pull_request.number }}" --body "Final v3 verification passed. Asset: \`$APK_NAME\`, bytes: \`$APK_BYTES\`, SHA-256: \`$APK_SHA256\`, source: \`$SOURCE_SHA\`."
+
+          {
+            echo '## Final Room Presence v3 APK'
+            echo "- Source: $SOURCE_SHA"
+            echo "- Asset: $APK_NAME"
+            echo "- Bytes: $APK_BYTES"
+            echo "- SHA-256: $APK_SHA256"
+            echo '- Download verification: passed'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

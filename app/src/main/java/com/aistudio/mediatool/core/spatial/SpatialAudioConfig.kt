@@ -352,7 +352,7 @@ data class SpatialAudioConfig(
             "decode_channels" to 2,
             "stereo_render_mode" to "preserve_or_upmix",
             "automatic_loudness_preservation" to true,
-            "room_model_version" to 1,
+            "room_model_version" to 2,
         )
     }
 
@@ -361,7 +361,7 @@ data class SpatialAudioConfig(
         const val FRIENDLY_SPEED_MAX_SECONDS = 30f
         const val FRIENDLY_DISTANCE_MIN_M = 0.8f
         const val FRIENDLY_DISTANCE_MAX_M = 20f
-        private const val REFLECTION_CURVE_EXPONENT = 1.6f
+        private const val REFLECTION_CURVE_EXPONENT = 1.25f
         private const val NEAR_FAR_RATIO = 0.45f
         private const val FREE_DRIFT_NEAR_RATIO = 0.6f
 

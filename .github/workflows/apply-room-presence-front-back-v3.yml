@@ -1,0 +1,85 @@
+name: Validate room presence and front-back v3
+
+on:
+  pull_request:
+    branches: [agent/spatial-object-renderer-v2]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: room-presence-v3-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  patch-build-test:
+    if: github.event.pull_request.head.ref == 'agent/spatial-room-presence-front-back-v3'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout tuning branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply deterministic tuning patch
+        run: python3 scripts/apply_room_presence_front_back_v3.py
+
+      - name: Verify architecture markers
+        run: |
+          grep -q 'renderEarlyReflectionSample' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'kEarlyReflectionMaxGain = 0.34f' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'kRearDirectLowpassHz = 4200.0f' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'kReflectionLowpassHz = 7200.0f' app/src/main/cpp/room_aware_spatial_jni.cpp
+          grep -q 'maxReflectionWet = 0.46f' app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialRoomPreset.kt
+          grep -q 'endElevationDeg = 0f' app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioConfig.kt
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore stable CI signing key
+        run: |
+          base64 --decode .ci/mediatool-ci-debug.keystore.b64 > .ci/mediatool-ci-debug.keystore
+          keytool -list \
+            -keystore .ci/mediatool-ci-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey >/dev/null
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+
+      - name: Build, lint and unit test
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug lintDebug testDebugUnitTest --stacktrace --build-cache
+
+      - name: Inspect APK native payload
+        run: |
+          python3 scripts/inspect_apks.py app/build/outputs/apk/debug/app-debug.apk
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/libphonon.so'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/libmediatool_spatial.so'
+
+      - name: Commit validated production changes and remove scaffolding
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main app/src/test
+          git rm -f .github/workflows/apply-room-presence-front-back-v3.yml || true
+          git rm -f scripts/apply_room_presence_front_back_v3.py || true
+          git rm -f scripts/patch_spatial_room_presence_v3.py || true
+          if git diff --cached --quiet; then
+            echo 'No validated changes to commit.'
+            exit 0
+          fi
+          git commit -m 'Strengthen clean room presence and front-back cues'
+          git push origin "HEAD:$BRANCH"

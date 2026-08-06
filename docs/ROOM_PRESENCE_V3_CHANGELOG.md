@@ -1,0 +1,5 @@
+- Increase useful room presence range.
+- Add deterministic clean early reflections.
+- Keep the ray-traced late tail darker and gated.
+- Strengthen rear spectral and wet cues.
+- Keep the friendly front/back path horizontal.

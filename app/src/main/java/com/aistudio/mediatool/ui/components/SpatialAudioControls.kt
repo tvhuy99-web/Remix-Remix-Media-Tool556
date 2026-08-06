@@ -119,8 +119,10 @@ fun SpatialAudioControls(
             )
 
             val reflection = value.friendlyReflectionPosition()
+            val reflectionWetPercent = (value.reverbWet * 100f).roundToInt()
             AccessibleSliderColumn(
-                label = "Phản xạ phòng • ${(reflection * 100f).roundToInt()}%",
+                label = "Phản xạ phòng • ${(reflection * 100f).roundToInt()}% " +
+                    "• mức trộn $reflectionWetPercent%",
                 value = reflection,
                 onValueChange = { onConfigChange(value.withFriendlyReflection(it)) },
                 valueRange = 0f..1f,

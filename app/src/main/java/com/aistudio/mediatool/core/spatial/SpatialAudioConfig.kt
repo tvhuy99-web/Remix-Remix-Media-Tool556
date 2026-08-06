@@ -1,5 +1,6 @@
 package com.aistudio.mediatool.core.spatial
 
+import com.aistudio.mediatool.BuildConfig
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.ln
@@ -153,7 +154,7 @@ data class SpatialAudioConfig(
                 startAzimuthDeg = 0f,
                 endAzimuthDeg = 180f,
                 startElevationDeg = 0f,
-                endElevationDeg = 45f,
+                endElevationDeg = 0f,
                 startDistanceM = fixedDistance,
                 endDistanceM = fixedDistance,
             )
@@ -352,7 +353,10 @@ data class SpatialAudioConfig(
             "decode_channels" to 2,
             "stereo_render_mode" to "preserve_or_upmix",
             "automatic_loudness_preservation" to true,
-            "room_model_version" to 2,
+            "room_model_version" to 3,
+            "spatial_renderer_version" to 4,
+            "build_git_sha" to BuildConfig.GIT_COMMIT_SHA,
+            "build_git_branch" to BuildConfig.GIT_BRANCH,
         )
     }
 
@@ -361,7 +365,7 @@ data class SpatialAudioConfig(
         const val FRIENDLY_SPEED_MAX_SECONDS = 30f
         const val FRIENDLY_DISTANCE_MIN_M = 0.8f
         const val FRIENDLY_DISTANCE_MAX_M = 20f
-        private const val REFLECTION_CURVE_EXPONENT = 1.25f
+        private const val REFLECTION_CURVE_EXPONENT = 1.15f
         private const val NEAR_FAR_RATIO = 0.45f
         private const val FREE_DRIFT_NEAR_RATIO = 0.6f
 
@@ -464,10 +468,9 @@ object SpatialTrajectoryMath {
             SpatialTrajectory.FRONT_BACK -> {
                 val theta = 2.0 * PI * phase
                 val sweep = (0.5 - 0.5 * cos(theta)).toFloat()
-                val arch = sin(theta).let { it * it }.toFloat()
                 fromAngles(
                     azimuthDeg = lerp(value.startAzimuthDeg, value.endAzimuthDeg, sweep),
-                    elevationDeg = lerp(value.startElevationDeg, value.endElevationDeg, arch),
+                    elevationDeg = lerp(value.startElevationDeg, value.endElevationDeg, sweep),
                     distanceM = distance,
                 )
             }

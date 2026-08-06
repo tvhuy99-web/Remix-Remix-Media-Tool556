@@ -16,29 +16,33 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTargetPeak = 0.89125094f;
 constexpr float kPeakCeilingDbfs = -1.0f;
-constexpr float kReflectionHeadroom = 0.59566214f;
-constexpr float kReflectionHeadroomDb = -4.5f;
+constexpr float kReflectionHeadroom = 0.70794578f;
+constexpr float kReflectionHeadroomDb = -3.0f;
 constexpr float kObjectLateralCueDb = 4.5f;
 constexpr float kObjectAmbienceBedMin = 0.06f;
 constexpr float kObjectAmbienceBedMax = 0.14f;
 constexpr float kFrontDirectLowpassHz = 19000.0f;
-constexpr float kRearDirectLowpassHz = 9200.0f;
+constexpr float kRearDirectLowpassHz = 6800.0f;
 constexpr float kFrontPresenceHz = 2800.0f;
 constexpr float kFrontPresenceGain = 0.32f;
 constexpr float kRearNotchLowHz = 4200.0f;
 constexpr float kRearNotchHighHz = 9500.0f;
-constexpr float kRearNotchDepth = 0.62f;
-constexpr float kRearDirectAttenuation = 0.24f;
-constexpr float kRearWetBoost = 0.55f;
-constexpr float kReflectionLowpassHz = 9000.0f;
-constexpr float kEarlyReflectionLowpassHz = 7200.0f;
+constexpr float kRearNotchDepth = 0.68f;
+constexpr float kRearDirectAttenuation = 0.32f;
+constexpr float kRearWetBoost = 0.65f;
+constexpr float kReflectionLowpassHz = 7200.0f;
+constexpr float kEarlyReflectionLowpassHz = 6800.0f;
 constexpr float kEarlyReflectionMaxGain = 0.42f;
 constexpr float kEarlyReflectionMinDelaySeconds = 0.008f;
 constexpr float kEarlyReflectionMaxDelaySeconds = 0.060f;
 constexpr float kSpeedOfSoundMps = 343.0f;
-constexpr float kReflectionGateFloorDbfs = -62.0f;
-constexpr float kReflectionGateOpenDbfs = -42.0f;
-constexpr int kPayloadVersion = 1;
+constexpr float kReflectionGateFloorDbfs = -56.0f;
+constexpr float kReflectionGateOpenDbfs = -38.0f;
+constexpr float kFallbackDiffuseAzimuthDeg = 58.0f;
+constexpr float kFallbackPrimaryMix = 0.65f;
+constexpr float kFallbackSecondaryMix = 0.35f;
+constexpr float kFallbackHighEqCeiling = 0.72f;
+constexpr int kPayloadVersion = 2;
 constexpr const char* kTag = "MediaToolRoomSpatial";
 
 enum class ReflectionMode { None, Hybrid, ParametricFallback };
@@ -141,6 +145,7 @@ struct Resources {
     IPLReflectionEffect reflectionEffect = nullptr;
     IPLAmbisonicsDecodeEffect ambisonicsDecode = nullptr;
     IPLBinauralEffect fallbackWetBinaural = nullptr;
+    IPLBinauralEffect fallbackWetBinauralRight = nullptr;
     IPLAudioBuffer inputBuffer{};
     IPLAudioBuffer objectMono{};
     IPLAudioBuffer directBuffer{};
@@ -162,6 +167,7 @@ struct Resources {
     float rearNotchLowpassState[2] = {0.0f, 0.0f};
     float rearNotchHighpassState[2] = {0.0f, 0.0f};
     float reflectionSendLowpassState = 0.0f;
+    float reflectionGateState = 0.0f;
     float reflectionWetLowpassState[2] = {0.0f, 0.0f};
     float earlyReflectionLowpassState[2] = {0.0f, 0.0f};
     std::vector<float> earlyReflectionDelay;
@@ -178,6 +184,7 @@ struct Resources {
             freeBuffer(reflectionStereo);
             freeBuffer(earlyReflectionStereo);
         }
+        if (fallbackWetBinauralRight) iplBinauralEffectRelease(&fallbackWetBinauralRight);
         if (fallbackWetBinaural) iplBinauralEffectRelease(&fallbackWetBinaural);
         if (ambisonicsDecode) iplAmbisonicsDecodeEffectRelease(&ambisonicsDecode);
         if (reflectionEffect) iplReflectionEffectRelease(&reflectionEffect);
@@ -459,9 +466,8 @@ Pose calculatePose(
         }
         case 6: {
             const float sweep = 0.5f - 0.5f * std::cos(theta);
-            const float sine = std::sin(theta);
             return Pose{directionFromAngles(lerp(startAzimuthDeg, endAzimuthDeg, sweep),
-                                            lerp(startElevationDeg, endElevationDeg, sine * sine)), distance};
+                                            lerp(startElevationDeg, endElevationDeg, sweep)), distance};
         }
         case 7:
             return Pose{directionFromAngles(lerp(startAzimuthDeg, endAzimuthDeg, phase),
@@ -716,7 +722,11 @@ bool initializeParametricFallback(Resources* resources, const IPLAudioSettings& 
     if (!steamOk(iplBinauralEffectCreate(resources->context,
                                           const_cast<IPLAudioSettings*>(&audioSettings),
                                           &wetSettings, &resources->fallbackWetBinaural),
-                 "Tạo fallback wet binaural", error)) return false;
+                 "Tạo fallback wet binaural trái", error) ||
+        !steamOk(iplBinauralEffectCreate(resources->context,
+                                          const_cast<IPLAudioSettings*>(&audioSettings),
+                                          &wetSettings, &resources->fallbackWetBinauralRight),
+                 "Tạo fallback wet binaural phải", error)) return false;
     if (!allocateBuffer(resources, 1, audioSettings.frameSize, &resources->reflectionInput,
                         "Cấp fallback mono input", error) ||
         !allocateBuffer(resources, 1, audioSettings.frameSize, &resources->reflectionField,
@@ -797,6 +807,38 @@ void clearBuffer(IPLAudioBuffer& buffer, int frameSize) {
     }
 }
 
+void mixFallbackDiffuse(Resources* resources, int frameSize) {
+    for (int i = 0; i < frameSize; ++i) {
+        const float leftFromLeft = resources->reflectionStereo.data[0][i];
+        const float rightFromLeft = resources->reflectionStereo.data[1][i];
+        const float leftFromRight = resources->earlyReflectionStereo.data[0][i];
+        const float rightFromRight = resources->earlyReflectionStereo.data[1][i];
+        resources->reflectionStereo.data[0][i] =
+            kFallbackPrimaryMix * leftFromLeft + kFallbackSecondaryMix * leftFromRight;
+        resources->reflectionStereo.data[1][i] =
+            kFallbackSecondaryMix * rightFromLeft + kFallbackPrimaryMix * rightFromRight;
+    }
+}
+
+void applyFallbackDiffuse(Resources* resources, IPLAudioBuffer* monoInput,
+                          int interpolation, int frameSize) {
+    clearBuffer(resources->reflectionStereo, frameSize);
+    clearBuffer(resources->earlyReflectionStereo, frameSize);
+    IPLBinauralEffectParams leftParams{};
+    leftParams.direction = directionFromAngles(-kFallbackDiffuseAzimuthDeg, 0.0f);
+    leftParams.interpolation = interpolation == 0
+        ? IPL_HRTFINTERPOLATION_BILINEAR : IPL_HRTFINTERPOLATION_NEAREST;
+    leftParams.spatialBlend = 0.82f;
+    leftParams.hrtf = resources->hrtf;
+    IPLBinauralEffectParams rightParams = leftParams;
+    rightParams.direction = directionFromAngles(kFallbackDiffuseAzimuthDeg, 0.0f);
+    iplBinauralEffectApply(resources->fallbackWetBinaural, &leftParams,
+                           monoInput, &resources->reflectionStereo);
+    iplBinauralEffectApply(resources->fallbackWetBinauralRight, &rightParams,
+                           monoInput, &resources->earlyReflectionStereo);
+    mixFallbackDiffuse(resources, frameSize);
+}
+
 void renderReflectionBlock(Resources* resources, const RoomSpec& room, const Pose& pose,
                            int interpolation, int framesRead, int frameSize, int sampleRate,
                            float rt60Low, float rt60Mid, float rt60High,
@@ -811,9 +853,16 @@ void renderReflectionBlock(Resources* resources, const RoomSpec& room, const Pos
     }
     const double objectRms = framesRead > 0
         ? std::sqrt(objectEnergy / static_cast<double>(framesRead)) : 0.0;
-    const float gate = smoothstep(static_cast<float>(
+    const float targetGate = smoothstep(static_cast<float>(
         (dbfs(objectRms) - kReflectionGateFloorDbfs) /
         (kReflectionGateOpenDbfs - kReflectionGateFloorDbfs)));
+    const float blockSeconds = static_cast<float>(std::max(1, framesRead)) /
+        static_cast<float>(std::max(1, sampleRate));
+    const float attack = 1.0f - std::exp(-blockSeconds / 0.015f);
+    const float release = 1.0f - std::exp(-blockSeconds / 0.180f);
+    const float gateAlpha = targetGate > resources->reflectionGateState ? attack : release;
+    resources->reflectionGateState += gateAlpha * (targetGate - resources->reflectionGateState);
+    const float gate = std::max(0.0f, std::min(1.0f, resources->reflectionGateState));
     const float sendAlpha = onePoleAlpha(kReflectionLowpassHz, sampleRate);
     for (int i = 0; i < framesRead; ++i) {
         resources->reflectionInput.data[0][i] = gate * lowpassSample(
@@ -839,20 +888,15 @@ void renderReflectionBlock(Resources* resources, const RoomSpec& room, const Pos
         params.reverbTimes[2] = rt60High;
         params.eq[0] = eqLow;
         params.eq[1] = eqMid;
-        params.eq[2] = eqHigh;
+        params.eq[2] = std::min(eqHigh, kFallbackHighEqCeiling);
         params.numChannels = 1;
-        params.irSize = static_cast<int>(std::ceil(std::max({rt60Low, rt60Mid, rt60High}) * 48000.0f));
+        params.irSize = static_cast<int>(std::ceil(
+            std::max({rt60Low, rt60Mid, rt60High}) * static_cast<float>(sampleRate)));
         iplReflectionEffectApply(resources->reflectionEffect, &params,
                                  &resources->reflectionInput, &resources->reflectionField, nullptr);
-        IPLBinauralEffectParams wetParams{};
-        wetParams.direction = pose.direction;
-        wetParams.interpolation = interpolation == 0
-            ? IPL_HRTFINTERPOLATION_BILINEAR : IPL_HRTFINTERPOLATION_NEAREST;
-        wetParams.spatialBlend = 0.65f;
-        wetParams.hrtf = resources->hrtf;
-        iplBinauralEffectApply(resources->fallbackWetBinaural, &wetParams,
-                               &resources->reflectionField, &resources->reflectionStereo);
+        applyFallbackDiffuse(resources, &resources->reflectionField, interpolation, frameSize);
     }
+    (void)pose;
     filterReflectionStereo(resources, frameSize, sampleRate);
 }
 
@@ -881,30 +925,32 @@ bool renderReflectionTail(Resources* resources, const RoomSpec& room, const Pose
             return true;
         }
     } else if (resources->reflectionMode == ReflectionMode::ParametricFallback) {
-        bool hasMono = false;
         if (iplReflectionEffectGetTailSize(resources->reflectionEffect) > 0) {
             iplReflectionEffectGetTail(resources->reflectionEffect, &resources->reflectionField, nullptr);
-            hasMono = true;
-        }
-        if (hasMono) {
-            IPLBinauralEffectParams wetParams{};
-            wetParams.direction = pose.direction;
-            wetParams.interpolation = interpolation == 0
-                ? IPL_HRTFINTERPOLATION_BILINEAR : IPL_HRTFINTERPOLATION_NEAREST;
-            wetParams.spatialBlend = 0.65f;
-            wetParams.hrtf = resources->hrtf;
-            iplBinauralEffectApply(resources->fallbackWetBinaural, &wetParams,
-                                   &resources->reflectionField, &resources->reflectionStereo);
+            applyFallbackDiffuse(resources, &resources->reflectionField, interpolation, frameSize);
             filterReflectionStereo(resources, frameSize, sampleRate);
             return true;
         }
-        if (iplBinauralEffectGetTailSize(resources->fallbackWetBinaural) > 0) {
+        clearBuffer(resources->reflectionStereo, frameSize);
+        clearBuffer(resources->earlyReflectionStereo, frameSize);
+        const bool hasLeftTail = iplBinauralEffectGetTailSize(resources->fallbackWetBinaural) > 0;
+        const bool hasRightTail =
+            iplBinauralEffectGetTailSize(resources->fallbackWetBinauralRight) > 0;
+        if (hasLeftTail) {
             iplBinauralEffectGetTail(resources->fallbackWetBinaural,
                                      &resources->reflectionStereo);
+        }
+        if (hasRightTail) {
+            iplBinauralEffectGetTail(resources->fallbackWetBinauralRight,
+                                     &resources->earlyReflectionStereo);
+        }
+        if (hasLeftTail || hasRightTail) {
+            mixFallbackDiffuse(resources, frameSize);
             filterReflectionStereo(resources, frameSize, sampleRate);
             return true;
         }
     }
+    (void)pose;
     (void)rt60Low;
     (void)rt60Mid;
     (void)rt60High;
@@ -1316,8 +1362,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
         std::fabs(manualOutputGainDb) <= 1e-6f;
     float automaticMakeupGainDb = 0.0f;
     if (!exactBypass && inputStats.rmsCombined() > 1e-9 && outputMainStats.rmsCombined() > 1e-9) {
-        const float maxMakeup = (trajectory == 8 || std::max(startDistance, endDistance) > 4.0f)
-            ? 3.0f : 6.0f;
+        const float maxMakeup = 6.0f;
         automaticMakeupGainDb = clampFinite(
             static_cast<float>(inputRmsDbfs - outputMainRmsDbfs), -6.0f, maxMakeup, 0.0f);
     }
@@ -1445,6 +1490,12 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
          << ",\"direct_rear_lowpass_hz\":" << kRearDirectLowpassHz
          << ",\"reflection_lowpass_hz\":" << kReflectionLowpassHz
          << ",\"reflection_gate_floor_dbfs\":" << kReflectionGateFloorDbfs
+         << ",\"reflection_gate_open_dbfs\":" << kReflectionGateOpenDbfs
+         << ",\"fallback_diffuse_azimuth_deg\":" << kFallbackDiffuseAzimuthDeg
+         << ",\"fallback_high_eq_ceiling\":" << kFallbackHighEqCeiling
+         << ",\"effective_reflection_wet_gain\":"
+         << (std::sqrt(reverbWet) * kReflectionHeadroom)
+         << ",\"native_renderer_version\":4"
          << ",\"true_effect_mix\":true}"
          ;
     return env->NewStringUTF(json.str().c_str());

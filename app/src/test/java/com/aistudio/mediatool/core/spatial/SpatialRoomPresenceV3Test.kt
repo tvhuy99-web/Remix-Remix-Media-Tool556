@@ -9,10 +9,10 @@ class SpatialRoomPresenceV3Test {
     fun maximumRoomPresenceIsAudibleButBounded() {
         val minimums = mapOf(
             SpatialRoomPreset.DRY to 0.12f,
-            SpatialRoomPreset.STUDIO to 0.24f,
-            SpatialRoomPreset.LISTENING_ROOM to 0.34f,
-            SpatialRoomPreset.THEATER to 0.43f,
-            SpatialRoomPreset.WAREHOUSE to 0.42f,
+            SpatialRoomPreset.STUDIO to 0.27f,
+            SpatialRoomPreset.LISTENING_ROOM to 0.38f,
+            SpatialRoomPreset.THEATER to 0.48f,
+            SpatialRoomPreset.WAREHOUSE to 0.50f,
             SpatialRoomPreset.OUTDOOR to 0.03f,
         )
         minimums.forEach { (preset, expected) ->
@@ -20,8 +20,20 @@ class SpatialRoomPresenceV3Test {
                 .withRoomPreset(preset)
                 .withFriendlyReflection(1f)
             assertEquals(expected, value.reverbWet, 1e-6f)
-            assertTrue(value.reverbWet < 0.5f)
+            assertTrue(value.reverbWet <= 0.5f)
         }
+    }
+
+    @Test
+    fun frontBackPresetStaysOnTheHorizontalPlane() {
+        val config = SpatialAudioConfig()
+            .withFriendlyTrajectory(SpatialTrajectory.FRONT_BACK)
+        assertEquals(0f, config.startElevationDeg, 1e-6f)
+        assertEquals(0f, config.endElevationDeg, 1e-6f)
+
+        val rear = SpatialTrajectoryMath.pose(config, config.cycleSeconds * 0.5f)
+        assertTrue(kotlin.math.abs(rear.y) < 1e-4f)
+        assertTrue(rear.z > 0.99f)
     }
 
     @Test

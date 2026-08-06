@@ -70,7 +70,7 @@ class SpatialRoomPresetTest {
                 .withRoomPreset(preset)
                 .withFriendlyReflection(1f)
             assertEquals(preset.acoustics.maxReflectionWet, value.reverbWet, 1e-5f)
-            assertTrue("$preset wet=${value.reverbWet}", value.reverbWet < 0.5f)
+            assertTrue("$preset wet=${value.reverbWet}", value.reverbWet <= 0.5f)
         }
     }
 

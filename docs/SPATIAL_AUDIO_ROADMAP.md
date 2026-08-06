@@ -88,3 +88,11 @@ Mọi tăng chất lượng phải đi kèm benchmark CPU, RAM, nhiệt, dung l�
 3. Không dùng makeup gain để xóa chênh lệch gần/xa.
 4. Không để một slider người dùng tạo wet-only hoặc peak không an toàn.
 5. Không tăng rays hay Ambisonics order trước khi có số đo thiết bị và bài nghe A/B.
+
+## Production tuning v4
+
+- Phản xạ phòng dùng đường cong điều khiển 1.15 và trần wet theo từng preset.
+- Wet bus được lọc 7.2 kHz, giảm high-band và dùng gate attack/release để loại tiếng xì, pumping.
+- Parametric fallback dùng cặp HRTF khuếch tán cố định thay vì bám theo hướng nguồn.
+- Quỹ đạo trước/sau chạy ngang ở elevation 0°, với rear notch, low-pass, attenuation và wet boost rõ hơn.
+- Diagnostics ghi commit, branch, renderer version và gain phản xạ hiệu dụng.

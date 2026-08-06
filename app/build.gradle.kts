@@ -11,6 +11,11 @@ val keystorePropertiesFile = rootProject.file("keystore.properties")
 val hasReleaseKeystore = keystorePropertiesFile.isFile
 val ciKeystoreFile = rootProject.file(".ci/mediatool-ci-debug.keystore")
 val hasCiKeystore = ciKeystoreFile.isFile
+val buildGitSha = (System.getenv("GITHUB_SHA") ?: "local").take(12)
+val buildGitBranch = System.getenv("GITHUB_HEAD_REF")
+    ?.takeIf(String::isNotBlank)
+    ?: System.getenv("GITHUB_REF_NAME")?.takeIf(String::isNotBlank)
+    ?: "local"
 if (hasReleaseKeystore) {
     keystorePropertiesFile.inputStream().use(keystoreProperties::load)
 }
@@ -25,6 +30,8 @@ android {
         targetSdk = 36
         versionCode = 8
         versionName = "1.3.3"
+        buildConfigField("String", "GIT_COMMIT_SHA", "\"$buildGitSha\"")
+        buildConfigField("String", "GIT_BRANCH", "\"$buildGitBranch\"")
 
         // FFmpegKit maintained chỉ phát hành binary Maven cho arm64-v8a.
         // Giới hạn cả APK và App Bundle để không tạo artifact cài được nhưng

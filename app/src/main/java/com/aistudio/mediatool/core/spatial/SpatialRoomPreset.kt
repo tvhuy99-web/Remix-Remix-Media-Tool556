@@ -112,7 +112,7 @@ enum class SpatialRoomPreset(
         walls = roomMaterial(0.25f, 0.55f, 0.65f, 0.65f),
         floor = roomMaterial(0.12f, 0.35f, 0.50f, 0.45f),
         ceiling = roomMaterial(0.35f, 0.70f, 0.80f, 0.70f),
-        maxReflectionWet = 0.24f,
+        maxReflectionWet = 0.27f,
         distanceRolloff = 0.68f,
         airAbsorption = 0.36f,
         firstReflectionMs = 18f,
@@ -125,7 +125,7 @@ enum class SpatialRoomPreset(
         walls = roomMaterial(0.18f, 0.35f, 0.45f, 0.55f),
         floor = roomMaterial(0.10f, 0.28f, 0.40f, 0.42f),
         ceiling = roomMaterial(0.25f, 0.45f, 0.55f, 0.58f),
-        maxReflectionWet = 0.34f,
+        maxReflectionWet = 0.38f,
         distanceRolloff = 0.65f,
         airAbsorption = 0.35f,
         firstReflectionMs = 22f,
@@ -138,7 +138,7 @@ enum class SpatialRoomPreset(
         walls = roomMaterial(0.12f, 0.25f, 0.40f, 0.62f),
         floor = roomMaterial(0.08f, 0.22f, 0.35f, 0.50f),
         ceiling = roomMaterial(0.18f, 0.30f, 0.45f, 0.68f),
-        maxReflectionWet = 0.43f,
+        maxReflectionWet = 0.48f,
         distanceRolloff = 0.60f,
         airAbsorption = 0.33f,
         firstReflectionMs = 35f,
@@ -151,7 +151,7 @@ enum class SpatialRoomPreset(
         walls = roomMaterial(0.02f, 0.03f, 0.04f, 0.30f),
         floor = roomMaterial(0.02f, 0.03f, 0.04f, 0.22f),
         ceiling = roomMaterial(0.05f, 0.08f, 0.10f, 0.35f),
-        maxReflectionWet = 0.42f,
+        maxReflectionWet = 0.50f,
         distanceRolloff = 0.55f,
         airAbsorption = 0.30f,
         firstReflectionMs = 45f,
@@ -206,7 +206,12 @@ enum class SpatialRoomPreset(
             high = 1f - weightedAbsorption(dimensions, walls, floor, ceiling) { it.high },
         )
         val energyPeak = reflectedEnergy.maxValue().coerceAtLeast(0.01f)
-        val reverbEq = reflectedEnergy.map { (it / energyPeak).coerceIn(0.05f, 1f) }
+        val normalizedEq = reflectedEnergy.map { (it / energyPeak).coerceIn(0.05f, 1f) }
+        val reverbEq = SpatialAcousticBands(
+            low = normalizedEq.low,
+            mid = normalizedEq.mid,
+            high = (normalizedEq.high * 0.78f).coerceAtLeast(0.05f),
+        )
         val totalArea = dimensions.wallAreaM2 + dimensions.floorAreaM2 + dimensions.ceilingAreaM2
         val scattering = (
             dimensions.wallAreaM2 * walls.scattering +

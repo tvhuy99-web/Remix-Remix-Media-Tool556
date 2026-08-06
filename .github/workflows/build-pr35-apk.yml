@@ -1,0 +1,75 @@
+name: Build PR35 APK
+
+on:
+  push:
+    branches:
+      - build/pr35-apk-4989257
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout exact PR35 product commit
+        uses: actions/checkout@v4
+        with:
+          ref: 49892576e81f6616dd22f58f3e862f795b69946a
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify project
+        run: |
+          chmod +x gradlew
+          python3 scripts/verify_project.py
+
+      - name: Test, lint, and build APK
+        env:
+          GITHUB_SHA: 49892576e81f6616dd22f58f3e862f795b69946a
+          GITHUB_HEAD_REF: agent/spatial-room-production-fix
+          GITHUB_REF_NAME: agent/spatial-room-production-fix
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace --build-cache
+
+      - name: Prepare APK and checksum
+        run: |
+          mkdir -p dist
+          APK_SOURCE="app/build/outputs/apk/debug/app-debug.apk"
+          APK_NAME="MediaTool-spatial-room-production-pr35-4989257.apk"
+          test -f "$APK_SOURCE"
+          cp "$APK_SOURCE" "dist/$APK_NAME"
+          sha256sum "dist/$APK_NAME" | tee "dist/$APK_NAME.sha256"
+          unzip -l "dist/$APK_NAME" | grep -E 'lib/arm64-v8a/(libphonon|libmediatool_spatial)\.so'
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaTool-spatial-room-production-pr35-4989257
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish prerelease APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="pr35-spatial-room-production-4989257"
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" \
+            dist/MediaTool-spatial-room-production-pr35-4989257.apk \
+            dist/MediaTool-spatial-room-production-pr35-4989257.apk.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target 49892576e81f6616dd22f58f3e862f795b69946a \
+            --title "Spatial Room Production PR #35 • 4989257" \
+            --notes "APK kiểm thử được build từ commit sản phẩm 49892576e81f6616dd22f58f3e862f795b69946a của PR #35. Đã chạy verify_project, unit tests, lintDebug, assembleDebug và kiểm tra hai native library arm64-v8a." \
+            --prerelease

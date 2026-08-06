@@ -25,7 +25,7 @@ jobs:
           fetch-depth: 0
 
       - name: Apply deterministic renderer patch
-        run: python3 scripts/patch_spatial_object_renderer_v2.py
+        run: python3 scripts/run_spatial_object_renderer_v2.py
 
       - name: Verify architectural replacement
         run: |

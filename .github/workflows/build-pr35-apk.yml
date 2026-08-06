@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - agent/spatial-room-production-fix
+      - build/pr35-apk-4989257
 
 permissions:
   contents: write

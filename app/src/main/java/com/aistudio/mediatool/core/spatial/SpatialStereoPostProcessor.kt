@@ -49,6 +49,7 @@ internal object SpatialStereoPostProcessor {
         startDistanceM: Float,
         endDistanceM: Float,
         inputDualMono: Boolean,
+        preserveSourceSide: Boolean = true,
     ): SpatialStereoPostMetrics {
         require(sourceStereo.isFile && sourceStereo.length() >= BYTES_PER_FRAME) {
             "PCM nguồn cho stereo preservation không hợp lệ"
@@ -58,6 +59,20 @@ internal object SpatialStereoPostProcessor {
         }
         output.parentFile?.mkdirs()
         output.delete()
+
+        if (!preserveSourceSide) {
+            moveOrCopy(pointRenderedStereo, output)
+            val peak = scanPeak(output)
+            return SpatialStereoPostMetrics(
+                mode = "moving_object_native",
+                preservation = 0f,
+                distanceWidthScale = 0f,
+                peakBefore = peak,
+                peakAfter = peak,
+                peakGainDb = 0f,
+                frames = output.length() / BYTES_PER_FRAME,
+            )
+        }
 
         val distanceScale = distanceWidthScale(max(startDistanceM, endDistanceM))
         val preservation = sidePreservation(

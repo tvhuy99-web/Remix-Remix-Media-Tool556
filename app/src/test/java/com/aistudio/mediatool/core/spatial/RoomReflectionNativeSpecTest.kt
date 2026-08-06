@@ -22,13 +22,13 @@ class RoomReflectionNativeSpecTest {
     fun balancedQualityIsDeterministic() {
         val value = RoomReflectionNativeSpec.balanced(SpatialRoomPreset.LISTENING_ROOM)
         assertArrayEquals(
-            intArrayOf(1, 1, 2, 4_096, 16, 1, 2),
+            intArrayOf(1, 1, 2, 8_192, 14, 1, 2),
             value.integerPayload(),
         )
-        assertEquals(2.0f, value.durationSeconds, 0f)
-        assertEquals(0.12f, value.hybridTransitionSeconds, 0f)
-        assertEquals(0.25f, value.hybridOverlapPercent, 0f)
-        assertEquals(0.25f, value.updateSeconds, 0f)
+        assertEquals(1.5f, value.durationSeconds, 0f)
+        assertEquals(0.10f, value.hybridTransitionSeconds, 0f)
+        assertEquals(0.20f, value.hybridOverlapPercent, 0f)
+        assertEquals(0.50f, value.updateSeconds, 0f)
     }
 
     @Test

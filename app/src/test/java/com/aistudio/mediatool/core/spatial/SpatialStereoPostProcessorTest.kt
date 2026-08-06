@@ -75,6 +75,36 @@ class SpatialStereoPostProcessorTest {
         }
     }
 
+    @Test
+    fun movingObjectModeDoesNotReinjectTheOriginalSideChannel() {
+        val directory = createTempDir(prefix = "spatial_object_test_")
+        try {
+            val source = File(directory, "source.f32")
+            val rendered = File(directory, "rendered.f32")
+            val output = File(directory, "output.f32")
+            writeFrames(source, listOf(1f to -1f, 1f to -1f))
+            writeFrames(rendered, listOf(0.30f to 0.10f, 0.20f to 0.05f))
+
+            val expected = rendered.readBytes()
+            val metrics = SpatialStereoPostProcessor.process(
+                sourceStereo = source,
+                pointRenderedStereo = rendered,
+                output = output,
+                spatialBlend = 1f,
+                startDistanceM = 2f,
+                endDistanceM = 2f,
+                inputDualMono = false,
+                preserveSourceSide = false,
+            )
+
+            assertEquals("moving_object_native", metrics.mode)
+            assertEquals(0f, metrics.preservation, 0f)
+            assertTrue(expected.contentEquals(output.readBytes()))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
     private fun writeFrames(file: File, frames: List<Pair<Float, Float>>) {
         val buffer = ByteBuffer.allocate(frames.size * 8).order(ByteOrder.LITTLE_ENDIAN)
         frames.forEach { (left, right) ->

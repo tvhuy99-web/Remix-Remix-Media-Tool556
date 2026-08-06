@@ -16,8 +16,16 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTargetPeak = 0.89125094f;
 constexpr float kPeakCeilingDbfs = -1.0f;
-constexpr float kReflectionHeadroom = 0.70794578f;
-constexpr float kReflectionHeadroomDb = -3.0f;
+constexpr float kReflectionHeadroom = 0.59566214f;
+constexpr float kReflectionHeadroomDb = -4.5f;
+constexpr float kObjectLateralCueDb = 4.5f;
+constexpr float kObjectAmbienceBedMin = 0.06f;
+constexpr float kObjectAmbienceBedMax = 0.14f;
+constexpr float kFrontDirectLowpassHz = 18000.0f;
+constexpr float kRearDirectLowpassHz = 6800.0f;
+constexpr float kReflectionLowpassHz = 9000.0f;
+constexpr float kReflectionGateFloorDbfs = -62.0f;
+constexpr float kReflectionGateOpenDbfs = -42.0f;
 constexpr int kPayloadVersion = 1;
 constexpr const char* kTag = "MediaToolRoomSpatial";
 
@@ -122,6 +130,7 @@ struct Resources {
     IPLAmbisonicsDecodeEffect ambisonicsDecode = nullptr;
     IPLBinauralEffect fallbackWetBinaural = nullptr;
     IPLAudioBuffer inputBuffer{};
+    IPLAudioBuffer objectMono{};
     IPLAudioBuffer directBuffer{};
     IPLAudioBuffer directStereo{};
     IPLAudioBuffer reflectionInput{};
@@ -135,10 +144,14 @@ struct Resources {
     long long reflectionUpdates = 0;
     long long reflectionSourceClamps = 0;
     long long reflectionSimulationMs = 0;
+    float directLowpassState[2] = {0.0f, 0.0f};
+    float reflectionSendLowpassState = 0.0f;
+    float reflectionWetLowpassState[2] = {0.0f, 0.0f};
 
     ~Resources() {
         if (context) {
             freeBuffer(inputBuffer);
+            freeBuffer(objectMono);
             freeBuffer(directBuffer);
             freeBuffer(directStereo);
             freeBuffer(reflectionInput);
@@ -232,6 +245,32 @@ float dbToLinear(float db) {
 double dbfs(double linear) {
     if (!std::isfinite(linear) || linear <= 1e-12) return -160.0;
     return std::max(-160.0, 20.0 * std::log10(linear));
+}
+
+float onePoleAlpha(float cutoffHz, int sampleRate) {
+    const float safeCutoff = std::max(20.0f, std::min(cutoffHz, 0.45f * sampleRate));
+    return 1.0f - std::exp(-2.0f * kPi * safeCutoff / static_cast<float>(sampleRate));
+}
+
+float lowpassSample(float sample, float alpha, float* state) {
+    *state += alpha * (sample - *state);
+    return *state;
+}
+
+float effectiveSpatialMix(float blend) {
+    const float value = std::max(0.0f, std::min(1.0f, blend));
+    return 1.0f - (1.0f - value) * (1.0f - value);
+}
+
+void filterReflectionStereo(Resources* resources, int frameSize, int sampleRate) {
+    const float alpha = onePoleAlpha(kReflectionLowpassHz, sampleRate);
+    for (int channel = 0; channel < 2; ++channel) {
+        for (int i = 0; i < frameSize; ++i) {
+            resources->reflectionStereo.data[channel][i] = lowpassSample(
+                resources->reflectionStereo.data[channel][i], alpha,
+                &resources->reflectionWetLowpassState[channel]);
+        }
+    }
 }
 
 IPLVector3 normalize(float x, float y, float z) {
@@ -487,7 +526,7 @@ bool initializeHybridReflections(Resources* resources, const RoomSpec& room,
     simulationSettings.sceneType = IPL_SCENETYPE_DEFAULT;
     simulationSettings.reflectionType = IPL_REFLECTIONEFFECTTYPE_HYBRID;
     simulationSettings.maxNumRays = room.rays;
-    simulationSettings.numDiffuseSamples = 32;
+    simulationSettings.numDiffuseSamples = 64;
     simulationSettings.maxDuration = room.duration;
     simulationSettings.maxOrder = room.order;
     simulationSettings.maxNumSources = 1;
@@ -633,15 +672,27 @@ void clearBuffer(IPLAudioBuffer& buffer, int frameSize) {
 }
 
 void renderReflectionBlock(Resources* resources, const RoomSpec& room, const Pose& pose,
-                           int interpolation, int framesRead, int frameSize,
+                           int interpolation, int framesRead, int frameSize, int sampleRate,
                            float rt60Low, float rt60Mid, float rt60High,
                            float eqLow, float eqMid, float eqHigh) {
     clearBuffer(resources->reflectionInput, frameSize);
     clearBuffer(resources->reflectionField, frameSize);
     clearBuffer(resources->reflectionStereo, frameSize);
+    double objectEnergy = 0.0;
     for (int i = 0; i < framesRead; ++i) {
-        resources->reflectionInput.data[0][i] = 0.5f *
-            (resources->inputBuffer.data[0][i] + resources->inputBuffer.data[1][i]);
+        const float sample = resources->objectMono.data[0][i];
+        objectEnergy += static_cast<double>(sample) * static_cast<double>(sample);
+    }
+    const double objectRms = framesRead > 0
+        ? std::sqrt(objectEnergy / static_cast<double>(framesRead)) : 0.0;
+    const float gate = smoothstep(static_cast<float>(
+        (dbfs(objectRms) - kReflectionGateFloorDbfs) /
+        (kReflectionGateOpenDbfs - kReflectionGateFloorDbfs)));
+    const float sendAlpha = onePoleAlpha(kReflectionLowpassHz, sampleRate);
+    for (int i = 0; i < framesRead; ++i) {
+        resources->reflectionInput.data[0][i] = gate * lowpassSample(
+            resources->objectMono.data[0][i], sendAlpha,
+            &resources->reflectionSendLowpassState);
     }
 
     if (resources->reflectionMode == ReflectionMode::Hybrid && resources->reflectionReady) {
@@ -676,11 +727,12 @@ void renderReflectionBlock(Resources* resources, const RoomSpec& room, const Pos
         iplBinauralEffectApply(resources->fallbackWetBinaural, &wetParams,
                                &resources->reflectionField, &resources->reflectionStereo);
     }
+    filterReflectionStereo(resources, frameSize, sampleRate);
 }
 
 bool renderReflectionTail(Resources* resources, const RoomSpec& room, const Pose& pose,
-                          int interpolation, int frameSize, float rt60Low, float rt60Mid,
-                          float rt60High, float eqLow, float eqMid, float eqHigh) {
+                          int interpolation, int frameSize, int sampleRate, float rt60Low,
+                          float rt60Mid, float rt60High, float eqLow, float eqMid, float eqHigh) {
     clearBuffer(resources->reflectionField, frameSize);
     clearBuffer(resources->reflectionStereo, frameSize);
     if (resources->reflectionMode == ReflectionMode::Hybrid) {
@@ -693,11 +745,13 @@ bool renderReflectionTail(Resources* resources, const RoomSpec& room, const Pose
             decodeParams.binaural = IPL_TRUE;
             iplAmbisonicsDecodeEffectApply(resources->ambisonicsDecode, &decodeParams,
                                            &resources->reflectionField, &resources->reflectionStereo);
+            filterReflectionStereo(resources, frameSize, sampleRate);
             return true;
         }
         if (iplAmbisonicsDecodeEffectGetTailSize(resources->ambisonicsDecode) > 0) {
             iplAmbisonicsDecodeEffectGetTail(resources->ambisonicsDecode,
                                              &resources->reflectionStereo);
+            filterReflectionStereo(resources, frameSize, sampleRate);
             return true;
         }
     } else if (resources->reflectionMode == ReflectionMode::ParametricFallback) {
@@ -715,11 +769,13 @@ bool renderReflectionTail(Resources* resources, const RoomSpec& room, const Pose
             wetParams.hrtf = resources->hrtf;
             iplBinauralEffectApply(resources->fallbackWetBinaural, &wetParams,
                                    &resources->reflectionField, &resources->reflectionStereo);
+            filterReflectionStereo(resources, frameSize, sampleRate);
             return true;
         }
         if (iplBinauralEffectGetTailSize(resources->fallbackWetBinaural) > 0) {
             iplBinauralEffectGetTail(resources->fallbackWetBinaural,
                                      &resources->reflectionStereo);
+            filterReflectionStereo(resources, frameSize, sampleRate);
             return true;
         }
     }
@@ -854,7 +910,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
     }
 
     IPLDirectEffectSettings directSettings{};
-    directSettings.numChannels = 2;
+    directSettings.numChannels = 1;
     IPLBinauralEffectSettings binauralSettings{};
     binauralSettings.hrtf = resources.hrtf;
     if (!steamOk(iplDirectEffectCreate(resources.context, &audioSettings, &directSettings,
@@ -862,7 +918,8 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
         !steamOk(iplBinauralEffectCreate(resources.context, &audioSettings, &binauralSettings,
                                           &resources.directBinaural), "Tạo binaural stereo", &steamError) ||
         !allocateBuffer(&resources, 2, frameSize, &resources.inputBuffer, "Cấp input stereo", &steamError) ||
-        !allocateBuffer(&resources, 2, frameSize, &resources.directBuffer, "Cấp direct stereo", &steamError) ||
+        !allocateBuffer(&resources, 1, frameSize, &resources.objectMono, "Cấp moving mono object", &steamError) ||
+        !allocateBuffer(&resources, 1, frameSize, &resources.directBuffer, "Cấp direct mono", &steamError) ||
         !allocateBuffer(&resources, 2, frameSize, &resources.directStereo, "Cấp binaural output", &steamError)) {
         std::remove(tempPath.c_str());
         return errorJson(env, steamError);
@@ -893,11 +950,15 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
     float peakBefore = 0.0f;
     StereoStats inputStats;
     StereoStats outputMainStats;
+    const float effectiveSpatialBlend = effectiveSpatialMix(spatialBlend);
+    const float ambienceBedGain = lerp(
+        kObjectAmbienceBedMax, kObjectAmbienceBedMin, effectiveSpatialBlend);
     const auto started = std::chrono::steady_clock::now();
 
     while (input.good()) {
         std::fill(inputInterleaved.begin(), inputInterleaved.end(), 0.0f);
         clearBuffer(resources.inputBuffer, frameSize);
+        clearBuffer(resources.objectMono, frameSize);
         input.read(reinterpret_cast<char*>(inputInterleaved.data()),
                    static_cast<std::streamsize>(inputInterleaved.size() * sizeof(float)));
         const int floatsRead = static_cast<int>(input.gcount() / static_cast<std::streamsize>(sizeof(float)));
@@ -910,6 +971,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
             if (!std::isfinite(right)) { right = 0.0f; ++nonFinite; }
             resources.inputBuffer.data[0][i] = left;
             resources.inputBuffer.data[1][i] = right;
+            resources.objectMono.data[0][i] = 0.5f * (left + right);
             inputStats.add(left, right);
         }
 
@@ -919,6 +981,18 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
         const Pose pose = calculatePose(trajectory, motionMode, localSeconds, cycleSeconds,
                                         startAzimuth, endAzimuth, startElevation, endElevation,
                                         startDistance, endDistance);
+        const float lateral = std::max(-1.0f, std::min(1.0f, pose.direction.x));
+        float leftCue = dbToLinear(-kObjectLateralCueDb * lateral);
+        float rightCue = dbToLinear(kObjectLateralCueDb * lateral);
+        const float cueNormalization = std::sqrt(
+            2.0f / std::max(1e-6f, leftCue * leftCue + rightCue * rightCue));
+        leftCue *= cueNormalization;
+        rightCue *= cueNormalization;
+        const float rearAmount = std::max(0.0f, std::min(1.0f, pose.direction.z));
+        const float rearDirectScale = 1.0f - 0.18f * rearAmount;
+        const float rearWetScale = 1.0f + 0.25f * rearAmount;
+        const float directAlpha = onePoleAlpha(
+            lerp(kFrontDirectLowpassHz, kRearDirectLowpassHz, rearAmount), sampleRate);
         clearBuffer(resources.directBuffer, frameSize);
         clearBuffer(resources.directStereo, frameSize);
         IPLDirectEffectParams directParams{};
@@ -939,7 +1013,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
         directParams.transmission[1] = 1.0f;
         directParams.transmission[2] = 1.0f;
         iplDirectEffectApply(resources.directEffect, &directParams,
-                             &resources.inputBuffer, &resources.directBuffer);
+                             &resources.objectMono, &resources.directBuffer);
         IPLBinauralEffectParams binauralParams{};
         binauralParams.direction = pose.direction;
         binauralParams.interpolation = interpolation == 0
@@ -952,25 +1026,42 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
         if (reverbWet > 0.0f) {
             updateHybridReflection(&resources, room, pose, frames, sampleRate);
             renderReflectionBlock(&resources, room, pose, interpolation, framesRead, frameSize,
-                                  rt60Low, rt60Mid, rt60High, eqLow, eqMid, eqHigh);
+                                  sampleRate, rt60Low, rt60Mid, rt60High, eqLow, eqMid, eqHigh);
         }
         const float dryGain = reverbWet > 0.0f ? std::sqrt(1.0f - reverbWet) : 1.0f;
         const float wetGain = reverbWet > 0.0f ? std::sqrt(reverbWet) * kReflectionHeadroom : 0.0f;
         for (int i = 0; i < framesRead; ++i) {
-            float pair[2]{};
-            for (int channel = 0; channel < 2; ++channel) {
-                const float original = resources.inputBuffer.data[channel][i];
-                float processed = dryGain * resources.directStereo.data[channel][i];
-                if (reverbWet > 0.0f) processed += wetGain * resources.reflectionStereo.data[channel][i];
-                const float fullyMixed = (1.0f - spatialBlend) * original + spatialBlend * processed;
-                float sample = (1.0f - window) * original + window * fullyMixed;
-                if (!std::isfinite(sample)) { sample = 0.0f; ++nonFinite; }
-                peakBefore = std::max(peakBefore, std::fabs(sample));
-                if (std::fabs(sample) > 1.0f) ++clippedBefore;
-                outputInterleaved[static_cast<size_t>(i) * 2u + static_cast<size_t>(channel)] = sample;
-                pair[channel] = sample;
-            }
-            outputMainStats.add(pair[0], pair[1]);
+            const float originalLeft = resources.inputBuffer.data[0][i];
+            const float originalRight = resources.inputBuffer.data[1][i];
+            const float sourceSide = 0.5f * (originalLeft - originalRight);
+            const float directLeft = rearDirectScale * leftCue * lowpassSample(
+                resources.directStereo.data[0][i], directAlpha,
+                &resources.directLowpassState[0]);
+            const float directRight = rearDirectScale * rightCue * lowpassSample(
+                resources.directStereo.data[1][i], directAlpha,
+                &resources.directLowpassState[1]);
+            const float wetLeft = reverbWet > 0.0f
+                ? rearWetScale * resources.reflectionStereo.data[0][i] : 0.0f;
+            const float wetRight = reverbWet > 0.0f
+                ? rearWetScale * resources.reflectionStereo.data[1][i] : 0.0f;
+            const float processedLeft = dryGain * directLeft + wetGain * wetLeft +
+                ambienceBedGain * sourceSide;
+            const float processedRight = dryGain * directRight + wetGain * wetRight -
+                ambienceBedGain * sourceSide;
+            const float mixedLeft = (1.0f - effectiveSpatialBlend) * originalLeft +
+                effectiveSpatialBlend * processedLeft;
+            const float mixedRight = (1.0f - effectiveSpatialBlend) * originalRight +
+                effectiveSpatialBlend * processedRight;
+            float left = (1.0f - window) * originalLeft + window * mixedLeft;
+            float right = (1.0f - window) * originalRight + window * mixedRight;
+            if (!std::isfinite(left)) { left = 0.0f; ++nonFinite; }
+            if (!std::isfinite(right)) { right = 0.0f; ++nonFinite; }
+            peakBefore = std::max(peakBefore, std::max(std::fabs(left), std::fabs(right)));
+            if (std::fabs(left) > 1.0f) ++clippedBefore;
+            if (std::fabs(right) > 1.0f) ++clippedBefore;
+            outputInterleaved[static_cast<size_t>(i) * 2u] = left;
+            outputInterleaved[static_cast<size_t>(i) * 2u + 1u] = right;
+            outputMainStats.add(left, right);
         }
         firstPass.write(reinterpret_cast<const char*>(outputInterleaved.data()),
                         static_cast<std::streamsize>(framesRead * 2 * sizeof(float)));
@@ -986,11 +1077,23 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
     const float sourceDuration = static_cast<float>(frames) / sampleRate;
     const bool effectReachesFileEnd = effectEnd < 0.0f ||
         effectEnd >= sourceDuration - static_cast<float>(frameSize) / sampleRate;
-    if (effectReachesFileEnd && frames > 0 && spatialBlend > 0.0f) {
+    if (effectReachesFileEnd && frames > 0 && effectiveSpatialBlend > 0.0f) {
         const Pose tailPose = calculatePose(trajectory, motionMode,
             std::max(0.0f, sourceDuration - effectStart), cycleSeconds,
             startAzimuth, endAzimuth, startElevation, endElevation,
             startDistance, endDistance);
+        const float tailLateral = std::max(-1.0f, std::min(1.0f, tailPose.direction.x));
+        float tailLeftCue = dbToLinear(-kObjectLateralCueDb * tailLateral);
+        float tailRightCue = dbToLinear(kObjectLateralCueDb * tailLateral);
+        const float tailCueNormalization = std::sqrt(
+            2.0f / std::max(1e-6f, tailLeftCue * tailLeftCue + tailRightCue * tailRightCue));
+        tailLeftCue *= tailCueNormalization;
+        tailRightCue *= tailCueNormalization;
+        const float tailRear = std::max(0.0f, std::min(1.0f, tailPose.direction.z));
+        const float tailDirectScale = 1.0f - 0.18f * tailRear;
+        const float tailWetScale = 1.0f + 0.25f * tailRear;
+        const float tailDirectAlpha = onePoleAlpha(
+            lerp(kFrontDirectLowpassHz, kRearDirectLowpassHz, tailRear), sampleRate);
         IPLBinauralEffectParams tailBinaural{};
         tailBinaural.direction = tailPose.direction;
         tailBinaural.interpolation = interpolation == 0
@@ -1016,23 +1119,33 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
                 hasDirect = true;
             }
             const bool hasReflection = reverbWet > 0.0f && renderReflectionTail(
-                &resources, room, tailPose, interpolation, frameSize,
+                &resources, room, tailPose, interpolation, frameSize, sampleRate,
                 rt60Low, rt60Mid, rt60High, eqLow, eqMid, eqHigh);
             if (!hasDirect && !hasReflection) break;
             for (int i = 0; i < frameSize; ++i) {
-                float pair[2]{};
-                for (int channel = 0; channel < 2; ++channel) {
-                    float sample = 0.0f;
-                    if (hasDirect) sample += dryGain * resources.directStereo.data[channel][i];
-                    if (hasReflection) sample += wetGain * resources.reflectionStereo.data[channel][i];
-                    sample *= spatialBlend;
-                    if (!std::isfinite(sample)) { sample = 0.0f; ++nonFinite; }
-                    peakBefore = std::max(peakBefore, std::fabs(sample));
-                    if (std::fabs(sample) > 1.0f) ++clippedBefore;
-                    outputInterleaved[static_cast<size_t>(i) * 2u + static_cast<size_t>(channel)] = sample;
-                    pair[channel] = sample;
+                float left = 0.0f;
+                float right = 0.0f;
+                if (hasDirect) {
+                    left += dryGain * tailDirectScale * tailLeftCue * lowpassSample(
+                        resources.directStereo.data[0][i], tailDirectAlpha,
+                        &resources.directLowpassState[0]);
+                    right += dryGain * tailDirectScale * tailRightCue * lowpassSample(
+                        resources.directStereo.data[1][i], tailDirectAlpha,
+                        &resources.directLowpassState[1]);
                 }
-                (void)pair;
+                if (hasReflection) {
+                    left += wetGain * tailWetScale * resources.reflectionStereo.data[0][i];
+                    right += wetGain * tailWetScale * resources.reflectionStereo.data[1][i];
+                }
+                left *= effectiveSpatialBlend;
+                right *= effectiveSpatialBlend;
+                if (!std::isfinite(left)) { left = 0.0f; ++nonFinite; }
+                if (!std::isfinite(right)) { right = 0.0f; ++nonFinite; }
+                peakBefore = std::max(peakBefore, std::max(std::fabs(left), std::fabs(right)));
+                if (std::fabs(left) > 1.0f) ++clippedBefore;
+                if (std::fabs(right) > 1.0f) ++clippedBefore;
+                outputInterleaved[static_cast<size_t>(i) * 2u] = left;
+                outputInterleaved[static_cast<size_t>(i) * 2u + 1u] = right;
             }
             firstPass.write(reinterpret_cast<const char*>(outputInterleaved.data()),
                             static_cast<std::streamsize>(frameSize * 2 * sizeof(float)));
@@ -1056,7 +1169,8 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
     }
     const double inputRmsDbfs = dbfs(inputStats.rmsCombined());
     const double outputMainRmsDbfs = dbfs(outputMainStats.rmsCombined());
-    const bool exactBypass = spatialBlend <= 1e-6f && std::fabs(manualOutputGainDb) <= 1e-6f;
+    const bool exactBypass = effectiveSpatialBlend <= 1e-6f &&
+        std::fabs(manualOutputGainDb) <= 1e-6f;
     float automaticMakeupGainDb = 0.0f;
     if (!exactBypass && inputStats.rmsCombined() > 1e-9 && outputMainStats.rmsCombined() > 1e-9) {
         const float maxMakeup = (trajectory == 8 || std::max(startDistance, endDistance) > 4.0f)
@@ -1132,7 +1246,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
          << ",\"tail_frames\":" << tailFrames
          << ",\"render_ms\":" << renderMs
          << ",\"input_channels\":2,\"output_channels\":2"
-         << ",\"stereo_mode\":\"preserve_point_stereo\""
+         << ",\"stereo_mode\":\"moving_mono_object_with_side_bed\""
          << ",\"input_peak\":" << inputStats.peak()
          << ",\"input_peak_left\":" << inputStats.peakLeft
          << ",\"input_peak_right\":" << inputStats.peakRight
@@ -1174,6 +1288,12 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRenderRoomAware(
          << ",\"reflection_order\":" << room.order
          << ",\"reflection_duration_seconds\":" << room.duration
          << ",\"reflection_headroom_db\":" << kReflectionHeadroomDb
+         << ",\"effective_spatial_blend\":" << effectiveSpatialBlend
+         << ",\"object_ambience_bed_gain\":" << ambienceBedGain
+         << ",\"object_lateral_cue_db\":" << kObjectLateralCueDb
+         << ",\"direct_rear_lowpass_hz\":" << kRearDirectLowpassHz
+         << ",\"reflection_lowpass_hz\":" << kReflectionLowpassHz
+         << ",\"reflection_gate_floor_dbfs\":" << kReflectionGateFloorDbfs
          << ",\"true_effect_mix\":true}"
          ;
     return env->NewStringUTF(json.str().c_str());

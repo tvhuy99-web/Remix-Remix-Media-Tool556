@@ -1,0 +1,32 @@
+name: Purge All Actions Artifacts
+
+on:
+  push:
+    paths:
+      - '.github/workflows/purge-all-actions-artifacts.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete every Actions artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          mapfile -t IDS < <(gh api --paginate -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' "repos/${REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts[].id')
+          echo "Found ${#IDS[@]} artifact(s)."
+          deleted=0
+          for id in "${IDS[@]}"; do
+            gh api --method DELETE -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' "repos/${REPOSITORY}/actions/artifacts/${id}"
+            deleted=$((deleted + 1))
+          done
+          echo "Deleted ${deleted} artifact(s)."
+          printf '## Artifact purge\n\n- Found: **%s**\n- Deleted: **%s**\n' "${#IDS[@]}" "$deleted" >> "$GITHUB_STEP_SUMMARY"

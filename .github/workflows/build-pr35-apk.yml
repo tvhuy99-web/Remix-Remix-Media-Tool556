@@ -4,13 +4,11 @@ on:
   push:
     branches:
       - build/pr35-apk-4989257
-  pull_request:
-    branches:
-      - agent/spatial-room-production-fix
-      - build/pr35-apk-4989257
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   build-apk:
@@ -64,17 +62,39 @@ jobs:
           retention-days: 30
 
       - name: Publish prerelease APK
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="pr35-spatial-room-production-4989257"
+          TAG="pr35-spatial-room-production-4989257-final"
+          APK_NAME="MediaTool-spatial-room-production-pr35-4989257.apk"
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" \
-            dist/MediaTool-spatial-room-production-pr35-4989257.apk \
-            dist/MediaTool-spatial-room-production-pr35-4989257.apk.sha256 \
+            "dist/$APK_NAME" \
+            "dist/$APK_NAME.sha256" \
             --repo "$GITHUB_REPOSITORY" \
             --target 49892576e81f6616dd22f58f3e862f795b69946a \
             --title "Spatial Room Production PR #35 • 4989257" \
             --notes "APK kiểm thử được build từ commit sản phẩm 49892576e81f6616dd22f58f3e862f795b69946a của PR #35. Đã chạy verify_project, unit tests, lintDebug, assembleDebug và kiểm tra hai native library arm64-v8a." \
             --prerelease
+
+      - name: Report successful APK build to PR35
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="pr35-spatial-room-production-4989257-final"
+          APK_NAME="MediaTool-spatial-room-production-pr35-4989257.apk"
+          CHECKSUM="$(cut -d ' ' -f1 "dist/$APK_NAME.sha256")"
+          cat > /tmp/pr35-apk-comment.md <<EOF
+          <!-- pr35-apk-build:4989257-final -->
+          ## APK PR #35 đã build thành công
+
+          - Commit sản phẩm: \`49892576e81f6616dd22f58f3e862f795b69946a\`
+          - Tệp: \`$APK_NAME\`
+          - SHA-256: \`$CHECKSUM\`
+          - Tải APK: https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$APK_NAME
+          - Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG
+          - Workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Đã hoàn thành \`verify_project.py\`, unit tests, \`lintDebug\`, \`assembleDebug\` và kiểm tra \`libphonon.so\` cùng \`libmediatool_spatial.so\` trong APK.
+          EOF
+          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body-file /tmp/pr35-apk-comment.md

@@ -1,4 +1,4 @@
-name: Build PR35 payload-contract fix APK
+name: Build stable APK from main
 
 on:
   push:
@@ -16,16 +16,16 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Report build start
+      - name: Report rollback build start
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- pr35-payload-v2-build-start:b449792 --> Đang build lại APK PR #35 sau khi đồng bộ payload phòng Kotlin/C++ lên phiên bản 2. Commit sản phẩm: \`b44979228ff9c74a11418f51c0a8eff3cd76ad3e\`. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- main-rollback-build-start:7d1f0cf --> Đang tạo APK quay lại nhánh main từ commit \`7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe\`. Bản này loại bỏ toàn bộ room-aware/reflection của PR #35. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-      - name: Checkout exact product commit
+      - name: Checkout exact main commit
         uses: actions/checkout@v4
         with:
-          ref: b44979228ff9c74a11418f51c0a8eff3cd76ad3e
+          ref: 7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe
           fetch-depth: 0
 
       - name: Set up Java 17
@@ -44,11 +44,12 @@ jobs:
             -alias androiddebugkey | tee /tmp/stable-signing-cert.txt
           grep -q 'SHA256:' /tmp/stable-signing-cert.txt
 
-      - name: Verify payload contract source
+      - name: Verify clean main spatial renderer
         run: |
-          grep -q 'const val PAYLOAD_VERSION = 2' app/src/main/java/com/aistudio/mediatool/core/spatial/RoomReflectionNativeSpec.kt
-          grep -q 'constexpr int kPayloadVersion = 2;' app/src/main/cpp/room_aware_spatial_jni.cpp
-          grep -q 'kotlinAndNativeRoomPayloadVersionsStayAligned' app/src/test/java/com/aistudio/mediatool/core/spatial/SpatialProductionTuningSourceTest.kt
+          test -f app/src/main/cpp/spatial_audio_jni.cpp
+          test ! -f app/src/main/cpp/room_aware_spatial_jni.cpp
+          test ! -f app/src/main/java/com/aistudio/mediatool/core/spatial/RoomReflectionNativeSpec.kt
+          grep -q 'spatial_audio_jni.cpp' app/src/main/cpp/CMakeLists.txt
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -57,20 +58,20 @@ jobs:
 
       - name: Verify, test, lint, and build APK
         env:
-          GITHUB_SHA: b44979228ff9c74a11418f51c0a8eff3cd76ad3e
-          GITHUB_HEAD_REF: agent/spatial-room-production-fix
-          GITHUB_REF_NAME: agent/spatial-room-production-fix
+          GITHUB_SHA: 7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe
+          GITHUB_HEAD_REF: main
+          GITHUB_REF_NAME: main
         run: |
           chmod +x gradlew
           python3 scripts/verify_project.py
           ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace --build-cache
 
-      - name: Verify APK signature and native payload
+      - name: Verify APK signature and native libraries
         run: |
           set -euo pipefail
           mkdir -p dist
           APK_SOURCE="app/build/outputs/apk/debug/app-debug.apk"
-          APK_NAME="MediaTool-spatial-room-production-pr35-b449792-stable-signed.apk"
+          APK_NAME="MediaTool-main-7d1f0cf-stable-signed.apk"
           test -f "$APK_SOURCE"
           cp "$APK_SOURCE" "dist/$APK_NAME"
           sha256sum "dist/$APK_NAME" | tee "dist/$APK_NAME.sha256"
@@ -81,36 +82,36 @@ jobs:
           grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' "dist/$APK_NAME.cert.txt"
           grep -q 'V2 Signer: certificate SHA-256 digest: 14c8ef5fa666b2875bce42e6a18cd0781095ceb1ef627b2194c93bc436a7bac7' "dist/$APK_NAME.cert.txt"
 
-      - name: Publish corrected prerelease APK
+      - name: Publish main rollback prerelease APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="pr35-spatial-room-production-b449792-payload-v2"
-          APK_NAME="MediaTool-spatial-room-production-pr35-b449792-stable-signed.apk"
+          TAG="main-stable-7d1f0cf"
+          APK_NAME="MediaTool-main-7d1f0cf-stable-signed.apk"
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" \
             "dist/$APK_NAME" \
             "dist/$APK_NAME.sha256" \
             "dist/$APK_NAME.cert.txt" \
             --repo "$GITHUB_REPOSITORY" \
-            --target b44979228ff9c74a11418f51c0a8eff3cd76ad3e \
-            --title "Spatial Room Production PR #35 • payload v2 fix • b449792" \
-            --notes "APK thay thế bản PR #35 trước đó. Sửa lỗi runtime 'Phiên bản payload mô hình phòng không tương thích' bằng cách đồng bộ RoomReflectionNativeSpec.PAYLOAD_VERSION và native kPayloadVersion ở phiên bản 2. Bản được ký bằng khóa CI ổn định của PR #34, đã chạy verify_project, unit tests, lintDebug, assembleDebug, CMake/NDK arm64-v8a và apksigner v2." \
+            --target 7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe \
+            --title "MediaTool main • stable signed • 7d1f0cf" \
+            --notes "APK quay lại nhánh main ổn định. Bản này không chứa room-aware renderer, mô hình phản xạ phòng hoặc các thay đổi của PR #35. Vẫn giữ 10 kiểu chuyển động Spatial Audio cơ bản trên main và dùng khóa ký CI ổn định để cài đè bản thử nghiệm. Đã chạy verify_project, unit tests, lintDebug, assembleDebug, CMake/NDK arm64-v8a và apksigner v2." \
             --prerelease
 
-      - name: Report successful release
+      - name: Report successful main rollback release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="pr35-spatial-room-production-b449792-payload-v2"
-          APK_NAME="MediaTool-spatial-room-production-pr35-b449792-stable-signed.apk"
+          TAG="main-stable-7d1f0cf"
+          APK_NAME="MediaTool-main-7d1f0cf-stable-signed.apk"
           CHECKSUM="$(cut -d ' ' -f1 "dist/$APK_NAME.sha256")"
-          cat > /tmp/pr35-payload-v2-comment.md <<EOF
-          <!-- pr35-payload-v2-release:b449792 -->
-          ## APK PR #35 sửa payload v2 đã sẵn sàng
+          cat > /tmp/main-rollback-comment.md <<EOF
+          <!-- main-rollback-release:7d1f0cf -->
+          ## APK quay lại nhánh main đã sẵn sàng
 
-          - Commit sản phẩm: \`b44979228ff9c74a11418f51c0a8eff3cd76ad3e\`
+          - Commit main: \`7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe\`
           - Tệp: \`$APK_NAME\`
           - SHA-256 APK: \`$CHECKSUM\`
           - Chứng thư ký SHA-256: \`14c8ef5fa666b2875bce42e6a18cd0781095ceb1ef627b2194c93bc436a7bac7\`
@@ -118,13 +119,13 @@ jobs:
           - Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG
           - Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 
-          Bản này sửa lỗi \`Phiên bản payload mô hình phòng không tương thích\`, giữ chữ ký ổn định của PR #34 và đã qua unit test, lint, build native ARM64 cùng \`apksigner\`.
+          Bản này không chứa room-aware/reflection của PR #35, giữ Spatial Audio cơ bản từ main và có thể cài đè nhờ cùng chữ ký CI ổn định.
           EOF
-          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body-file /tmp/pr35-payload-v2-comment.md
+          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body-file /tmp/main-rollback-comment.md
 
       - name: Report failure
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- pr35-payload-v2-build-failed:b449792 --> Build APK sửa payload v2 chưa thành công. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- main-rollback-build-failed:7d1f0cf --> Build APK quay lại main chưa thành công. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

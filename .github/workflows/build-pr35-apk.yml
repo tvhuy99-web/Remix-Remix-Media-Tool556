@@ -1,131 +1,13 @@
-name: Build stable APK from main
+name: Archived PR35 build workflow
 
 on:
-  push:
-    branches:
-      - build/pr35-apk-4989257
+  workflow_dispatch:
 
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
 
 jobs:
-  build-apk:
+  archived:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
     steps:
-      - name: Report rollback build start
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- main-rollback-build-start:7d1f0cf --> Đang tạo APK quay lại nhánh main từ commit \`7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe\`. Bản này loại bỏ toàn bộ room-aware/reflection của PR #35. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-
-      - name: Checkout exact main commit
-        uses: actions/checkout@v4
-        with:
-          ref: 7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe
-          fetch-depth: 0
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Restore stable CI signing key
-        run: |
-          mkdir -p .ci
-          base64 --decode .ci/mediatool-ci-debug.keystore.b64 > .ci/mediatool-ci-debug.keystore
-          keytool -list -v \
-            -keystore .ci/mediatool-ci-debug.keystore \
-            -storepass android \
-            -alias androiddebugkey | tee /tmp/stable-signing-cert.txt
-          grep -q 'SHA256:' /tmp/stable-signing-cert.txt
-
-      - name: Verify clean main spatial renderer
-        run: |
-          test -f app/src/main/cpp/spatial_audio_jni.cpp
-          test ! -f app/src/main/cpp/room_aware_spatial_jni.cpp
-          test ! -f app/src/main/java/com/aistudio/mediatool/core/spatial/RoomReflectionNativeSpec.kt
-          grep -q 'spatial_audio_jni.cpp' app/src/main/cpp/CMakeLists.txt
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          validate-wrappers: true
-
-      - name: Verify, test, lint, and build APK
-        env:
-          GITHUB_SHA: 7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe
-          GITHUB_HEAD_REF: main
-          GITHUB_REF_NAME: main
-        run: |
-          chmod +x gradlew
-          python3 scripts/verify_project.py
-          ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace --build-cache
-
-      - name: Verify APK signature and native libraries
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          APK_SOURCE="app/build/outputs/apk/debug/app-debug.apk"
-          APK_NAME="MediaTool-main-7d1f0cf-stable-signed.apk"
-          test -f "$APK_SOURCE"
-          cp "$APK_SOURCE" "dist/$APK_NAME"
-          sha256sum "dist/$APK_NAME" | tee "dist/$APK_NAME.sha256"
-          unzip -l "dist/$APK_NAME" | grep -E 'lib/arm64-v8a/(libphonon|libmediatool_spatial)\.so'
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
-          test -x "$APKSIGNER"
-          "$APKSIGNER" verify --verbose --print-certs "dist/$APK_NAME" | tee "dist/$APK_NAME.cert.txt"
-          grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' "dist/$APK_NAME.cert.txt"
-          grep -q 'V2 Signer: certificate SHA-256 digest: 14c8ef5fa666b2875bce42e6a18cd0781095ceb1ef627b2194c93bc436a7bac7' "dist/$APK_NAME.cert.txt"
-
-      - name: Publish main rollback prerelease APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          TAG="main-stable-7d1f0cf"
-          APK_NAME="MediaTool-main-7d1f0cf-stable-signed.apk"
-          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" \
-            "dist/$APK_NAME" \
-            "dist/$APK_NAME.sha256" \
-            "dist/$APK_NAME.cert.txt" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target 7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe \
-            --title "MediaTool main • stable signed • 7d1f0cf" \
-            --notes "APK quay lại nhánh main ổn định. Bản này không chứa room-aware renderer, mô hình phản xạ phòng hoặc các thay đổi của PR #35. Vẫn giữ 10 kiểu chuyển động Spatial Audio cơ bản trên main và dùng khóa ký CI ổn định để cài đè bản thử nghiệm. Đã chạy verify_project, unit tests, lintDebug, assembleDebug, CMake/NDK arm64-v8a và apksigner v2." \
-            --prerelease
-
-      - name: Report successful main rollback release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="main-stable-7d1f0cf"
-          APK_NAME="MediaTool-main-7d1f0cf-stable-signed.apk"
-          CHECKSUM="$(cut -d ' ' -f1 "dist/$APK_NAME.sha256")"
-          cat > /tmp/main-rollback-comment.md <<EOF
-          <!-- main-rollback-release:7d1f0cf -->
-          ## APK quay lại nhánh main đã sẵn sàng
-
-          - Commit main: \`7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe\`
-          - Tệp: \`$APK_NAME\`
-          - SHA-256 APK: \`$CHECKSUM\`
-          - Chứng thư ký SHA-256: \`14c8ef5fa666b2875bce42e6a18cd0781095ceb1ef627b2194c93bc436a7bac7\`
-          - Tải APK: https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$APK_NAME
-          - Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG
-          - Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-
-          Bản này không chứa room-aware/reflection của PR #35, giữ Spatial Audio cơ bản từ main và có thể cài đè nhờ cùng chữ ký CI ổn định.
-          EOF
-          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body-file /tmp/main-rollback-comment.md
-
-      - name: Report failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr comment 35 --repo "$GITHUB_REPOSITORY" --body "<!-- main-rollback-build-failed:7d1f0cf --> Build APK quay lại main chưa thành công. Workflow: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - run: echo 'PR #35 room-aware experiment was closed. Stable main APK was published from commit 7d1f0cf4a1fbad5e2b7179da8bd96c30766a0ffe.'

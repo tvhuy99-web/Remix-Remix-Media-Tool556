@@ -178,6 +178,8 @@ class SpatialAudioEngine(
                         metrics.renderMs.toDouble() / expectedDurationMs.toDouble()
                     } else null,
                     "hard_bypass" to (value.spatialBlend <= BYPASS_EPSILON),
+                    "mix_limiter_latency_compensated" to true,
+                    "dual_object_branch_gain" to DUAL_OBJECT_BRANCH_GAIN,
                 ),
             )
 
@@ -331,8 +333,7 @@ class SpatialAudioEngine(
                     inputs = listOf(decoded, midRendered),
                     output = spatialComposite,
                     filterComplex = "[0:a]pan=stereo|c0=0.5*FL-0.5*FR|c1=-0.5*FL+0.5*FR[side];" +
-                        "[1:a][side]amix=inputs=2:duration=longest:normalize=0," +
-                        "alimiter=limit=$SAMPLE_PEAK_LIMIT:level=false[out]",
+                        "[1:a][side]amix=inputs=2:duration=longest:normalize=0[out]",
                     phase = "spatial_mid_side_rebuild",
                     startPercent = 56f,
                     endPercent = 63f,
@@ -387,8 +388,9 @@ class SpatialAudioEngine(
                 runRawPcmComposite(
                     inputs = listOf(leftRendered, rightRendered),
                     output = spatialComposite,
-                    filterComplex = "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0," +
-                        "alimiter=limit=$SAMPLE_PEAK_LIMIT:level=false[out]",
+                    filterComplex = "[0:a]volume=$DUAL_OBJECT_BRANCH_GAIN[left];" +
+                        "[1:a]volume=$DUAL_OBJECT_BRANCH_GAIN[right];" +
+                        "[left][right]amix=inputs=2:duration=longest:normalize=0[out]",
                     phase = "spatial_dual_object_mix",
                     startPercent = 63f,
                     endPercent = 68f,
@@ -429,7 +431,7 @@ class SpatialAudioEngine(
             output = output,
             filterComplex = "[0:a]volume=$dry[dry];[1:a]volume=$wet[wet];" +
                 "[dry][wet]amix=inputs=2:duration=longest:normalize=0," +
-                "alimiter=limit=$SAMPLE_PEAK_LIMIT:level=false[out]",
+                "alimiter=limit=$SAMPLE_PEAK_LIMIT:level=false:latency=1[out]",
             phase = "spatial_master_blend",
             startPercent = 69f,
             endPercent = 76f,
@@ -567,7 +569,8 @@ class SpatialAudioEngine(
         if (!ReturnCode.isSuccess(session.returnCode)) {
             error("FFmpeg loudness thất bại ở $phase: ${session.returnCode}")
         }
-        parseLoudnorm(session.logsAsString.orEmpty())
+        parseLoudnorm(session.allLogsAsString.orEmpty())
+            ?: error("Không đọc được loudnorm JSON ở $phase")
     } catch (error: Exception) {
         DiagnosticLogger.warn(
             component = TAG,
@@ -734,6 +737,7 @@ class SpatialAudioEngine(
         private const val PCM_BYTES_PER_SECOND = 48_000L * 2L * 4L
         private const val BYPASS_EPSILON = 1e-6f
         private const val SAMPLE_PEAK_LIMIT = 0.89125094f
+        private const val DUAL_OBJECT_BRANCH_GAIN = 0.70710678f
         private val LOUDNORM_JSON = Regex("""\{\s*\"input_i\"[\s\S]*?\}""")
     }
 }

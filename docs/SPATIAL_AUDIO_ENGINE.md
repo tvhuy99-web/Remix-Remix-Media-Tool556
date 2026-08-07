@@ -1,36 +1,75 @@
 # Spatial Audio Engine
 
-Nhánh `agent/spatial-audio-engine` thay thế hoàn toàn đường xử lý Nhạc 8D cũ dựa trên `apulsator + aecho` bằng renderer binaural object-based dùng Steam Audio.
+Spatial Audio dùng Steam Audio 4.8.1 để render binaural ngoại tuyến trên Android ARM64. FFmpeg giải mã nguồn về PCM float stereo 48 kHz, engine dựng trường âm, sau đó mã hóa lại audio hoặc ghép với video.
 
 ## Mục tiêu
 
 - Render vị trí trước, sau, trái, phải, trên và dưới qua tai nghe.
-- Giữ ảnh stereo gốc của nhạc thay vì ép toàn bộ nguồn về mono.
+- Không ép nhạc stereo về mono.
+- Cho phép A/B nhiều chiến lược xử lý stereo thay vì coi một chiến lược là luôn đúng.
 - Tự chuyển nguồn mono thành stereo trước khi đi vào renderer.
-- Hỗ trợ quỹ đạo vòng quanh đầu, vòng dọc, hình số 8 và tuyến tính.
 - Tách khoảng cách vật lý khỏi reverb.
-- Hỗ trợ HRTF tích hợp và HRTF cá nhân ở định dạng SOFA ở tầng kỹ thuật.
-- Cân lại loudness tự động mà không dùng compressor để làm phẳng động học.
-- Ghi cấu hình, timing, loudness, stereo và tài nguyên thiết bị vào diagnostics.
-- Không thay đổi `main` cho tới khi CI và kiểm thử thiết bị đạt.
+- Hỗ trợ HRTF tích hợp và HRTF SOFA ở tầng kỹ thuật.
+- Giữ loudness và sample peak trong miền an toàn mà không dùng compressor mặc định.
+- Đo integrated loudness và true peak trên tệp đã mã hóa.
 
-## Kiến trúc
+## Ba chế độ stereo
 
-1. FFmpeg giải mã nguồn về PCM float stereo, 48 kHz.
-   - Nguồn stereo giữ nguyên hai kênh trái và phải.
-   - Nguồn mono được FFmpeg nhân đôi thành stereo.
-2. `SpatialAudioEngine` đo metadata và loudness đầu vào, sau đó truyền PCM stereo cùng `SpatialAudioConfig` sang JNI.
-3. `mediatool_spatial` dùng Steam Audio để:
-   - áp distance attenuation trên hai kênh;
-   - áp air absorption ba dải;
-   - áp source directivity;
-   - render HRTF binaural với đầu vào stereo;
-   - trộn hai kênh thành một đường mono riêng chỉ để cấp cho parametric reverb;
-   - crossfade ở mép phạm vi hiệu ứng;
-   - bù RMS tự động theo đầu vào, giới hạn từ -6 dB đến +12 dB;
-   - áp một peak ceiling chung ở -1 dBFS cho cả hai tai.
-4. FFmpeg mã hóa PCM stereo hoặc ghép lại với video bằng stream-copy.
-5. FFmpeg đo integrated loudness và true peak của tệp đã mã hóa để diagnostics phản ánh đúng đầu ra người dùng nhận được.
+### Mid/Side
+
+Đây là mặc định cho nhạc.
+
+1. Tách Mid bằng `(L + R) / 2` và nhân thành stereo để đưa qua Steam Audio.
+2. Spatialize Mid theo quỹ đạo đang chọn.
+3. Giữ Side `(L - R) / 2` ngoài renderer.
+4. Ghép Side trở lại sau khi Mid đã spatialize.
+
+Mục tiêu của chế độ này là cho phần trung tâm của bản mix chuyển động nhưng vẫn giữ nhiều thông tin độ rộng gốc.
+
+### Cùng vị trí
+
+Đây là baseline tương thích với renderer trước đây. Hai kênh L/R vẫn khác dữ liệu nhưng cùng đi qua một `IPLBinauralEffect` với một hướng nguồn chung. Chế độ này hữu ích để A/B và xác định chính xác khác biệt do cách dựng sân khấu stereo.
+
+### Hai nguồn L/R
+
+Tách L và R thành hai đường riêng. Mỗi đường được render độc lập bằng Steam Audio, với phương vị lệch quanh tâm quỹ đạo theo mặc định `-15°` cho L và `+15°` cho R. Hai kết quả được cộng lại sau render.
+
+Độ lệch object là tham số kỹ thuật `stereoObjectHalfAngleDeg`, mặc định 15° và được giới hạn 0–45°.
+
+## Contract Cường độ 3D
+
+`Cường độ 3D` là master blend của toàn bộ đường spatial.
+
+- `0%`: hard bypass. PCM stereo đã decode được chép thẳng sang đầu ra render. Không chạy distance attenuation, air absorption, directivity, HRTF, reverb hoặc makeup gain.
+- `1–100%`: renderer tạo một đường spatial ở cường độ đầy đủ, sau đó trộn với PCM gốc theo giá trị người dùng.
+
+Nhờ đó 0% có ý nghĩa rõ ràng và không còn reverb/HRTF ẩn.
+
+## Điều khiển giao diện
+
+Giao diện thông thường gồm:
+
+1. Chế độ stereo.
+2. Kiểu chuyển động.
+3. Chu kỳ.
+4. Khoảng cách.
+5. Cường độ 3D.
+6. Độ vang.
+
+Chu kỳ chạy trực tiếp từ 3 đến 30 giây. Khoảng cách thân thiện chạy từ 0,8 đến 20 mét.
+
+## Kiến trúc xử lý
+
+1. FFmpeg materialize và decode nguồn thành PCM stereo float 48 kHz.
+2. Engine đo loudness đầu vào.
+3. Tùy chế độ stereo:
+   - Mid/Side: tạo Mid, render Mid, ghép Side lại.
+   - Cùng vị trí: render stereo hiện tại làm baseline.
+   - Hai nguồn L/R: render hai object riêng rồi cộng lại.
+4. Master blend trộn PCM gốc và đường spatial theo `Cường độ 3D`.
+5. Một sample-peak safety limiter ở khoảng -1 dBFS bảo vệ các bước ghép PCM trung gian.
+6. FFmpeg mã hóa audio hoặc ghép với video.
+7. FFmpeg `loudnorm` đo integrated LUFS, LRA và true peak trực tiếp từ log của phiên phân tích, kể cả release build.
 
 ## Hệ tọa độ
 
@@ -40,43 +79,27 @@ Renderer dùng hệ tọa độ Steam Audio:
 - `+Y`: phía trên.
 - `-Z`: phía trước.
 
-Góc phương vị 0 độ ở phía trước, 90 độ ở bên phải, 180 độ ở phía sau và -90 độ ở bên trái.
-
-## Giao diện người dùng thông thường
-
-Giao diện mặc định chỉ có năm điều khiển:
-
-1. Kiểu chuyển động.
-2. Tốc độ.
-3. Khoảng cách.
-4. Cường độ 3D.
-5. Độ vang.
-
-Các lựa chọn này ánh xạ vào bộ tham số kỹ thuật đã giới hạn trong miền phù hợp cho nhạc. Cấu hình nghiên cứu cũ không được mang sang phiên bản giao diện đơn giản, tránh giữ lại các giá trị cực đoan như nguồn cách hơn 10 mét.
-
-Các tùy chỉnh chuyên sâu như góc chính xác, directivity, SOFA, RT60 ba dải, block DSP và phạm vi thời gian vẫn nằm trong lõi nhưng chưa xuất hiện trên giao diện thông thường. Chúng sẽ được xem xét sau khi cấu hình mặc định đã ổn định bằng dữ liệu A/B.
+Góc phương vị 0° ở phía trước, 90° ở bên phải, 180° ở phía sau và -90° ở bên trái.
 
 ## Mặc định âm nhạc
 
-- Khoảng cách: 1,2 mét.
-- Khoảng cách không suy hao: 1,2 mét.
+- Chế độ stereo: Mid/Side.
+- Khoảng cách: 1,2 m.
+- Khoảng cách không suy hao: 1,2 m.
 - Distance rolloff: 0,65.
 - Air absorption: 0,35.
-- Cường độ binaural: 85 phần trăm.
-- Reverb Wet: 12 phần trăm.
-- Peak ceiling: -1 dBFS.
+- Cường độ 3D: 85%.
+- Reverb Wet: 12%.
+- Độ lệch Dual Object: ±15°.
+- Sample-peak ceiling: khoảng -1 dBFS.
 
-Thanh khoảng cách thông thường giới hạn từ 0,8 đến 4 mét. Thanh tốc độ ánh xạ chu kỳ từ 18 giây xuống 3 giây.
+Lưu ý: sample-peak protection trong renderer không phải true-peak limiter có oversampling. True peak được đo sau mã hóa để diagnostics phản ánh đúng tệp người dùng nhận được.
 
-Wet bằng 0 không tạo hoặc chạy reflection effect. Renderer vẫn xả tail của direct/HRTF khi hiệu ứng kéo tới cuối tệp; khi Wet lớn hơn 0, reflection và wet-binaural tail cũng được xả đầy đủ.
+## Loudness và peak
 
-## Bảo toàn loudness
+Steam Audio native vẫn đo RMS của nội dung chính và áp shared gain để tránh thay đổi loudness quá mạnh. Gain bù native giới hạn từ -6 dB đến +12 dB và một hệ số peak protection chung được áp cho hai tai.
 
-Renderer đo RMS của stereo đầu vào và RMS phần nội dung chính sau spatial processing, không tính tail reverb vào mục tiêu cân bằng. Gain bù tự động được giới hạn từ -6 dB đến +12 dB. Gain thủ công nội bộ, nếu có, được cộng sau đó.
-
-Sau khi xác định gain mong muốn, renderer dùng cùng một hệ số peak protection cho cả hai tai để giữ ảnh stereo và giới hạn peak ở -1 dBFS. Không hard-clip từng kênh và không dùng compressor mặc định.
-
-Diagnostics cuối cùng còn đo integrated LUFS và true peak trên tệp đã mã hóa, vì codec mất dữ liệu có thể thay đổi peak so với PCM.
+Các bước ghép Mid/Side, Dual Object và master blend có sample-peak limiter riêng để tránh cộng tín hiệu vượt full scale. Sau mã hóa, `loudnorm` đo integrated LUFS và true peak. Nếu cần cam kết true-peak ceiling cứng cho codec mất dữ liệu, cần một true-peak limiter có oversampling ở thay đổi riêng.
 
 ## Diagnostics
 
@@ -90,78 +113,62 @@ Sự kiện chính:
 - `spatial_render_failed`
 - `spatial_render_cancelled`
 
-Các trường quan trọng:
+Các trường quan trọng gồm:
 
-- codec, số kênh, channel layout, sample rate và thời lượng nguồn;
-- số kênh decode và đầu ra;
-- loại stereo processing: giữ stereo hoặc upmix mono;
-- peak và RMS đầu vào tổng thể, trái và phải;
-- độ tương quan stereo, cân bằng trái-phải và RMS phần chênh lệch;
-- nhận diện dual-mono;
-- peak và RMS đầu ra tổng thể, trái và phải;
-- RMS phần nội dung chính trước và sau gain;
-- gain bù loudness, gain peak protection và tổng gain;
-- integrated LUFS, loudness range và true peak trước/sau mã hóa;
+- codec, channel layout, sample rate và thời lượng;
+- `stereo_mode` và độ lệch object;
+- hard bypass có được kích hoạt hay không;
+- peak/RMS/correlation/balance/dual-mono từ native renderer;
+- integrated LUFS, LRA và true peak trước/sau mã hóa;
 - loudness delta và true-peak delta;
-- toàn bộ cấu hình quỹ đạo và âm học;
-- HRTF tích hợp hoặc SOFA;
-- số frame, block và tail frame;
-- thời gian render và realtime factor;
-- số mẫu không hữu hạn;
-- số mẫu vượt full-scale trước gain;
-- PSS, native heap, Java heap và nhiệt độ pin trước/sau render;
-- phiên bản Steam Audio và kích thước tệp đầu ra.
+- gain bù, sample-peak protection;
+- frame, block, tail frame và render time;
+- PSS, native heap, Java heap và nhiệt độ pin;
+- HRTF và phiên bản Steam Audio.
 
-Diagnostics không ghi đường dẫn nguồn hoặc đường dẫn SOFA đầy đủ.
+Diagnostics không ghi URI nguồn hoặc đường dẫn SOFA đầy đủ.
 
-## Kiểm thử bắt buộc
+## Kiểm thử A/B bắt buộc
 
-### CI
+Dùng tai nghe và ít nhất các nguồn sau:
 
-- Xác minh cấu trúc dự án.
-- Biên dịch CMake/NDK cho `arm64-v8a`.
-- Kiểm tra APK chứa `libphonon.so` và `libmediatool_spatial.so`.
-- Android lint.
-- Unit test Kotlin.
-- Xác minh chữ ký APK.
+1. Nhạc stereo rộng.
+2. Nguồn mono/dual-mono.
+3. Tín hiệu có Side rất mạnh hoặc L/R gần ngược pha.
+4. Impulse hoặc tiếng vỗ tay ngắn.
+5. Pink noise hoặc giọng nói.
 
-### Thiết bị
+Với cùng một nguồn, thử lần lượt:
 
-Dùng tai nghe và ít nhất bốn loại nguồn:
+- Cường độ 0% để xác nhận bypass.
+- Mid/Side.
+- Cùng vị trí.
+- Hai nguồn L/R.
+- Wet 0 và Wet lớn hơn 0.
+- Chu kỳ ngắn, vừa và dài.
+- Khoảng cách gần, vừa và xa.
+- Audio-only và video.
 
-1. Nhạc stereo rộng để xác nhận không mất side information.
-2. Nguồn mono để xác nhận upmix stereo và dual-mono detection.
-3. Impulse hoặc tiếng vỗ tay ngắn để phát hiện click và reverb ngoài ý muốn.
-4. Pink noise hoặc giọng nói để kiểm tra định vị trước/sau/trên/dưới.
+Nên so sánh loudness, true peak, correlation, left/right balance và cảm nhận độ rộng bằng cùng mức nghe.
 
-Cần A/B ít nhất:
+## Tail và thời lượng
 
-- nguồn gốc và Spatial Audio với cùng mức nghe;
-- Wet 0 và Wet lớn hơn 0;
-- vòng ngang, vòng dọc, hình số 8 và tuyến tính;
-- mức khoảng cách gần, vừa và xa;
-- mức cường độ 3D nhẹ, cân bằng và rõ;
-- integrated loudness delta và true peak sau mã hóa;
-- stereo correlation, left/right balance và dual-mono detection;
-- audio-only và video giữ hình.
+Audio-only hiện giữ tail của direct/HRTF và reverb khi hiệu ứng kéo tới cuối tệp, nên có thể dài hơn nguồn. Video dùng `-shortest`, vì vậy tail vượt quá hình sẽ bị cắt. Đây là chính sách hiện tại và cần được kiểm tra bằng A/B trước khi thay đổi hành vi xuất file.
 
-## Giới hạn được chấp nhận
+## CI và quyền GitHub Actions
 
-- Đầu ra binaural được thiết kế cho tai nghe.
-- Độ chính xác trước/sau và trên/dưới phụ thuộc mức phù hợp giữa HRTF và tai người nghe.
-- Tệp stereo đã render không thể phản ứng với head tracking sau khi xuất.
-- Parametric reverb dùng một nguồn mono tổng hợp từ stereo direct path, nhưng đường âm thanh trực tiếp vẫn giữ stereo xuyên suốt.
-- Phiên bản hiện tại chưa mô phỏng phòng bằng hình học hoặc ray tracing.
+Build workflow chỉ cần `contents: read`. Logic đặc biệt dành cho PR Spatial Audio cũ đã được bỏ. Workflow xóa toàn bộ Actions artifacts/caches/runs là thao tác phá hủy dữ liệu và chỉ được phép chạy thủ công bằng `workflow_dispatch`.
 
 ## Quy tắc hợp nhất
 
-Không hợp nhất vào `main` chỉ vì build thành công. Cần có diagnostics thiết bị, mẫu A/B và xác nhận rằng:
+Không hợp nhất chỉ vì build xanh. Cần xác nhận trên thiết bị rằng:
 
-- không click tại thay đổi HRTF hoặc mép thời gian;
-- không clipping sau peak protection;
-- Wet 0 hoàn toàn khô;
-- ảnh stereo không bị thu hẹp bất thường;
-- loudness đầu ra gần đầu vào trong giới hạn nghe hợp lý;
-- quỹ đạo lặp không tạo seam nghe thấy;
-- video giữ đúng đồng bộ hình và tiếng;
+- 0% thực sự bypass;
+- không click ở seam hoặc mép phạm vi hiệu ứng;
+- không clipping sau các bước ghép;
+- ba chế độ stereo tạo khác biệt có thể nghe và đo được;
+- Mid/Side không làm co sân khấu bất thường;
+- Dual Object không tạo cảm giác hai nguồn tách rời quá mức;
+- loudness đầu ra hợp lý và true peak sau mã hóa được ghi đầy đủ;
+- video giữ đồng bộ hình tiếng;
 - RAM, nhiệt và realtime factor phù hợp thiết bị mục tiêu.

@@ -10,7 +10,9 @@ import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
 import com.aistudio.mediatool.core.media.MediaEngine
+import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFprobeKit
+import com.arthenica.ffmpegkit.ReturnCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -118,7 +120,6 @@ class SpatialAudioEngine(
                 if (safeFilters.isNotEmpty()) {
                     append("-af \"").append(safeFilters.joinToString(",")).append("\" ")
                 }
-                // Giữ L/R nếu nguồn đã stereo; FFmpeg tự nhân đôi nguồn mono thành stereo.
                 append("-ac 2 -ar 48000 -c:a pcm_f32le -f f32le \"")
                     .append(decoded.absolutePath)
                     .append("\"")
@@ -133,7 +134,8 @@ class SpatialAudioEngine(
             ) { progress, message -> emit(State.Progress(progress, message)) }
             require(decoded.isFile && decoded.length() >= 8L) { "Không giải mã được PCM stereo cho spatial audio" }
 
-            val decodedDurationMs = decoded.length() * 1_000L / (48_000L * 2L * 4L)
+            val decodedDurationMs = decoded.length() * 1_000L / PCM_BYTES_PER_SECOND
+            val decodedPcm = withContext(Dispatchers.IO) { PcmStereoAnalyzer.analyze(decoded) }
             val inputLoudness = analyzeLoudness(
                 command = "-hide_banner -f f32le -ar 48000 -ac 2 -i \"${decoded.absolutePath}\" " +
                     "-af \"loudnorm=I=-16:TP=-1:LRA=11:print_format=json\" -f null -",
@@ -144,7 +146,9 @@ class SpatialAudioEngine(
                 component = TAG,
                 event = "spatial_input_quality",
                 sessionId = taskId,
-                fields = sourceInfo.diagnosticFields("source") + inputLoudness.diagnosticFields("input") + mapOf(
+                fields = sourceInfo.diagnosticFields("source") +
+                    inputLoudness.diagnosticFields("input") +
+                    decodedPcm.diagnosticFields("decoded_pcm") + mapOf(
                     "decoded_channels" to 2,
                     "decoded_sample_rate" to 48_000,
                     "decoded_bytes" to decoded.length(),
@@ -152,19 +156,28 @@ class SpatialAudioEngine(
                 ),
             )
 
-            emit(State.Progress(38f, "Đang dựng trường âm thanh stereo HRTF"))
+            emit(State.Progress(36f, "Đang dựng ${value.stereoMode.label}"))
             val nativeBefore = runtimeSnapshot("native_before")
-            val metrics = withContext(Dispatchers.Default) {
-                SteamAudioBridge.render(decoded, rendered, value)
-            }
+            val nativeMetrics = renderStereoMode(
+                decoded = decoded,
+                rendered = rendered,
+                config = value,
+                workDir = workDir,
+                expectedDurationMs = expectedDurationMs,
+            ) { progress, message -> emit(State.Progress(progress, message)) }
             val nativeAfter = runtimeSnapshot("native_after")
             require(rendered.isFile && rendered.length() >= 8L) { "Renderer không tạo PCM stereo" }
-            val renderedDurationMs = rendered.length() * 1_000L / (48_000L * 2L * 4L)
+            val renderedPcm = withContext(Dispatchers.IO) { PcmStereoAnalyzer.analyze(rendered) }
+            val metrics = nativeMetrics.withPcmDiagnostics(decodedPcm, renderedPcm)
+            val renderedDurationMs = rendered.length() * 1_000L / PCM_BYTES_PER_SECOND
             DiagnosticLogger.info(
                 component = TAG,
                 event = "spatial_native_complete",
                 sessionId = taskId,
-                fields = metrics.diagnosticFields() + nativeBefore + nativeAfter + mapOf(
+                fields = metrics.diagnosticFields() +
+                    decodedPcm.diagnosticFields("decoded_pcm") +
+                    renderedPcm.diagnosticFields("final_pcm") +
+                    nativeBefore + nativeAfter + mapOf(
                     "decoded_bytes" to decoded.length(),
                     "rendered_bytes" to rendered.length(),
                     "decoded_duration_ms" to decodedDurationMs,
@@ -172,6 +185,10 @@ class SpatialAudioEngine(
                     "render_realtime_factor" to if (expectedDurationMs > 0L) {
                         metrics.renderMs.toDouble() / expectedDurationMs.toDouble()
                     } else null,
+                    "hard_bypass" to (value.spatialBlend <= BYPASS_EPSILON),
+                    "mix_limiter_latency_compensated" to true,
+                    "dual_object_branch_gain" to DUAL_OBJECT_BRANCH_GAIN,
+                    "stereo_diagnostics_scope" to "decoded_and_final_pcm",
                 ),
             )
 
@@ -211,10 +228,13 @@ class SpatialAudioEngine(
                 sessionId = taskId,
                 fields = inputLoudness.diagnosticFields("input") +
                     outputLoudness.diagnosticFields("output") +
+                    decodedPcm.diagnosticFields("decoded_pcm") +
+                    renderedPcm.diagnosticFields("final_pcm") +
                     outputInfo.diagnosticFields("output") +
                     qualityDelta + runtimeAfter + mapOf(
                         "output_bytes" to output.length(),
                         "output_extension" to extension,
+                        "stereo_mode" to value.stereoMode.name,
                     ),
             )
             DiagnosticLogger.info(
@@ -222,7 +242,9 @@ class SpatialAudioEngine(
                 event = "spatial_render_success",
                 sessionId = taskId,
                 fields = metrics.diagnosticFields() + inputLoudness.diagnosticFields("input") +
-                    outputLoudness.diagnosticFields("output") + qualityDelta + mapOf(
+                    outputLoudness.diagnosticFields("output") +
+                    decodedPcm.diagnosticFields("decoded_pcm") +
+                    renderedPcm.diagnosticFields("final_pcm") + qualityDelta + mapOf(
                         "output_bytes" to output.length(),
                         "output_extension" to extension,
                         "output_channels" to outputInfo.channels,
@@ -274,6 +296,271 @@ class SpatialAudioEngine(
         }
     }
 
+    private suspend fun renderStereoMode(
+        decoded: File,
+        rendered: File,
+        config: SpatialAudioConfig,
+        workDir: File,
+        expectedDurationMs: Long,
+        onProgress: suspend (Float, String) -> Unit,
+    ): SpatialRenderMetrics {
+        if (config.spatialBlend <= BYPASS_EPSILON) {
+            val startedAt = SystemClock.elapsedRealtime()
+            withContext(Dispatchers.IO) { decoded.copyTo(rendered, overwrite = true) }
+            onProgress(72f, "Cường độ 0%: bypass PCM nguyên bản")
+            return bypassMetrics(
+                decoded = decoded,
+                renderMs = SystemClock.elapsedRealtime() - startedAt,
+            )
+        }
+
+        val fullySpatial = config.copy(spatialBlend = 1f).normalized()
+        val spatialComposite = File(workDir, "spatial_composite.f32")
+        val metrics = when (config.stereoMode) {
+            SpatialStereoMode.SHARED_POSITION -> {
+                onProgress(42f, "Render stereo cùng một vị trí")
+                val native = withContext(Dispatchers.Default) {
+                    SteamAudioBridge.render(decoded, spatialComposite, fullySpatial)
+                }
+                native.copy(stereoMode = "shared_position")
+            }
+
+            SpatialStereoMode.MID_SIDE -> {
+                val midInput = File(workDir, "mid_input.f32")
+                val midRendered = File(workDir, "mid_rendered.f32")
+                runRawPcmFilter(
+                    input = decoded,
+                    output = midInput,
+                    filter = "pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR",
+                    phase = "spatial_mid_extract",
+                    startPercent = 38f,
+                    endPercent = 43f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
+                onProgress(48f, "Spatialize kênh Mid, giữ Side riêng")
+                val native = withContext(Dispatchers.Default) {
+                    SteamAudioBridge.render(midInput, midRendered, fullySpatial)
+                }
+                runRawPcmComposite(
+                    inputs = listOf(decoded, midRendered),
+                    output = spatialComposite,
+                    filterComplex = "[0:a]pan=stereo|c0=0.5*FL-0.5*FR|c1=-0.5*FL+0.5*FR[side];" +
+                        "[1:a][side]amix=inputs=2:duration=longest:normalize=0[out]",
+                    phase = "spatial_mid_side_rebuild",
+                    startPercent = 56f,
+                    endPercent = 63f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
+                native.copy(stereoMode = "mid_side")
+            }
+
+            SpatialStereoMode.DUAL_OBJECT -> {
+                val leftInput = File(workDir, "left_object_input.f32")
+                val rightInput = File(workDir, "right_object_input.f32")
+                val leftRendered = File(workDir, "left_object_rendered.f32")
+                val rightRendered = File(workDir, "right_object_rendered.f32")
+                runRawPcmFilter(
+                    input = decoded,
+                    output = leftInput,
+                    filter = "pan=stereo|c0=FL|c1=0*FR",
+                    phase = "spatial_left_object_extract",
+                    startPercent = 38f,
+                    endPercent = 41f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
+                runRawPcmFilter(
+                    input = decoded,
+                    output = rightInput,
+                    filter = "pan=stereo|c0=0*FL|c1=FR",
+                    phase = "spatial_right_object_extract",
+                    startPercent = 41f,
+                    endPercent = 44f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
+                val offset = config.stereoObjectHalfAngleDeg
+                val leftConfig = fullySpatial.copy(
+                    startAzimuthDeg = fullySpatial.startAzimuthDeg - offset,
+                    endAzimuthDeg = fullySpatial.endAzimuthDeg - offset,
+                ).normalized()
+                val rightConfig = fullySpatial.copy(
+                    startAzimuthDeg = fullySpatial.startAzimuthDeg + offset,
+                    endAzimuthDeg = fullySpatial.endAzimuthDeg + offset,
+                ).normalized()
+                onProgress(48f, "Render object L lệch -${formatAngle(offset)}°")
+                val leftMetrics = withContext(Dispatchers.Default) {
+                    SteamAudioBridge.render(leftInput, leftRendered, leftConfig)
+                }
+                onProgress(57f, "Render object R lệch +${formatAngle(offset)}°")
+                val rightMetrics = withContext(Dispatchers.Default) {
+                    SteamAudioBridge.render(rightInput, rightRendered, rightConfig)
+                }
+                runRawPcmComposite(
+                    inputs = listOf(leftRendered, rightRendered),
+                    output = spatialComposite,
+                    filterComplex = "[0:a]volume=$DUAL_OBJECT_BRANCH_GAIN[left];" +
+                        "[1:a]volume=$DUAL_OBJECT_BRANCH_GAIN[right];" +
+                        "[left][right]amix=inputs=2:duration=longest:normalize=0[out]",
+                    phase = "spatial_dual_object_mix",
+                    startPercent = 63f,
+                    endPercent = 68f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
+                leftMetrics.copy(
+                    renderMs = leftMetrics.renderMs + rightMetrics.renderMs,
+                    tailFrames = maxOf(leftMetrics.tailFrames, rightMetrics.tailFrames),
+                    stereoMode = "dual_object",
+                )
+            }
+        }
+
+        blendOriginalAndSpatial(
+            original = decoded,
+            spatial = spatialComposite,
+            output = rendered,
+            intensity = config.spatialBlend,
+            expectedDurationMs = expectedDurationMs,
+            onProgress = onProgress,
+        )
+        return metrics
+    }
+
+    private suspend fun blendOriginalAndSpatial(
+        original: File,
+        spatial: File,
+        output: File,
+        intensity: Float,
+        expectedDurationMs: Long,
+        onProgress: suspend (Float, String) -> Unit,
+    ) {
+        val wet = intensity.coerceIn(0f, 1f)
+        val dry = 1f - wet
+        runRawPcmComposite(
+            inputs = listOf(original, spatial),
+            output = output,
+            filterComplex = "[0:a]volume=$dry[dry];[1:a]volume=$wet[wet];" +
+                "[dry][wet]amix=inputs=2:duration=longest:normalize=0," +
+                "alimiter=limit=$SAMPLE_PEAK_LIMIT:level=false:latency=1[out]",
+            phase = "spatial_master_blend",
+            startPercent = 69f,
+            endPercent = 76f,
+            expectedDurationMs = expectedDurationMs,
+            onProgress = onProgress,
+        )
+    }
+
+    private suspend fun runRawPcmFilter(
+        input: File,
+        output: File,
+        filter: String,
+        phase: String,
+        startPercent: Float,
+        endPercent: Float,
+        expectedDurationMs: Long,
+        onProgress: suspend (Float, String) -> Unit,
+    ) {
+        val command = "-y ${rawPcmInput(input)} -af \"$filter\" -c:a pcm_f32le -f f32le \"${output.absolutePath}\""
+        runFfmpeg(command, phase, startPercent, endPercent, expectedDurationMs, onProgress = onProgress)
+        require(output.isFile && output.length() >= 8L) { "Không tạo được PCM ở $phase" }
+    }
+
+    private suspend fun runRawPcmComposite(
+        inputs: List<File>,
+        output: File,
+        filterComplex: String,
+        phase: String,
+        startPercent: Float,
+        endPercent: Float,
+        expectedDurationMs: Long,
+        onProgress: suspend (Float, String) -> Unit,
+    ) {
+        val command = buildString {
+            append("-y ")
+            inputs.forEach { append(rawPcmInput(it)).append(' ') }
+            append("-filter_complex \"").append(filterComplex).append("\" ")
+            append("-map \"[out]\" -c:a pcm_f32le -f f32le \"")
+                .append(output.absolutePath)
+                .append("\"")
+        }
+        runFfmpeg(command, phase, startPercent, endPercent, expectedDurationMs, onProgress = onProgress)
+        require(output.isFile && output.length() >= 8L) { "Không tạo được PCM ở $phase" }
+    }
+
+    private fun rawPcmInput(file: File): String =
+        "-f f32le -ar 48000 -ac 2 -i \"${file.absolutePath}\""
+
+    private fun SpatialRenderMetrics.withPcmDiagnostics(
+                  input: PcmStereoMetrics,
+                  output: PcmStereoMetrics,
+              ): SpatialRenderMetrics = copy(
+                  frames = output.frames,
+                  inputPeak = input.peak,
+                  inputPeakLeft = input.peakLeft,
+                  inputPeakRight = input.peakRight,
+                  inputRmsDbfs = input.rmsDbfs,
+                  inputRmsLeftDbfs = input.rmsLeftDbfs,
+                  inputRmsRightDbfs = input.rmsRightDbfs,
+                  inputCorrelation = input.correlation,
+                  inputBalanceDb = input.balanceDb,
+                  inputDifferenceRmsDbfs = input.differenceRmsDbfs,
+                  inputDualMono = input.dualMono,
+                  peakAfterGain = output.peak,
+                  peakAfterGainLeft = output.peakLeft,
+                  peakAfterGainRight = output.peakRight,
+                  outputMainRmsAfterGainDbfs = output.rmsDbfs,
+                  outputTotalRmsDbfs = output.rmsDbfs,
+                  outputRmsLeftDbfs = output.rmsLeftDbfs,
+                  outputRmsRightDbfs = output.rmsRightDbfs,
+                  outputCorrelation = output.correlation,
+                  outputBalanceDb = output.balanceDb,
+                  nonFiniteSamples = output.nonFiniteSamples,
+              )
+          
+              private fun bypassMetrics(decoded: File, renderMs: Long): SpatialRenderMetrics = SpatialRenderMetrics(
+        frames = decoded.length() / 8L,
+        blocks = 0L,
+        tailFrames = 0L,
+        renderMs = renderMs,
+        inputChannels = 2,
+        outputChannels = 2,
+        stereoMode = "bypass",
+        inputPeak = 0f,
+        inputPeakLeft = 0f,
+        inputPeakRight = 0f,
+        inputRmsDbfs = -160f,
+        inputRmsLeftDbfs = -160f,
+        inputRmsRightDbfs = -160f,
+        inputCorrelation = 0f,
+        inputBalanceDb = 0f,
+        inputDifferenceRmsDbfs = -160f,
+        inputDualMono = false,
+        peakBeforeGain = 0f,
+        peakAfterGain = 0f,
+        peakAfterGainLeft = 0f,
+        peakAfterGainRight = 0f,
+        outputMainRmsBeforeGainDbfs = -160f,
+        outputMainRmsAfterGainDbfs = -160f,
+        outputTotalRmsDbfs = -160f,
+        outputRmsLeftDbfs = -160f,
+        outputRmsRightDbfs = -160f,
+        outputCorrelation = 0f,
+        outputBalanceDb = 0f,
+        automaticMakeupGainDb = 0f,
+        manualOutputGainDb = 0f,
+        peakLimiterGainDb = 0f,
+        appliedGainDb = 0f,
+        estimatedLoudnessDeltaDb = 0f,
+        peakCeilingDbfs = -1f,
+        nonFiniteSamples = 0L,
+        clippedSamplesBeforeGain = 0L,
+        hrtfType = "bypass",
+        steamAudioVersion = "bypass",
+    )
+
     private suspend fun runFfmpeg(
         command: String,
         phase: String,
@@ -318,14 +605,12 @@ class SpatialAudioEngine(
         phase: String,
         taskId: String,
     ): LoudnessMetrics? = try {
-        val logs = runFfmpeg(
-            command = command,
-            phase = phase,
-            startPercent = 0f,
-            endPercent = 0f,
-            expectedDurationMs = 0L,
-        ) { _, _ -> }
-        parseLoudnorm(logs)
+        val session = withContext(Dispatchers.IO) { FFmpegKit.execute(command) }
+        if (!ReturnCode.isSuccess(session.returnCode)) {
+            error("FFmpeg loudness thất bại ở $phase: ${session.returnCode}")
+        }
+        parseLoudnorm(session.allLogsAsString.orEmpty())
+            ?: error("Không đọc được loudnorm JSON ở $phase")
     } catch (error: Exception) {
         DiagnosticLogger.warn(
             component = TAG,
@@ -443,6 +728,11 @@ class SpatialAudioEngine(
         else -> SettingsManager.getAudioEncodingArgs(context) + " "
     }
 
+    private fun formatAngle(value: Float): String {
+        val rounded = value.toInt()
+        return if (value == rounded.toFloat()) rounded.toString() else "%.1f".format(value)
+    }
+
     private data class AudioProbeInfo(
         val codec: String? = null,
         val channels: Int? = null,
@@ -484,6 +774,10 @@ class SpatialAudioEngine(
     companion object {
         private const val TAG = "SpatialAudioEngine"
         private const val DECODE_STARTUP_TIMEOUT_MS = 20_000L
+        private const val PCM_BYTES_PER_SECOND = 48_000L * 2L * 4L
+        private const val BYPASS_EPSILON = 1e-6f
+        private const val SAMPLE_PEAK_LIMIT = 0.89125094f
+        private const val DUAL_OBJECT_BRANCH_GAIN = 0.70710678f
         private val LOUDNORM_JSON = Regex("""\{\s*\"input_i\"[\s\S]*?\}""")
     }
 }

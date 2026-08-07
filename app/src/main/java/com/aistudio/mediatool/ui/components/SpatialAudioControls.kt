@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.core.spatial.SpatialAudioConfig
+import com.aistudio.mediatool.core.spatial.SpatialStereoMode
 import com.aistudio.mediatool.core.spatial.SpatialTrajectory
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -53,6 +54,18 @@ fun SpatialAudioControls(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             EnumDropdown(
+                label = "Chế độ stereo",
+                valueLabel = value.stereoMode.label,
+                entries = listOf(
+                    SpatialStereoMode.MID_SIDE,
+                    SpatialStereoMode.SHARED_POSITION,
+                    SpatialStereoMode.DUAL_OBJECT,
+                ),
+                entryLabel = { it.label },
+                onSelect = { onConfigChange(value.copy(stereoMode = it).normalized()) },
+            )
+
+            EnumDropdown(
                 label = "Chuyển động",
                 valueLabel = value.trajectory.label,
                 entries = listOf(
@@ -71,11 +84,11 @@ fun SpatialAudioControls(
                 onSelect = { onConfigChange(value.withFriendlyTrajectory(it)) },
             )
 
-            val speed = value.friendlySpeedPosition()
+            val cycle = value.friendlyCyclePosition()
             AccessibleSliderColumn(
-                label = "Tốc độ • ${formatSeconds(value.cycleSeconds)}",
-                value = speed,
-                onValueChange = { onConfigChange(value.withFriendlySpeed(it)) },
+                label = "Chu kỳ • ${formatSeconds(value.cycleSeconds)}",
+                value = cycle,
+                onValueChange = { onConfigChange(value.withFriendlyCycle(it)) },
                 valueRange = 0f..1f,
             )
 

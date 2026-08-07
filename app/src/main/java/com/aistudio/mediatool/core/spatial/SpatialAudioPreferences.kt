@@ -5,11 +5,12 @@ import org.json.JSONObject
 import kotlin.math.ln
 import kotlin.math.max
 
-/** Chỉ lưu năm lựa chọn thân thiện; tham số kỹ thuật dùng bộ mặc định đã kiểm chứng. */
+/** Lưu các lựa chọn thân thiện; tham số kỹ thuật dùng bộ mặc định đã kiểm chứng. */
 object SpatialAudioPreferences {
     private const val PREFS = "spatial_audio_preferences"
-    private const val KEY_CONFIG = "config_v3_final"
-    private const val PREVIOUS_KEY = "config_v2_simple"
+    private const val KEY_CONFIG = "config_v4_stereo_modes"
+    private const val PREVIOUS_KEY = "config_v3_final"
+    private const val PREVIOUS_SIMPLE_KEY = "config_v2_simple"
     private const val LEGACY_KEY = "config_v1"
 
     fun load(context: Context): SpatialAudioConfig {
@@ -19,6 +20,12 @@ object SpatialAudioPreferences {
         }
 
         preferences.getString(PREVIOUS_KEY, null)?.let { raw ->
+            val migrated = runCatching { parseV3(raw) }.getOrDefault(SpatialAudioConfig())
+            save(context, migrated)
+            return migrated
+        }
+
+        preferences.getString(PREVIOUS_SIMPLE_KEY, null)?.let { raw ->
             val migrated = runCatching { parsePrevious(raw) }.getOrDefault(SpatialAudioConfig())
             save(context, migrated)
             return migrated
@@ -26,6 +33,7 @@ object SpatialAudioPreferences {
 
         preferences.edit()
             .remove(PREVIOUS_KEY)
+            .remove(PREVIOUS_SIMPLE_KEY)
             .remove(LEGACY_KEY)
             .apply()
         return SpatialAudioConfig()
@@ -35,6 +43,7 @@ object SpatialAudioPreferences {
         val value = config.normalized()
         val json = JSONObject()
             .put("trajectory", value.trajectory.name)
+            .put("stereo_mode", value.stereoMode.name)
             .put("cycle_seconds", value.cycleSeconds)
             .put("distance_m", max(value.startDistanceM, value.endDistanceM))
             .put("intensity", value.spatialBlend)
@@ -43,12 +52,25 @@ object SpatialAudioPreferences {
             .edit()
             .putString(KEY_CONFIG, json.toString())
             .remove(PREVIOUS_KEY)
+            .remove(PREVIOUS_SIMPLE_KEY)
             .remove(LEGACY_KEY)
             .apply()
     }
 
     private fun parseCurrent(raw: String): SpatialAudioConfig {
         val json = JSONObject(raw)
+        return parseFriendly(json).copy(
+            stereoMode = enumValueOrDefault(
+                json.optString("stereo_mode"),
+                SpatialStereoMode.MID_SIDE,
+            ),
+        ).normalized()
+    }
+
+    private fun parseV3(raw: String): SpatialAudioConfig =
+        parseFriendly(JSONObject(raw)).copy(stereoMode = SpatialStereoMode.MID_SIDE).normalized()
+
+    private fun parseFriendly(json: JSONObject): SpatialAudioConfig {
         val base = SpatialAudioConfig().withFriendlyTrajectory(
             enumValueOrDefault(
                 json.optString("trajectory"),
@@ -58,8 +80,8 @@ object SpatialAudioPreferences {
         val cycleSeconds = json.optDouble("cycle_seconds", base.cycleSeconds.toDouble())
             .toFloat()
             .coerceIn(
-                SpatialAudioConfig.FRIENDLY_SPEED_MIN_SECONDS,
-                SpatialAudioConfig.FRIENDLY_SPEED_MAX_SECONDS,
+                SpatialAudioConfig.FRIENDLY_CYCLE_MIN_SECONDS,
+                SpatialAudioConfig.FRIENDLY_CYCLE_MAX_SECONDS,
             )
         val distanceM = json.optDouble(
             "distance_m",
@@ -93,7 +115,10 @@ object SpatialAudioPreferences {
 
         return SpatialAudioConfig()
             .withFriendlyTrajectory(trajectory)
-            .copy(cycleSeconds = oldCycleSeconds)
+            .copy(
+                stereoMode = SpatialStereoMode.MID_SIDE,
+                cycleSeconds = oldCycleSeconds,
+            )
             .withFriendlyDistance(distancePosition(oldDistanceM))
             .copy(
                 spatialBlend = json.optDouble("intensity", 0.85).toFloat(),

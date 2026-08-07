@@ -1,14 +1,16 @@
 name: Purge All GitHub Actions Data
+
 on:
-  push:
-    paths: ['.github/workflows/purge-all-actions-artifacts.yml']
   workflow_dispatch:
+
 permissions:
   actions: write
   contents: read
+
 concurrency:
   group: purge-all-actions-data
   cancel-in-progress: false
+
 jobs:
   purge:
     runs-on: ubuntu-latest

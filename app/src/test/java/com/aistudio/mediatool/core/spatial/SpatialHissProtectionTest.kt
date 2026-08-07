@@ -31,7 +31,9 @@ class SpatialHissProtectionTest {
 
         assertEquals(0f, plan.noiseReductionDb, 0f)
         assertEquals(null, SpatialHissProtector.spatialInputFilter(plan))
-        assertTrue(plan.wetHighShelfDb in -2.5f..-0.8f)
+        assertTrue(plan.wetHighShelfDb in -0.8f..-0.2f)
+        assertTrue(plan.contralateralHighDampingDb in 1.5f..3.5f)
+        assertTrue(plan.contralateralHighDampingDb > -plan.wetHighShelfDb)
         assertTrue(plan.reverbHighEqScale in 0.8f..0.92f)
         assertTrue(plan.reverbHighRt60Scale in 0.65f..0.85f)
         assertTrue(plan.enabled)
@@ -65,6 +67,14 @@ class SpatialHissProtectionTest {
         assertEquals(null, SpatialHissProtector.spatialInputFilter(plan))
         assertEquals(null, SpatialHissProtector.wetBranchFilter(plan))
         assertEquals(config.normalized(), SpatialHissProtector.protectConfig(config, plan))
+    }
+
+    @Test
+    fun nativeRendererTargetsOnlyTheFarEarHighBand() {
+        val source = File("src/main/cpp/spatial_audio_jni.cpp").readText()
+        assertTrue(source.contains("farFactor = channel == 0"))
+        assertTrue(source.contains("dampContralateralHigh(spatial, channel, pose.direction.x)"))
+        assertTrue(source.contains("0.040f * sampleRate"))
     }
 
     private fun signalFile(addHiss: Boolean): File {

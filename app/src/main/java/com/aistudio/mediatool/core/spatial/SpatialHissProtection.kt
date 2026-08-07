@@ -47,6 +47,8 @@ internal data class SpatialHissPlan(
     val noiseReductionDb: Float,
     val wetHighShelfDb: Float,
     val wetHighShelfHz: Int,
+    val contralateralHighDampingDb: Float,
+    val contralateralHighDampingHz: Int,
     val reverbHighEqScale: Float,
     val reverbHighRt60Scale: Float,
 ) {
@@ -61,6 +63,8 @@ internal data class SpatialHissPlan(
         "hiss_noise_reduction_db" to noiseReductionDb,
         "hiss_wet_high_shelf_db" to wetHighShelfDb,
         "hiss_wet_high_shelf_hz" to wetHighShelfHz,
+        "hiss_contralateral_high_damping_db" to contralateralHighDampingDb,
+        "hiss_contralateral_high_damping_hz" to contralateralHighDampingHz,
         "hiss_reverb_high_eq_scale" to reverbHighEqScale,
         "hiss_reverb_high_rt60_scale" to reverbHighRt60Scale,
         "hiss_fft_denoise_enabled" to usesFftDenoise,
@@ -191,6 +195,8 @@ internal object SpatialHissProtector {
                 noiseReductionDb = 0f,
                 wetHighShelfDb = 0f,
                 wetHighShelfHz = 9_000,
+                contralateralHighDampingDb = 0f,
+                contralateralHighDampingHz = 7_500,
                 reverbHighEqScale = 1f,
                 reverbHighRt60Scale = 1f,
             )
@@ -199,17 +205,21 @@ internal object SpatialHissProtector {
             SpatialHissProtection.AUTO -> SpatialHissPlan(
                 mode = mode,
                 noiseReductionDb = 0f,
-                wetHighShelfDb = -(0.8f + 1.7f * risk),
-                wetHighShelfHz = (9_000f - 1_500f * risk).roundToInt(),
+                wetHighShelfDb = -(0.2f + 0.6f * risk),
+                wetHighShelfHz = (9_500f - 1_000f * risk).roundToInt(),
+                contralateralHighDampingDb = 1.5f + 2.0f * risk,
+                contralateralHighDampingHz = (8_000f - 1_000f * risk).roundToInt(),
                 reverbHighEqScale = 0.92f - 0.12f * risk,
                 reverbHighRt60Scale = 0.85f - 0.20f * risk,
             )
 
             SpatialHissProtection.STRONG -> SpatialHissPlan(
                 mode = mode,
-                noiseReductionDb = 3f + 2f * risk,
-                wetHighShelfDb = -(2f + 1.5f * risk),
-                wetHighShelfHz = (8_000f - 1_000f * risk).roundToInt(),
+                noiseReductionDb = 2f + 1.5f * risk,
+                wetHighShelfDb = -(0.5f + 0.75f * risk),
+                wetHighShelfHz = (9_000f - 1_000f * risk).roundToInt(),
+                contralateralHighDampingDb = 3.0f + 2.5f * risk,
+                contralateralHighDampingHz = (7_500f - 750f * risk).roundToInt(),
                 reverbHighEqScale = 0.75f - 0.15f * risk,
                 reverbHighRt60Scale = 0.70f - 0.15f * risk,
             )
@@ -221,6 +231,8 @@ internal object SpatialHissProtector {
         return config.copy(
             reverbEqHigh = (config.reverbEqHigh * plan.reverbHighEqScale).coerceIn(0f, 1f),
             reverbRt60High = max(0.1f, config.reverbRt60High * plan.reverbHighRt60Scale),
+            contralateralHighDampingDb = plan.contralateralHighDampingDb,
+            contralateralHighDampingHz = plan.contralateralHighDampingHz.toFloat(),
         ).normalized()
     }
 

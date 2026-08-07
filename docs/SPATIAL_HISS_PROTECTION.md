@@ -43,3 +43,14 @@ Tài liệu tham khảo:
 - Không denoise hoặc EQ đường dry.
 - Không thêm limiter trung gian, tránh tái tạo lỗi comb filtering.
 - Diagnostics ghi profile, kế hoạch đã áp dụng và số mẫu bù latency để kiểm tra trên thiết bị.
+
+
+## Hiệu chỉnh sau A/B trên thiết bị
+
+A/B thực tế cho thấy chế độ Mạnh giảm hiss tổng thể nhưng làm giảm treble ở tai gần nhiều hơn tai xa, khiến lớp cao tần ở tai đối diện tương đối dễ nhận ra khi nguồn chạy sang một bên. Bản sửa tiếp theo vì vậy:
+
+- giảm mạnh mức high-shelf toàn nhánh wet;
+- dùng bộ tách cao tần một cực không latency ngay trong renderer;
+- suy giảm chỉ tai đối diện, theo thành phần trái/phải của vị trí nguồn;
+- làm mượt gain trong 40 ms để tránh zipper/pumping;
+- tiếp tục giữ nguyên dry path và không damping khi nguồn ở giữa.

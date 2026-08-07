@@ -7,12 +7,13 @@ import kotlin.math.max
 import kotlin.math.sin
 
 /**
- * Cấu hình lõi của renderer binaural. Giao diện thông thường chỉ ánh xạ năm
+ * Cấu hình lõi của renderer binaural. Giao diện thông thường chỉ ánh xạ các
  * điều khiển thân thiện vào cấu hình này; các tham số kỹ thuật vẫn được giữ cố
  * định và ghi diagnostics để có thể tinh chỉnh bằng dữ liệu thực tế.
  */
 data class SpatialAudioConfig(
     val trajectory: SpatialTrajectory = SpatialTrajectory.HORIZONTAL_CIRCLE,
+    val stereoMode: SpatialStereoMode = SpatialStereoMode.MID_SIDE,
     val interpolation: SpatialInterpolation = SpatialInterpolation.BILINEAR,
     val motionMode: SpatialMotionMode = SpatialMotionMode.LOOP,
     val startAzimuthDeg: Float = -90f,
@@ -23,6 +24,7 @@ data class SpatialAudioConfig(
     val endDistanceM: Float = 1.2f,
     val cycleSeconds: Float = 8f,
     val spatialBlend: Float = 0.85f,
+    val stereoObjectHalfAngleDeg: Float = 15f,
     val distanceMinM: Float = 1.2f,
     val distanceRolloff: Float = 0.65f,
     val airAbsorption: Float = 0.35f,
@@ -56,6 +58,7 @@ data class SpatialAudioConfig(
             endDistanceM = finite(endDistanceM, 1.2f).coerceIn(0.2f, 100f),
             cycleSeconds = finite(cycleSeconds, 8f).coerceIn(0.5f, 120f),
             spatialBlend = finite(spatialBlend, 0.85f).coerceIn(0f, 1f),
+            stereoObjectHalfAngleDeg = finite(stereoObjectHalfAngleDeg, 15f).coerceIn(0f, 45f),
             distanceMinM = finite(distanceMinM, 1.2f).coerceIn(0.1f, 20f),
             distanceRolloff = finite(distanceRolloff, 0.65f).coerceIn(0.1f, 4f),
             airAbsorption = finite(airAbsorption, 0.35f).coerceIn(0f, 2f),
@@ -194,14 +197,20 @@ data class SpatialAudioConfig(
         }.normalized()
     }
 
-    fun friendlySpeedPosition(): Float =
-        ((FRIENDLY_SPEED_MAX_SECONDS - cycleSeconds) /
-            (FRIENDLY_SPEED_MAX_SECONDS - FRIENDLY_SPEED_MIN_SECONDS)).coerceIn(0f, 1f)
+    fun friendlyCyclePosition(): Float =
+        ((cycleSeconds - FRIENDLY_CYCLE_MIN_SECONDS) /
+            (FRIENDLY_CYCLE_MAX_SECONDS - FRIENDLY_CYCLE_MIN_SECONDS)).coerceIn(0f, 1f)
 
-    fun withFriendlySpeed(position: Float): SpatialAudioConfig = copy(
-        cycleSeconds = FRIENDLY_SPEED_MAX_SECONDS -
-            (FRIENDLY_SPEED_MAX_SECONDS - FRIENDLY_SPEED_MIN_SECONDS) * position.coerceIn(0f, 1f),
+    fun withFriendlyCycle(position: Float): SpatialAudioConfig = copy(
+        cycleSeconds = FRIENDLY_CYCLE_MIN_SECONDS +
+            (FRIENDLY_CYCLE_MAX_SECONDS - FRIENDLY_CYCLE_MIN_SECONDS) * position.coerceIn(0f, 1f),
     ).normalized()
+
+    // Giữ API cũ để migration/test đời trước không bị gãy. Slider tốc độ cũ tăng theo chiều ngược với chu kỳ.
+    fun friendlySpeedPosition(): Float = 1f - friendlyCyclePosition()
+
+    fun withFriendlySpeed(position: Float): SpatialAudioConfig =
+        withFriendlyCycle(1f - position.coerceIn(0f, 1f))
 
     fun friendlyDistancePosition(): Float {
         val distance = max(startDistanceM, endDistanceM)
@@ -237,6 +246,8 @@ data class SpatialAudioConfig(
     fun diagnosticFields(): Map<String, Any?> = normalized().let { value ->
         mapOf(
             "trajectory" to value.trajectory.name,
+            "stereo_mode" to value.stereoMode.name,
+            "stereo_object_half_angle_deg" to value.stereoObjectHalfAngleDeg,
             "interpolation" to value.interpolation.name,
             "motion_mode" to value.motionMode.name,
             "start_azimuth_deg" to value.startAzimuthDeg,
@@ -266,19 +277,26 @@ data class SpatialAudioConfig(
             "hrtf_type" to if (value.customSofaPath == null) "built_in" else "custom_sofa",
             "frame_size" to value.frameSize,
             "decode_channels" to 2,
-            "stereo_render_mode" to "preserve_or_upmix",
             "automatic_loudness_preservation" to true,
         )
     }
 
     companion object {
-        const val FRIENDLY_SPEED_MIN_SECONDS = 3f
-        const val FRIENDLY_SPEED_MAX_SECONDS = 30f
+        const val FRIENDLY_CYCLE_MIN_SECONDS = 3f
+        const val FRIENDLY_CYCLE_MAX_SECONDS = 30f
+        const val FRIENDLY_SPEED_MIN_SECONDS = FRIENDLY_CYCLE_MIN_SECONDS
+        const val FRIENDLY_SPEED_MAX_SECONDS = FRIENDLY_CYCLE_MAX_SECONDS
         const val FRIENDLY_DISTANCE_MIN_M = 0.8f
         const val FRIENDLY_DISTANCE_MAX_M = 20f
         private const val NEAR_FAR_RATIO = 0.45f
         private const val FREE_DRIFT_NEAR_RATIO = 0.6f
     }
+}
+
+enum class SpatialStereoMode(val label: String) {
+    MID_SIDE("Mid/Side • giữ sân khấu"),
+    SHARED_POSITION("Cùng vị trí • bản hiện tại"),
+    DUAL_OBJECT("Hai nguồn L/R • lệch ±15°"),
 }
 
 enum class SpatialTrajectory(val label: String) {

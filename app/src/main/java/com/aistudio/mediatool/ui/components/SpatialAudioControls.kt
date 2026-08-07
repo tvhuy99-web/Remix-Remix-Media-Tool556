@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.core.spatial.SpatialAudioConfig
+import com.aistudio.mediatool.core.spatial.SpatialHissProtection
 import com.aistudio.mediatool.core.spatial.SpatialStereoMode
 import com.aistudio.mediatool.core.spatial.SpatialTrajectory
 import kotlin.math.max
@@ -64,6 +65,19 @@ fun SpatialAudioControls(
                 entryLabel = { it.label },
                 onSelect = { onConfigChange(value.copy(stereoMode = it).normalized()) },
             )
+
+            EnumDropdown(
+                label = "Bảo vệ tiếng xì",
+                valueLabel = value.hissProtection.label,
+                entries = listOf(
+                    SpatialHissProtection.AUTO,
+                    SpatialHissProtection.STRONG,
+                    SpatialHissProtection.OFF,
+                ),
+                entryLabel = { it.label },
+                onSelect = { onConfigChange(value.copy(hissProtection = it).normalized()) },
+            )
+            Text("Chỉ làm dịu nhánh 3D và đuôi vang; âm gốc vẫn giữ nguyên.")
 
             EnumDropdown(
                 label = "Chuyển động",

@@ -392,6 +392,8 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
     jfloat reverbEqLowValue,
     jfloat reverbEqMidValue,
     jfloat reverbEqHighValue,
+    jfloat contralateralHighDampingDbValue,
+    jfloat contralateralHighDampingHzValue,
     jfloat outputGainDbValue,
     jfloat effectStartSecondsValue,
     jfloat effectEndSecondsValue
@@ -427,6 +429,8 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
     const float eqLow = clampFinite(reverbEqLowValue, 0.0f, 1.0f, 1.0f);
     const float eqMid = clampFinite(reverbEqMidValue, 0.0f, 1.0f, 1.0f);
     const float eqHigh = clampFinite(reverbEqHighValue, 0.0f, 1.0f, 1.0f);
+    const float contralateralHighDampingDb = clampFinite(contralateralHighDampingDbValue, 0.0f, 12.0f, 0.0f);
+    const float contralateralHighDampingHz = clampFinite(contralateralHighDampingHzValue, 4000.0f, 16000.0f, 7500.0f);
     const float manualOutputGainDb = clampFinite(outputGainDbValue, -24.0f, 6.0f, 0.0f);
     const float effectStart = std::max(0.0f, static_cast<float>(effectStartSecondsValue));
     const float effectEnd = effectEndSecondsValue < 0.0f
@@ -532,6 +536,24 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
     float peakBefore = 0.0f;
     StereoStats inputStats;
     StereoStats outputMainStats;
+    const float contralateralPole = std::exp(-2.0f * kPi * contralateralHighDampingHz / sampleRate);
+    const float contralateralFeed = 1.0f - contralateralPole;
+    const float contralateralSmoothing = 1.0f - std::exp(-1.0f / (0.040f * sampleRate));
+    float contralateralLowpass[2]{0.0f, 0.0f};
+    float contralateralHighGain[2]{1.0f, 1.0f};
+    const auto dampContralateralHigh = [&](float sample, int channel, float lateralX) -> float {
+        if (contralateralHighDampingDb <= 0.001f) return sample;
+        contralateralLowpass[channel] =
+            contralateralFeed * sample + contralateralPole * contralateralLowpass[channel];
+        const float farFactor = channel == 0
+            ? std::max(0.0f, lateralX)
+            : std::max(0.0f, -lateralX);
+        const float targetGain = dbToLinear(-contralateralHighDampingDb * smoothstep(farFactor));
+        contralateralHighGain[channel] +=
+            contralateralSmoothing * (targetGain - contralateralHighGain[channel]);
+        const float high = sample - contralateralLowpass[channel];
+        return contralateralLowpass[channel] + high * contralateralHighGain[channel];
+    };
     const auto started = std::chrono::steady_clock::now();
 
     while (input.good()) {
@@ -633,6 +655,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
             for (int channel = 0; channel < 2; ++channel) {
                 float spatial = dryGain * directStereo.data[channel][i];
                 if (reverbWet > 0.0f) spatial += wetGain * reverbStereo.data[channel][i];
+                spatial = dampContralateralHigh(spatial, channel, pose.direction.x);
                 const float original = inputBuffer.data[channel][i];
                 float safe = (1.0f - window) * original + window * spatial;
                 if (!std::isfinite(safe)) {
@@ -781,6 +804,7 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
                     float sample = 0.0f;
                     if (hasDirectStereo) sample += tailDryGain * directStereo.data[channel][i];
                     if (hasWetStereo) sample += tailWetGain * reverbStereo.data[channel][i];
+                    sample = dampContralateralHigh(sample, channel, tailPose.direction.x);
                     if (!std::isfinite(sample)) {
                         sample = 0.0f;
                         ++nonFinite;
@@ -918,6 +942,8 @@ Java_com_aistudio_mediatool_core_spatial_SteamAudioBridge_nativeRender(
          << ",\"peak_ceiling_dbfs\":" << kPeakCeilingDbfs
          << ",\"nonfinite_samples\":" << nonFinite
          << ",\"clipped_samples_before_gain\":" << clippedBefore
+         << ",\"contralateral_high_damping_db\":" << contralateralHighDampingDb
+         << ",\"contralateral_high_damping_hz\":" << contralateralHighDampingHz
          << ",\"hrtf_type\":\"" << (sofaPath.empty() ? "built_in" : "custom_sofa") << "\""
          << ",\"steam_audio_version\":\"4.8.1\"}"
          ;

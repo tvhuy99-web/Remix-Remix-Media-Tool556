@@ -136,6 +136,15 @@ class SpatialAudioEngine(
 
             val decodedDurationMs = decoded.length() * 1_000L / PCM_BYTES_PER_SECOND
             val decodedPcm = withContext(Dispatchers.IO) { PcmStereoAnalyzer.analyze(decoded) }
+            val hissProfile = if (
+                value.spatialBlend > BYPASS_EPSILON &&
+                value.hissProtection != SpatialHissProtection.OFF
+            ) {
+                withContext(Dispatchers.IO) { SpatialHissProtector.analyze(decoded) }
+            } else {
+                SpatialHissProfile()
+            }
+            val hissPlan = SpatialHissProtector.plan(value.hissProtection, hissProfile)
             val inputLoudness = analyzeLoudness(
                 command = "-hide_banner -f f32le -ar 48000 -ac 2 -i \"${decoded.absolutePath}\" " +
                     "-af \"loudnorm=I=-16:TP=-1:LRA=11:print_format=json\" -f null -",
@@ -148,7 +157,9 @@ class SpatialAudioEngine(
                 sessionId = taskId,
                 fields = sourceInfo.diagnosticFields("source") +
                     inputLoudness.diagnosticFields("input") +
-                    decodedPcm.diagnosticFields("decoded_pcm") + mapOf(
+                    decodedPcm.diagnosticFields("decoded_pcm") +
+                    hissProfile.diagnosticFields() +
+                    hissPlan.diagnosticFields() + mapOf(
                     "decoded_channels" to 2,
                     "decoded_sample_rate" to 48_000,
                     "decoded_bytes" to decoded.length(),
@@ -162,6 +173,7 @@ class SpatialAudioEngine(
                 decoded = decoded,
                 rendered = rendered,
                 config = value,
+                hissPlan = hissPlan,
                 workDir = workDir,
                 expectedDurationMs = expectedDurationMs,
             ) { progress, message -> emit(State.Progress(progress, message)) }
@@ -177,6 +189,8 @@ class SpatialAudioEngine(
                 fields = metrics.diagnosticFields() +
                     decodedPcm.diagnosticFields("decoded_pcm") +
                     renderedPcm.diagnosticFields("final_pcm") +
+                    hissProfile.diagnosticFields() +
+                    hissPlan.diagnosticFields() +
                     nativeBefore + nativeAfter + mapOf(
                     "decoded_bytes" to decoded.length(),
                     "rendered_bytes" to rendered.length(),
@@ -230,6 +244,8 @@ class SpatialAudioEngine(
                     outputLoudness.diagnosticFields("output") +
                     decodedPcm.diagnosticFields("decoded_pcm") +
                     renderedPcm.diagnosticFields("final_pcm") +
+                    hissProfile.diagnosticFields() +
+                    hissPlan.diagnosticFields() +
                     outputInfo.diagnosticFields("output") +
                     qualityDelta + runtimeAfter + mapOf(
                         "output_bytes" to output.length(),
@@ -244,7 +260,9 @@ class SpatialAudioEngine(
                 fields = metrics.diagnosticFields() + inputLoudness.diagnosticFields("input") +
                     outputLoudness.diagnosticFields("output") +
                     decodedPcm.diagnosticFields("decoded_pcm") +
-                    renderedPcm.diagnosticFields("final_pcm") + qualityDelta + mapOf(
+                    renderedPcm.diagnosticFields("final_pcm") +
+                    hissProfile.diagnosticFields() +
+                    hissPlan.diagnosticFields() + qualityDelta + mapOf(
                         "output_bytes" to output.length(),
                         "output_extension" to extension,
                         "output_channels" to outputInfo.channels,
@@ -300,6 +318,7 @@ class SpatialAudioEngine(
         decoded: File,
         rendered: File,
         config: SpatialAudioConfig,
+        hissPlan: SpatialHissPlan,
         workDir: File,
         expectedDurationMs: Long,
         onProgress: suspend (Float, String) -> Unit,
@@ -314,22 +333,44 @@ class SpatialAudioEngine(
             )
         }
 
-        val fullySpatial = config.copy(spatialBlend = 1f).normalized()
+        val spatialInput = prepareSpatialInput(
+            decoded = decoded,
+            workDir = workDir,
+            hissPlan = hissPlan,
+            expectedDurationMs = expectedDurationMs,
+            onProgress = onProgress,
+        )
+        val fullySpatial = SpatialHissProtector.protectConfig(
+            config.copy(spatialBlend = 1f),
+            hissPlan,
+        )
         val spatialComposite = File(workDir, "spatial_composite.f32")
         val metrics = when (config.stereoMode) {
             SpatialStereoMode.SHARED_POSITION -> {
+                val sharedRendered = File(workDir, "shared_position_rendered.f32")
                 onProgress(42f, "Render stereo cùng một vị trí")
                 val native = withContext(Dispatchers.Default) {
-                    SteamAudioBridge.render(decoded, spatialComposite, fullySpatial)
+                    SteamAudioBridge.render(spatialInput, sharedRendered, fullySpatial)
                 }
+                protectWetBranch(
+                    input = sharedRendered,
+                    output = spatialComposite,
+                    hissPlan = hissPlan,
+                    phase = "spatial_shared_hiss_protection",
+                    startPercent = 58f,
+                    endPercent = 63f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
                 native.copy(stereoMode = "shared_position")
             }
 
             SpatialStereoMode.MID_SIDE -> {
                 val midInput = File(workDir, "mid_input.f32")
                 val midRendered = File(workDir, "mid_rendered.f32")
+                val midProtected = File(workDir, "mid_rendered_protected.f32")
                 runRawPcmFilter(
-                    input = decoded,
+                    input = spatialInput,
                     output = midInput,
                     filter = "pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR",
                     phase = "spatial_mid_extract",
@@ -342,8 +383,18 @@ class SpatialAudioEngine(
                 val native = withContext(Dispatchers.Default) {
                     SteamAudioBridge.render(midInput, midRendered, fullySpatial)
                 }
+                protectWetBranch(
+                    input = midRendered,
+                    output = midProtected,
+                    hissPlan = hissPlan,
+                    phase = "spatial_mid_hiss_protection",
+                    startPercent = 53f,
+                    endPercent = 56f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
                 runRawPcmComposite(
-                    inputs = listOf(decoded, midRendered),
+                    inputs = listOf(decoded, midProtected),
                     output = spatialComposite,
                     filterComplex = "[0:a]pan=stereo|c0=0.5*FL-0.5*FR|c1=-0.5*FL+0.5*FR[side];" +
                         "[1:a][side]amix=inputs=2:duration=longest:normalize=0[out]",
@@ -361,8 +412,10 @@ class SpatialAudioEngine(
                 val rightInput = File(workDir, "right_object_input.f32")
                 val leftRendered = File(workDir, "left_object_rendered.f32")
                 val rightRendered = File(workDir, "right_object_rendered.f32")
+                val leftProtected = File(workDir, "left_object_protected.f32")
+                val rightProtected = File(workDir, "right_object_protected.f32")
                 runRawPcmFilter(
-                    input = decoded,
+                    input = spatialInput,
                     output = leftInput,
                     filter = "pan=stereo|c0=FL|c1=0*FR",
                     phase = "spatial_left_object_extract",
@@ -372,7 +425,7 @@ class SpatialAudioEngine(
                     onProgress = onProgress,
                 )
                 runRawPcmFilter(
-                    input = decoded,
+                    input = spatialInput,
                     output = rightInput,
                     filter = "pan=stereo|c0=0*FL|c1=FR",
                     phase = "spatial_right_object_extract",
@@ -394,12 +447,32 @@ class SpatialAudioEngine(
                 val leftMetrics = withContext(Dispatchers.Default) {
                     SteamAudioBridge.render(leftInput, leftRendered, leftConfig)
                 }
+                protectWetBranch(
+                    input = leftRendered,
+                    output = leftProtected,
+                    hissPlan = hissPlan,
+                    phase = "spatial_left_hiss_protection",
+                    startPercent = 54f,
+                    endPercent = 56f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
                 onProgress(57f, "Render object R lệch +${formatAngle(offset)}°")
                 val rightMetrics = withContext(Dispatchers.Default) {
                     SteamAudioBridge.render(rightInput, rightRendered, rightConfig)
                 }
+                protectWetBranch(
+                    input = rightRendered,
+                    output = rightProtected,
+                    hissPlan = hissPlan,
+                    phase = "spatial_right_hiss_protection",
+                    startPercent = 61f,
+                    endPercent = 63f,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
                 runRawPcmComposite(
-                    inputs = listOf(leftRendered, rightRendered),
+                    inputs = listOf(leftProtected, rightProtected),
                     output = spatialComposite,
                     filterComplex = "[0:a]volume=$DUAL_OBJECT_BRANCH_GAIN[left];" +
                         "[1:a]volume=$DUAL_OBJECT_BRANCH_GAIN[right];" +
@@ -427,6 +500,59 @@ class SpatialAudioEngine(
             onProgress = onProgress,
         )
         return metrics
+    }
+
+    private suspend fun prepareSpatialInput(
+        decoded: File,
+        workDir: File,
+        hissPlan: SpatialHissPlan,
+        expectedDurationMs: Long,
+        onProgress: suspend (Float, String) -> Unit,
+    ): File {
+        val filter = SpatialHissProtector.spatialInputFilter(hissPlan) ?: return decoded
+        val output = File(workDir, "spatial_input_protected.f32")
+        runRawPcmFilter(
+            input = decoded,
+            output = output,
+            filter = filter,
+            phase = "spatial_input_hiss_protection",
+            startPercent = 36f,
+            endPercent = 39f,
+            expectedDurationMs = expectedDurationMs,
+            onProgress = onProgress,
+        )
+        require(output.length() == decoded.length()) {
+            "Bù latency bảo vệ tiếng xì làm thay đổi độ dài PCM"
+        }
+        return output
+    }
+
+    private suspend fun protectWetBranch(
+        input: File,
+        output: File,
+        hissPlan: SpatialHissPlan,
+        phase: String,
+        startPercent: Float,
+        endPercent: Float,
+        expectedDurationMs: Long,
+        onProgress: suspend (Float, String) -> Unit,
+    ) {
+        val filter = SpatialHissProtector.wetBranchFilter(hissPlan)
+        if (filter == null) {
+            withContext(Dispatchers.IO) { input.copyTo(output, overwrite = true) }
+            onProgress(endPercent, "Bảo vệ tiếng xì đang tắt")
+            return
+        }
+        runRawPcmFilter(
+            input = input,
+            output = output,
+            filter = filter,
+            phase = phase,
+            startPercent = startPercent,
+            endPercent = endPercent,
+            expectedDurationMs = expectedDurationMs,
+            onProgress = onProgress,
+        )
     }
 
     private suspend fun blendOriginalAndSpatial(

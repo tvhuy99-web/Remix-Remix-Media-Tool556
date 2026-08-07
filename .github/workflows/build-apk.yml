@@ -39,8 +39,17 @@ jobs:
           marker = "          python3 - <<'PY'\n"
           start = workflow.index(marker) + len(marker)
           end = workflow.index("\n          PY", start)
-          lines = workflow[start:end].splitlines()
-          code = "\n".join(line[10:] if line.startswith("          ") else line for line in lines)
+          raw_lines = workflow[start:end].splitlines()
+          source = []
+          in_triple = False
+          for raw in raw_lines:
+              line = raw[10:] if raw.startswith("          ") else raw
+              if in_triple and line.strip() not in {"'''", '\"\"\"'}:
+                  line = "          " + line
+              source.append(line)
+              if (line.count("'''") + line.count('\"\"\"')) % 2 == 1:
+                  in_triple = not in_triple
+          code = "\n".join(source)
           exec(compile(code, 'apply-final-pcm-diagnostics', 'exec'))
           PY
           git config user.name "github-actions[bot]"

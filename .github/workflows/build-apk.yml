@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-debug-${{ github.workflow }}-${{ github.ref }}
@@ -22,6 +22,34 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Apply final PCM diagnostics
+        if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
+        run: |
+          if test -f app/src/main/java/com/aistudio/mediatool/core/spatial/PcmStereoAnalyzer.kt; then
+            echo "Final PCM diagnostics already applied"
+            exit 0
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/apply-final-pcm-diagnostics.yml').read_text(encoding='utf-8')
+          marker = "          python3 - <<'PY'\n"
+          start = workflow.index(marker) + len(marker)
+          end = workflow.index("\n          PY", start)
+          lines = workflow[start:end].splitlines()
+          code = "\n".join(line[10:] if line.startswith("          ") else line for line in lines)
+          exec(compile(code, 'apply-final-pcm-diagnostics', 'exec'))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioEngine.kt \
+                  app/src/main/java/com/aistudio/mediatool/core/spatial/PcmStereoAnalyzer.kt \
+                  app/src/test/java/com/aistudio/mediatool/core/spatial/PcmStereoAnalyzerTest.kt
+          git commit -m "fix diagnostics to measure final stereo PCM"
+          git push origin HEAD:${{ github.head_ref }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

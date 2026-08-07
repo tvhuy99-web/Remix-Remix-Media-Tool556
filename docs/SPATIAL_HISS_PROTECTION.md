@@ -52,3 +52,5 @@ A/B thực tế cho thấy STRONG ban đầu giảm hiss tổng thể nhưng là
 - 12–20 kHz: tai trội giảm khoảng 14,0–14,6 dB, tai đối diện chỉ khoảng 3,9–4,9 dB.
 
 Vì vậy lớp cao tần ở phía đối diện trở nên tương đối dễ nhận ra dù tổng hiss đã giảm. Bản hiệu chỉnh mới giảm mạnh shelf toàn nhánh, giữ treble ở tai gần nguồn và suy giảm riêng dải cao ở tai đối diện theo `pose.direction.x`.
+
+Bản hiệu chỉnh liên tai đã qua build Android/CMake, kiểm tra APK, chữ ký, lint và unit test. Vẫn cần A/B bằng tai nghe trên thiết bị trước khi đưa PR khỏi trạng thái draft.

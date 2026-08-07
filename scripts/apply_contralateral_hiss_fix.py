@@ -1,0 +1,237 @@
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{path}: expected one match, got {count}: {old[:100]!r}")
+    file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+config = Path("app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioConfig.kt")
+if "contralateralHighDampingDb" in config.read_text(encoding="utf-8"):
+    print("Contralateral hiss fix already applied")
+    raise SystemExit(0)
+
+replace_once(
+    str(config),
+    "    val reverbEqHigh: Float = 1f,\n    val outputGainDb: Float = 0f,",
+    "    val reverbEqHigh: Float = 1f,\n"
+    "    val contralateralHighDampingDb: Float = 0f,\n"
+    "    val contralateralHighDampingHz: Float = 7_500f,\n"
+    "    val outputGainDb: Float = 0f,",
+)
+replace_once(
+    str(config),
+    "            reverbEqHigh = finite(reverbEqHigh, 1f).coerceIn(0f, 1f),\n"
+    "            outputGainDb = finite(outputGainDb, 0f).coerceIn(-24f, 6f),",
+    "            reverbEqHigh = finite(reverbEqHigh, 1f).coerceIn(0f, 1f),\n"
+    "            contralateralHighDampingDb = finite(contralateralHighDampingDb, 0f).coerceIn(0f, 12f),\n"
+    "            contralateralHighDampingHz = finite(contralateralHighDampingHz, 7_500f).coerceIn(4_000f, 16_000f),\n"
+    "            outputGainDb = finite(outputGainDb, 0f).coerceIn(-24f, 6f),",
+)
+replace_once(
+    str(config),
+    "            \"reverb_eq_high\" to value.reverbEqHigh,\n"
+    "            \"output_gain_db\" to value.outputGainDb,",
+    "            \"reverb_eq_high\" to value.reverbEqHigh,\n"
+    "            \"contralateral_high_damping_db\" to value.contralateralHighDampingDb,\n"
+    "            \"contralateral_high_damping_hz\" to value.contralateralHighDampingHz,\n"
+    "            \"output_gain_db\" to value.outputGainDb,",
+)
+
+protector = "app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialHissProtection.kt"
+replace_once(
+    protector,
+    "    val wetHighShelfHz: Int,\n    val reverbHighEqScale: Float,",
+    "    val wetHighShelfHz: Int,\n"
+    "    val contralateralHighDampingDb: Float,\n"
+    "    val contralateralHighDampingHz: Int,\n"
+    "    val reverbHighEqScale: Float,",
+)
+replace_once(
+    protector,
+    "        \"hiss_wet_high_shelf_hz\" to wetHighShelfHz,\n"
+    "        \"hiss_reverb_high_eq_scale\" to reverbHighEqScale,",
+    "        \"hiss_wet_high_shelf_hz\" to wetHighShelfHz,\n"
+    "        \"hiss_contralateral_high_damping_db\" to contralateralHighDampingDb,\n"
+    "        \"hiss_contralateral_high_damping_hz\" to contralateralHighDampingHz,\n"
+    "        \"hiss_reverb_high_eq_scale\" to reverbHighEqScale,",
+)
+replace_once(
+    protector,
+    "                wetHighShelfHz = 9_000,\n                reverbHighEqScale = 1f,",
+    "                wetHighShelfHz = 9_000,\n"
+    "                contralateralHighDampingDb = 0f,\n"
+    "                contralateralHighDampingHz = 7_500,\n"
+    "                reverbHighEqScale = 1f,",
+)
+replace_once(
+    protector,
+    "                noiseReductionDb = 0f,\n"
+    "                wetHighShelfDb = -(0.8f + 1.7f * risk),\n"
+    "                wetHighShelfHz = (9_000f - 1_500f * risk).roundToInt(),\n"
+    "                reverbHighEqScale = 0.92f - 0.12f * risk,",
+    "                noiseReductionDb = 0f,\n"
+    "                wetHighShelfDb = -(0.2f + 0.6f * risk),\n"
+    "                wetHighShelfHz = (9_500f - 1_000f * risk).roundToInt(),\n"
+    "                contralateralHighDampingDb = 1.5f + 2.0f * risk,\n"
+    "                contralateralHighDampingHz = (8_000f - 1_000f * risk).roundToInt(),\n"
+    "                reverbHighEqScale = 0.92f - 0.12f * risk,",
+)
+replace_once(
+    protector,
+    "                noiseReductionDb = 3f + 2f * risk,\n"
+    "                wetHighShelfDb = -(2f + 1.5f * risk),\n"
+    "                wetHighShelfHz = (8_000f - 1_000f * risk).roundToInt(),\n"
+    "                reverbHighEqScale = 0.75f - 0.15f * risk,",
+    "                noiseReductionDb = 2f + 1.5f * risk,\n"
+    "                wetHighShelfDb = -(0.5f + 0.75f * risk),\n"
+    "                wetHighShelfHz = (9_000f - 1_000f * risk).roundToInt(),\n"
+    "                contralateralHighDampingDb = 3.0f + 2.5f * risk,\n"
+    "                contralateralHighDampingHz = (7_500f - 750f * risk).roundToInt(),\n"
+    "                reverbHighEqScale = 0.75f - 0.15f * risk,",
+)
+replace_once(
+    protector,
+    "            reverbEqHigh = (config.reverbEqHigh * plan.reverbHighEqScale).coerceIn(0f, 1f),\n"
+    "            reverbRt60High = max(0.1f, config.reverbRt60High * plan.reverbHighRt60Scale),",
+    "            reverbEqHigh = (config.reverbEqHigh * plan.reverbHighEqScale).coerceIn(0f, 1f),\n"
+    "            reverbRt60High = max(0.1f, config.reverbRt60High * plan.reverbHighRt60Scale),\n"
+    "            contralateralHighDampingDb = plan.contralateralHighDampingDb,\n"
+    "            contralateralHighDampingHz = plan.contralateralHighDampingHz.toFloat(),",
+)
+
+bridge = "app/src/main/java/com/aistudio/mediatool/core/spatial/SteamAudioBridge.kt"
+replace_once(
+    bridge,
+    "            reverbEqHigh = value.reverbEqHigh,\n            outputGainDb = value.outputGainDb,",
+    "            reverbEqHigh = value.reverbEqHigh,\n"
+    "            contralateralHighDampingDb = value.contralateralHighDampingDb,\n"
+    "            contralateralHighDampingHz = value.contralateralHighDampingHz,\n"
+    "            outputGainDb = value.outputGainDb,",
+)
+replace_once(
+    bridge,
+    "        reverbEqHigh: Float,\n        outputGainDb: Float,",
+    "        reverbEqHigh: Float,\n"
+    "        contralateralHighDampingDb: Float,\n"
+    "        contralateralHighDampingHz: Float,\n"
+    "        outputGainDb: Float,",
+)
+
+native = "app/src/main/cpp/spatial_audio_jni.cpp"
+replace_once(
+    native,
+    "    jfloat reverbEqHighValue,\n    jfloat outputGainDbValue,",
+    "    jfloat reverbEqHighValue,\n"
+    "    jfloat contralateralHighDampingDbValue,\n"
+    "    jfloat contralateralHighDampingHzValue,\n"
+    "    jfloat outputGainDbValue,",
+)
+replace_once(
+    native,
+    "    const float eqHigh = clampFinite(reverbEqHighValue, 0.0f, 1.0f, 1.0f);\n"
+    "    const float manualOutputGainDb = clampFinite(outputGainDbValue, -24.0f, 6.0f, 0.0f);",
+    "    const float eqHigh = clampFinite(reverbEqHighValue, 0.0f, 1.0f, 1.0f);\n"
+    "    const float contralateralHighDampingDb = clampFinite(contralateralHighDampingDbValue, 0.0f, 12.0f, 0.0f);\n"
+    "    const float contralateralHighDampingHz = clampFinite(contralateralHighDampingHzValue, 4000.0f, 16000.0f, 7500.0f);\n"
+    "    const float manualOutputGainDb = clampFinite(outputGainDbValue, -24.0f, 6.0f, 0.0f);",
+)
+replace_once(
+    native,
+    "    StereoStats outputMainStats;\n    const auto started = std::chrono::steady_clock::now();\n\n    while (input.good()) {",
+    """    StereoStats outputMainStats;
+    const float contralateralPole = std::exp(-2.0f * kPi * contralateralHighDampingHz / sampleRate);
+    const float contralateralFeed = 1.0f - contralateralPole;
+    const float contralateralSmoothing = 1.0f - std::exp(-1.0f / (0.040f * sampleRate));
+    float contralateralLowpass[2]{0.0f, 0.0f};
+    float contralateralHighGain[2]{1.0f, 1.0f};
+    const auto dampContralateralHigh = [&](float sample, int channel, float lateralX) -> float {
+        if (contralateralHighDampingDb <= 0.001f) return sample;
+        contralateralLowpass[channel] =
+            contralateralFeed * sample + contralateralPole * contralateralLowpass[channel];
+        const float farFactor = channel == 0
+            ? std::max(0.0f, lateralX)
+            : std::max(0.0f, -lateralX);
+        const float targetGain = dbToLinear(-contralateralHighDampingDb * smoothstep(farFactor));
+        contralateralHighGain[channel] +=
+            contralateralSmoothing * (targetGain - contralateralHighGain[channel]);
+        const float high = sample - contralateralLowpass[channel];
+        return contralateralLowpass[channel] + high * contralateralHighGain[channel];
+    };
+    const auto started = std::chrono::steady_clock::now();
+
+    while (input.good()) {""",
+)
+replace_once(
+    native,
+    "                if (reverbWet > 0.0f) spatial += wetGain * reverbStereo.data[channel][i];\n"
+    "                const float original = inputBuffer.data[channel][i];",
+    "                if (reverbWet > 0.0f) spatial += wetGain * reverbStereo.data[channel][i];\n"
+    "                spatial = dampContralateralHigh(spatial, channel, pose.direction.x);\n"
+    "                const float original = inputBuffer.data[channel][i];",
+)
+replace_once(
+    native,
+    "                    if (hasWetStereo) sample += tailWetGain * reverbStereo.data[channel][i];\n"
+    "                    if (!std::isfinite(sample)) {",
+    "                    if (hasWetStereo) sample += tailWetGain * reverbStereo.data[channel][i];\n"
+    "                    sample = dampContralateralHigh(sample, channel, tailPose.direction.x);\n"
+    "                    if (!std::isfinite(sample)) {",
+)
+replace_once(
+    native,
+    "         << \",\\\"clipped_samples_before_gain\\\":\" << clippedBefore\n"
+    "         << \",\\\"hrtf_type\\\":\\\"\"",
+    "         << \",\\\"clipped_samples_before_gain\\\":\" << clippedBefore\n"
+    "         << \",\\\"contralateral_high_damping_db\\\":\" << contralateralHighDampingDb\n"
+    "         << \",\\\"contralateral_high_damping_hz\\\":\" << contralateralHighDampingHz\n"
+    "         << \",\\\"hrtf_type\\\":\\\"\"",
+)
+
+tests = "app/src/test/java/com/aistudio/mediatool/core/spatial/SpatialHissProtectionTest.kt"
+replace_once(
+    tests,
+    "        assertTrue(plan.wetHighShelfDb in -2.5f..-0.8f)\n"
+    "        assertTrue(plan.reverbHighEqScale in 0.8f..0.92f)",
+    "        assertTrue(plan.wetHighShelfDb in -0.8f..-0.2f)\n"
+    "        assertTrue(plan.contralateralHighDampingDb in 1.5f..3.5f)\n"
+    "        assertTrue(plan.contralateralHighDampingDb > -plan.wetHighShelfDb)\n"
+    "        assertTrue(plan.reverbHighEqScale in 0.8f..0.92f)",
+)
+replace_once(
+    tests,
+    "    private fun signalFile(addHiss: Boolean): File {",
+    """    @Test
+    fun nativeRendererTargetsOnlyTheFarEarHighBand() {
+        val source = File("src/main/cpp/spatial_audio_jni.cpp").readText()
+        assertTrue(source.contains("farFactor = channel == 0"))
+        assertTrue(source.contains("dampContralateralHigh(spatial, channel, pose.direction.x)"))
+        assertTrue(source.contains("0.040f * sampleRate"))
+    }
+
+    private fun signalFile(addHiss: Boolean): File {""",
+)
+
+doc = Path("docs/SPATIAL_HISS_PROTECTION.md")
+doc.write_text(
+    doc.read_text(encoding="utf-8")
+    + """
+
+## Hiệu chỉnh sau A/B trên thiết bị
+
+A/B thực tế cho thấy chế độ Mạnh giảm hiss tổng thể nhưng làm giảm treble ở tai gần nhiều hơn tai xa, khiến lớp cao tần ở tai đối diện tương đối dễ nhận ra khi nguồn chạy sang một bên. Bản sửa tiếp theo vì vậy:
+
+- giảm mạnh mức high-shelf toàn nhánh wet;
+- dùng bộ tách cao tần một cực không latency ngay trong renderer;
+- suy giảm chỉ tai đối diện, theo thành phần trái/phải của vị trí nguồn;
+- làm mượt gain trong 40 ms để tránh zipper/pumping;
+- tiếp tục giữ nguyên dry path và không damping khi nguồn ở giữa.
+""",
+    encoding="utf-8",
+)
+
+print("Applied contralateral high-frequency damping revision")

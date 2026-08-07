@@ -14,6 +14,7 @@ import kotlin.math.sin
 data class SpatialAudioConfig(
     val trajectory: SpatialTrajectory = SpatialTrajectory.HORIZONTAL_CIRCLE,
     val stereoMode: SpatialStereoMode = SpatialStereoMode.MID_SIDE,
+    val hissProtection: SpatialHissProtection = SpatialHissProtection.AUTO,
     val interpolation: SpatialInterpolation = SpatialInterpolation.BILINEAR,
     val motionMode: SpatialMotionMode = SpatialMotionMode.LOOP,
     val startAzimuthDeg: Float = -90f,
@@ -247,6 +248,7 @@ data class SpatialAudioConfig(
         mapOf(
             "trajectory" to value.trajectory.name,
             "stereo_mode" to value.stereoMode.name,
+            "hiss_protection" to value.hissProtection.name,
             "stereo_object_half_angle_deg" to value.stereoObjectHalfAngleDeg,
             "interpolation" to value.interpolation.name,
             "motion_mode" to value.motionMode.name,

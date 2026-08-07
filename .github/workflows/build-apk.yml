@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-debug-${{ github.workflow }}-${{ github.ref }}
@@ -22,6 +22,26 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Apply contralateral hiss fix
+        if: github.event_name == 'pull_request' && github.actor != 'github-actions[bot]'
+        run: |
+          python3 scripts/apply_contralateral_hiss_fix.py
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioConfig.kt \
+                  app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialHissProtection.kt \
+                  app/src/main/java/com/aistudio/mediatool/core/spatial/SteamAudioBridge.kt \
+                  app/src/main/cpp/spatial_audio_jni.cpp \
+                  app/src/test/java/com/aistudio/mediatool/core/spatial/SpatialHissProtectionTest.kt \
+                  docs/SPATIAL_HISS_PROTECTION.md
+          git commit -m "fix contralateral high-frequency haze"
+          git push origin HEAD:${{ github.head_ref }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

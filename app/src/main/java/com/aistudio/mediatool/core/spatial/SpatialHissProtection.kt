@@ -53,6 +53,9 @@ internal data class SpatialHissPlan(
     val enabled: Boolean
         get() = mode != SpatialHissProtection.OFF
 
+    val usesFftDenoise: Boolean
+        get() = mode == SpatialHissProtection.STRONG && noiseReductionDb >= 0.5f
+
     fun diagnosticFields(): Map<String, Any?> = mapOf(
         "hiss_protection_mode" to mode.name,
         "hiss_noise_reduction_db" to noiseReductionDb,
@@ -60,8 +63,14 @@ internal data class SpatialHissPlan(
         "hiss_wet_high_shelf_hz" to wetHighShelfHz,
         "hiss_reverb_high_eq_scale" to reverbHighEqScale,
         "hiss_reverb_high_rt60_scale" to reverbHighRt60Scale,
+        "hiss_fft_denoise_enabled" to usesFftDenoise,
+        "hiss_fft_latency_compensation_samples" to if (usesFftDenoise) FFT_DENOISE_LATENCY_SAMPLES else 0,
         "hiss_dry_path_untouched" to true,
     )
+
+    companion object {
+        const val FFT_DENOISE_LATENCY_SAMPLES = 1_200
+    }
 }
 
 internal object SpatialHissProtector {
@@ -186,9 +195,10 @@ internal object SpatialHissProtector {
                 reverbHighRt60Scale = 1f,
             )
 
+            // Mặc định không dùng FFT denoise để tránh latency/musical-noise.
             SpatialHissProtection.AUTO -> SpatialHissPlan(
                 mode = mode,
-                noiseReductionDb = 1.5f + 2.5f * risk,
+                noiseReductionDb = 0f,
                 wetHighShelfDb = -(0.8f + 1.7f * risk),
                 wetHighShelfHz = (9_000f - 1_500f * risk).roundToInt(),
                 reverbHighEqScale = 0.92f - 0.12f * risk,
@@ -197,7 +207,7 @@ internal object SpatialHissProtector {
 
             SpatialHissProtection.STRONG -> SpatialHissPlan(
                 mode = mode,
-                noiseReductionDb = 4f + 2f * risk,
+                noiseReductionDb = 3f + 2f * risk,
                 wetHighShelfDb = -(2f + 1.5f * risk),
                 wetHighShelfHz = (8_000f - 1_000f * risk).roundToInt(),
                 reverbHighEqScale = 0.75f - 0.15f * risk,
@@ -215,9 +225,11 @@ internal object SpatialHissProtector {
     }
 
     fun spatialInputFilter(plan: SpatialHissPlan): String? {
-        if (!plan.enabled || plan.noiseReductionDb < 0.5f) return null
+        if (!plan.usesFftDenoise) return null
+        val latency = SpatialHissPlan.FFT_DENOISE_LATENCY_SAMPLES
         return "afftdn=nr=${decimal(plan.noiseReductionDb)}:nf=-80:tn=1:tr=1:" +
-            "ad=0.85:fo=0.25:nl=average:gs=12"
+            "ad=0.85:fo=0.25:nl=average:gs=12," +
+            "atrim=start_sample=$latency,apad=pad_len=$latency"
     }
 
     fun wetBranchFilter(plan: SpatialHissPlan): String? {

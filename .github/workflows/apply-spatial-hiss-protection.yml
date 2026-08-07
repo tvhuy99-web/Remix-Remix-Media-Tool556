@@ -1,0 +1,31 @@
+name: Apply spatial hiss protection
+
+on:
+  push:
+    branches:
+      - agent/spatial-hiss-protection
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/spatial-hiss-protection
+
+      - name: Apply integration patch
+        run: python3 scripts/apply_spatial_hiss_protection.py
+
+      - name: Commit integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioConfig.kt \
+                  app/src/main/java/com/aistudio/mediatool/core/spatial/SpatialAudioEngine.kt
+          git commit -m "integrate adaptive spatial hiss protection"
+          git push origin HEAD:agent/spatial-hiss-protection

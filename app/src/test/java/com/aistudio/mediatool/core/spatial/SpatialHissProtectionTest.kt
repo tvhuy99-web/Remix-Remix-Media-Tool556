@@ -23,17 +23,32 @@ class SpatialHissProtectionTest {
     }
 
     @Test
-    fun automaticPlanStaysMildAndWetOnly() {
+    fun automaticPlanUsesOnlyPhaseSafeWetDamping() {
         val plan = SpatialHissProtector.plan(
             SpatialHissProtection.AUTO,
             SpatialHissProfile(risk = 1f),
         )
 
-        assertTrue(plan.noiseReductionDb in 1.5f..4f)
+        assertEquals(0f, plan.noiseReductionDb, 0f)
+        assertEquals(null, SpatialHissProtector.spatialInputFilter(plan))
         assertTrue(plan.wetHighShelfDb in -2.5f..-0.8f)
         assertTrue(plan.reverbHighEqScale in 0.8f..0.92f)
         assertTrue(plan.reverbHighRt60Scale in 0.65f..0.85f)
         assertTrue(plan.enabled)
+    }
+
+    @Test
+    fun strongModeCompensatesFftLatency() {
+        val plan = SpatialHissProtector.plan(
+            SpatialHissProtection.STRONG,
+            SpatialHissProfile(risk = 1f),
+        )
+        val filter = SpatialHissProtector.spatialInputFilter(plan).orEmpty()
+
+        assertTrue(plan.usesFftDenoise)
+        assertTrue(filter.contains("afftdn="))
+        assertTrue(filter.contains("atrim=start_sample=1200"))
+        assertTrue(filter.contains("apad=pad_len=1200"))
     }
 
     @Test

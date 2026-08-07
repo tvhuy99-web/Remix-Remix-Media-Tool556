@@ -135,6 +135,7 @@ class SpatialAudioEngine(
             require(decoded.isFile && decoded.length() >= 8L) { "Không giải mã được PCM stereo cho spatial audio" }
 
             val decodedDurationMs = decoded.length() * 1_000L / PCM_BYTES_PER_SECOND
+            val decodedPcm = withContext(Dispatchers.IO) { PcmStereoAnalyzer.analyze(decoded) }
             val inputLoudness = analyzeLoudness(
                 command = "-hide_banner -f f32le -ar 48000 -ac 2 -i \"${decoded.absolutePath}\" " +
                     "-af \"loudnorm=I=-16:TP=-1:LRA=11:print_format=json\" -f null -",
@@ -145,7 +146,9 @@ class SpatialAudioEngine(
                 component = TAG,
                 event = "spatial_input_quality",
                 sessionId = taskId,
-                fields = sourceInfo.diagnosticFields("source") + inputLoudness.diagnosticFields("input") + mapOf(
+                fields = sourceInfo.diagnosticFields("source") +
+                    inputLoudness.diagnosticFields("input") +
+                    decodedPcm.diagnosticFields("decoded_pcm") + mapOf(
                     "decoded_channels" to 2,
                     "decoded_sample_rate" to 48_000,
                     "decoded_bytes" to decoded.length(),
@@ -155,7 +158,7 @@ class SpatialAudioEngine(
 
             emit(State.Progress(36f, "Đang dựng ${value.stereoMode.label}"))
             val nativeBefore = runtimeSnapshot("native_before")
-            val metrics = renderStereoMode(
+            val nativeMetrics = renderStereoMode(
                 decoded = decoded,
                 rendered = rendered,
                 config = value,
@@ -164,12 +167,17 @@ class SpatialAudioEngine(
             ) { progress, message -> emit(State.Progress(progress, message)) }
             val nativeAfter = runtimeSnapshot("native_after")
             require(rendered.isFile && rendered.length() >= 8L) { "Renderer không tạo PCM stereo" }
+            val renderedPcm = withContext(Dispatchers.IO) { PcmStereoAnalyzer.analyze(rendered) }
+            val metrics = nativeMetrics.withPcmDiagnostics(decodedPcm, renderedPcm)
             val renderedDurationMs = rendered.length() * 1_000L / PCM_BYTES_PER_SECOND
             DiagnosticLogger.info(
                 component = TAG,
                 event = "spatial_native_complete",
                 sessionId = taskId,
-                fields = metrics.diagnosticFields() + nativeBefore + nativeAfter + mapOf(
+                fields = metrics.diagnosticFields() +
+                    decodedPcm.diagnosticFields("decoded_pcm") +
+                    renderedPcm.diagnosticFields("final_pcm") +
+                    nativeBefore + nativeAfter + mapOf(
                     "decoded_bytes" to decoded.length(),
                     "rendered_bytes" to rendered.length(),
                     "decoded_duration_ms" to decodedDurationMs,
@@ -180,6 +188,7 @@ class SpatialAudioEngine(
                     "hard_bypass" to (value.spatialBlend <= BYPASS_EPSILON),
                     "mix_limiter_latency_compensated" to true,
                     "dual_object_branch_gain" to DUAL_OBJECT_BRANCH_GAIN,
+                    "stereo_diagnostics_scope" to "decoded_and_final_pcm",
                 ),
             )
 
@@ -219,6 +228,8 @@ class SpatialAudioEngine(
                 sessionId = taskId,
                 fields = inputLoudness.diagnosticFields("input") +
                     outputLoudness.diagnosticFields("output") +
+                    decodedPcm.diagnosticFields("decoded_pcm") +
+                    renderedPcm.diagnosticFields("final_pcm") +
                     outputInfo.diagnosticFields("output") +
                     qualityDelta + runtimeAfter + mapOf(
                         "output_bytes" to output.length(),
@@ -231,7 +242,9 @@ class SpatialAudioEngine(
                 event = "spatial_render_success",
                 sessionId = taskId,
                 fields = metrics.diagnosticFields() + inputLoudness.diagnosticFields("input") +
-                    outputLoudness.diagnosticFields("output") + qualityDelta + mapOf(
+                    outputLoudness.diagnosticFields("output") +
+                    decodedPcm.diagnosticFields("decoded_pcm") +
+                    renderedPcm.diagnosticFields("final_pcm") + qualityDelta + mapOf(
                         "output_bytes" to output.length(),
                         "output_extension" to extension,
                         "output_channels" to outputInfo.channels,
@@ -480,7 +493,34 @@ class SpatialAudioEngine(
     private fun rawPcmInput(file: File): String =
         "-f f32le -ar 48000 -ac 2 -i \"${file.absolutePath}\""
 
-    private fun bypassMetrics(decoded: File, renderMs: Long): SpatialRenderMetrics = SpatialRenderMetrics(
+    private fun SpatialRenderMetrics.withPcmDiagnostics(
+                  input: PcmStereoMetrics,
+                  output: PcmStereoMetrics,
+              ): SpatialRenderMetrics = copy(
+                  frames = output.frames,
+                  inputPeak = input.peak,
+                  inputPeakLeft = input.peakLeft,
+                  inputPeakRight = input.peakRight,
+                  inputRmsDbfs = input.rmsDbfs,
+                  inputRmsLeftDbfs = input.rmsLeftDbfs,
+                  inputRmsRightDbfs = input.rmsRightDbfs,
+                  inputCorrelation = input.correlation,
+                  inputBalanceDb = input.balanceDb,
+                  inputDifferenceRmsDbfs = input.differenceRmsDbfs,
+                  inputDualMono = input.dualMono,
+                  peakAfterGain = output.peak,
+                  peakAfterGainLeft = output.peakLeft,
+                  peakAfterGainRight = output.peakRight,
+                  outputMainRmsAfterGainDbfs = output.rmsDbfs,
+                  outputTotalRmsDbfs = output.rmsDbfs,
+                  outputRmsLeftDbfs = output.rmsLeftDbfs,
+                  outputRmsRightDbfs = output.rmsRightDbfs,
+                  outputCorrelation = output.correlation,
+                  outputBalanceDb = output.balanceDb,
+                  nonFiniteSamples = output.nonFiniteSamples,
+              )
+          
+              private fun bypassMetrics(decoded: File, renderMs: Long): SpatialRenderMetrics = SpatialRenderMetrics(
         frames = decoded.length() / 8L,
         blocks = 0L,
         tailFrames = 0L,

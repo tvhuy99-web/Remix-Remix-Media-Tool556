@@ -158,7 +158,9 @@ class StudioRenderEngine(context: Context) {
         val master = if (applyMaster) {
             buildString {
                 append(",volume=${formatDb(project.masterMix.gainDb)}dB")
-                if (project.masterMix.limiterEnabled) append(",alimiter=limit=0.98:attack=5:release=50")
+                if (project.masterMix.limiterEnabled) {
+                    append(",alimiter=limit=0.98:attack=5:release=50:level=0:latency=1")
+                }
             }
         } else {
             ""

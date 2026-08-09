@@ -173,20 +173,19 @@ class StudioWaveformStore(context: Context) {
         val temporary = File(target.parentFile, "${target.name}.tmp")
         temporary.delete()
         FileOutputStream(temporary).use { raw ->
-            DataOutputStream(BufferedOutputStream(raw)).use { output ->
-                output.writeInt(MAGIC)
-                output.writeInt(VERSION)
-                output.writeInt(waveform.sampleRate)
-                output.writeInt(waveform.channelCount)
-                output.writeInt(waveform.framesPerPoint)
-                output.writeLong(waveform.totalFrames)
-                output.writeInt(waveform.pointCount)
-                repeat(waveform.pointCount) { index ->
-                    output.writeShort(waveform.minima[index].toInt())
-                    output.writeShort(waveform.maxima[index].toInt())
-                }
-                output.flush()
+            val output = DataOutputStream(BufferedOutputStream(raw))
+            output.writeInt(MAGIC)
+            output.writeInt(VERSION)
+            output.writeInt(waveform.sampleRate)
+            output.writeInt(waveform.channelCount)
+            output.writeInt(waveform.framesPerPoint)
+            output.writeLong(waveform.totalFrames)
+            output.writeInt(waveform.pointCount)
+            repeat(waveform.pointCount) { index ->
+                output.writeShort(waveform.minima[index].toInt())
+                output.writeShort(waveform.maxima[index].toInt())
             }
+            output.flush()
             raw.fd.sync()
         }
         if (!temporary.renameTo(target)) {

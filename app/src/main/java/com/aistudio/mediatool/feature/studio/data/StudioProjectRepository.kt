@@ -3,6 +3,7 @@ package com.aistudio.mediatool.feature.studio.data
 import android.content.Context
 import android.net.Uri
 import com.aistudio.mediatool.core.DocumentUtils
+import com.aistudio.mediatool.feature.studio.domain.STUDIO_PROJECT_SCHEMA_VERSION
 import com.aistudio.mediatool.feature.studio.domain.STUDIO_TIMELINE_SAMPLE_RATE
 import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
@@ -59,7 +60,10 @@ class StudioProjectRepository(context: Context) {
     }
 
     fun save(project: StudioProject): StudioProject {
-        val updated = project.copy(updatedAt = System.currentTimeMillis())
+        val updated = project.copy(
+            schemaVersion = STUDIO_PROJECT_SCHEMA_VERSION,
+            updatedAt = System.currentTimeMillis(),
+        )
         projectStore.save(updated)
         return updated
     }
@@ -91,6 +95,7 @@ class StudioProjectRepository(context: Context) {
         recordedTimelineFrame: Long,
         inputSampleRate: Int,
         inputDeviceId: Int?,
+        latencyCompensationFrames: Long = 0L,
     ): PendingStudioTake {
         var project = requireNotNull(load(projectId)) { "Không tìm thấy dự án Studio" }
         var vocalTrack = project.tracks.firstOrNull { it.type == StudioTrackType.VOCAL }
@@ -108,6 +113,7 @@ class StudioProjectRepository(context: Context) {
             recordedTimelineFrame = recordedTimelineFrame,
             inputSampleRate = inputSampleRate,
             inputDeviceId = inputDeviceId,
+            latencyCompensationFrames = latencyCompensationFrames,
             channelCount = 1,
         )
     }
@@ -159,7 +165,7 @@ class StudioProjectRepository(context: Context) {
             recordedFrames = finalized.info.dataFrames,
             inputDeviceId = pending.inputDeviceId,
             inputSampleRate = finalized.info.sampleRate,
-            latencyCompensationFrames = 0L,
+            latencyCompensationFrames = pending.latencyCompensationFrames,
             status = status,
         )
         val updatedTrack = baseTrack.copy(

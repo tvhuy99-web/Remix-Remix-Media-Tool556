@@ -177,6 +177,7 @@ class StudioNativeAudio(context: Context) : Closeable {
             writerErrorCode = values[19].toInt(),
             arrangementClipCount = values[20].toInt(),
             arrangementDurationFrames = values[21],
+            inputCapturedFrames = values[22],
         )
     }
 
@@ -232,7 +233,7 @@ class StudioNativeAudio(context: Context) : Closeable {
     private external fun nativeRelease(handle: Long)
 
     companion object {
-        private const val DIAGNOSTIC_FIELD_COUNT = 22
+        private const val DIAGNOSTIC_FIELD_COUNT = 23
 
         init {
             System.loadLibrary("mediatool_studio")
@@ -269,6 +270,7 @@ data class StudioAudioDiagnostics(
     val writerErrorCode: Int,
     val arrangementClipCount: Int,
     val arrangementDurationFrames: Long,
+    val inputCapturedFrames: Long,
 ) {
     val approximateBufferMs: Double
         get() = if (sampleRate > 0) bufferSizeFrames * 1000.0 / sampleRate else 0.0

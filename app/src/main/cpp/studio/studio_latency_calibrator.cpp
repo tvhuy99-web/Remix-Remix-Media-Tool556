@@ -20,6 +20,8 @@ constexpr int32_t kErrorStart = -20'003;
 constexpr int32_t kErrorTimeout = -20'004;
 constexpr int32_t kErrorSignal = -20'005;
 constexpr int32_t kErrorRateMismatch = -20'006;
+constexpr int32_t kErrorCancelled = -20'007;
+std::atomic<bool> gCalibrationCancelled{false};
 
 struct CalibrationResult {
     int32_t status = kErrorSignal;
@@ -34,6 +36,7 @@ class LatencyCalibrator final : public oboe::AudioStreamDataCallback,
                                 public oboe::AudioStreamErrorCallback {
 public:
     CalibrationResult measure(int32_t preferredInputDeviceId, int32_t preferredOutputDeviceId, int32_t inputMode) {
+        gCalibrationCancelled.store(false, std::memory_order_release);
         CalibrationResult result;
         auto openResult = openOutput(preferredOutputDeviceId);
         if (openResult != oboe::Result::OK || !output_) {
@@ -76,12 +79,18 @@ public:
         }
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kCalibrationTimeoutMs);
-        while (!completed_.load() && !disconnected_.load() && std::chrono::steady_clock::now() < deadline) {
+        while (!completed_.load() && !disconnected_.load() && !gCalibrationCancelled.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
         }
         output_->requestStop();
         input_->requestStop();
 
+        if (gCalibrationCancelled.load(std::memory_order_acquire)) {
+            result.status = kErrorCancelled;
+            close();
+            return result;
+        }
         if (!completed_.load() || disconnected_.load()) {
             result.status = kErrorTimeout;
             close();
@@ -314,6 +323,13 @@ private:
 };
 
 }  // namespace
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_aistudio_mediatool_feature_studio_audio_StudioLatencyNative_nativeCancel(
+    JNIEnv*, jobject
+) {
+    gCalibrationCancelled.store(true, std::memory_order_release);
+}
 
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_com_aistudio_mediatool_feature_studio_audio_StudioLatencyNative_nativeMeasure(

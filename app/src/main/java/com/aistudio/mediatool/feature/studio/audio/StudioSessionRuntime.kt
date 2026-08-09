@@ -21,14 +21,19 @@ import kotlin.math.max
 import kotlin.math.roundToLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class StudioSessionStatus {
     CLOSED,
@@ -1058,11 +1063,23 @@ object StudioSessionRuntime {
         var measurement: StudioLatencyMeasurement? = null
         var measurementError: Throwable? = null
         try {
-            StudioLatencyNative.measure(
-                preferredInputDeviceId = current.selectedInputDeviceId,
-                preferredOutputDeviceId = current.selectedOutputDeviceId,
-                inputMode = mode,
-            ).onSuccess { measurement = it }
+            val calibrationResult = coroutineScope {
+                val calibrationTask = async(Dispatchers.IO) {
+                    StudioLatencyNative.measure(
+                        preferredInputDeviceId = current.selectedInputDeviceId,
+                        preferredOutputDeviceId = current.selectedOutputDeviceId,
+                        inputMode = mode,
+                    )
+                }
+                try {
+                    calibrationTask.await()
+                } catch (cancelled: CancellationException) {
+                    StudioLatencyNative.cancel()
+                    withContext(NonCancellable) { calibrationTask.join() }
+                    throw cancelled
+                }
+            }
+            calibrationResult.onSuccess { measurement = it }
                 .onFailure { measurementError = it }
 
             val prepared = StudioBeatPreparer(context, repo, waves).prepare(project.id)
@@ -1127,16 +1144,81 @@ object StudioSessionRuntime {
                 ),
             )
         } catch (cancelled: CancellationException) {
+            StudioLatencyNative.cancel()
+            restoreAfterCalibrationInterruption(
+                context = context,
+                repo = repo,
+                waves = waves,
+                native = native,
+                projectId = project.id,
+                frame = frame,
+                outputDeviceId = current.selectedOutputDeviceId,
+            )
             audioFocusManager?.abandon()
             throw cancelled
         } catch (error: Throwable) {
+            restoreAfterCalibrationInterruption(
+                context = context,
+                repo = repo,
+                waves = waves,
+                native = native,
+                projectId = project.id,
+                frame = frame,
+                outputDeviceId = current.selectedOutputDeviceId,
+            )
             audioFocusManager?.abandon()
             _state.value = _state.value.copy(
-                status = StudioSessionStatus.ERROR,
                 message = null,
                 errorMessage = error.message ?: "Không thể khôi phục Studio sau hiệu chỉnh latency",
             )
         }
+    }
+
+    private suspend fun restoreAfterCalibrationInterruption(
+        context: Context,
+        repo: StudioProjectRepository,
+        waves: StudioWaveformStore,
+        native: StudioNativeAudio,
+        projectId: String,
+        frame: Long,
+        outputDeviceId: Int?,
+    ) = withContext(NonCancellable) {
+        runCatching {
+            val prepared = StudioBeatPreparer(context, repo, waves).prepare(projectId)
+            val restoredProject = prepared.project
+            requireSuccess(native.openOutput(outputDeviceId), "Không thể mở lại output Studio")
+            requireSuccess(
+                native.loadBeat(prepared.pcmFile, restoredProject.timelineSampleRate, 2),
+                "Không thể nạp lại beat Studio",
+            )
+            requireSuccess(
+                native.setPlaybackPlan(StudioPlaybackPlanner.build(restoredProject, repo), restoredProject.timelineSampleRate),
+                "Không thể nạp lại bản phối Studio",
+            )
+            requireSuccess(native.start(), "Không thể khởi động lại Studio")
+            outputSuspendedForBackground = false
+            native.seek(frame)
+            native.setPlaying(false)
+            if (!uiVisible) {
+                native.stop()
+                outputSuspendedForBackground = true
+            }
+            _state.value = _state.value.copy(
+                project = restoredProject,
+                status = StudioSessionStatus.READY,
+                transportFrame = frame,
+                durationFrames = projectDurationFrames(restoredProject),
+                diagnostics = native.diagnostics(),
+                message = null,
+            )
+        }.onFailure { restoreError ->
+            _state.value = _state.value.copy(
+                status = StudioSessionStatus.ERROR,
+                message = null,
+                errorMessage = restoreError.message ?: "Không thể khôi phục Studio sau khi dừng căn tiếng",
+            )
+        }
+        Unit
     }
 
     private fun switchOutputRouteInternal(deviceId: Int?) {
@@ -1405,7 +1487,7 @@ object StudioSessionRuntime {
         }
     }
 
-    private fun projectDurationFrames(project: StudioProject): Long {
+    internal fun projectDurationFrames(project: StudioProject): Long {
         var duration = project.beatAsset()?.let { asset ->
             sourceFramesToTimeline(
                 asset.durationFrames ?: 0L,
@@ -1414,15 +1496,21 @@ object StudioSessionRuntime {
             )
         } ?: 0L
         for (track in project.tracks) {
-            for (take in track.takes) {
-                val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
-                val sourceLength = (placement.sourceEndFrame - placement.sourceStartFrame).coerceAtLeast(0L)
-                val length = sourceFramesToTimeline(sourceLength, take.inputSampleRate, project.timelineSampleRate)
-                duration = max(duration, placement.timelineStartFrame + length)
+            if (track.type == StudioTrackType.BEAT) continue
+            if (track.clips.isNotEmpty()) {
+                for (clip in track.clips) {
+                    duration = max(duration, StudioEditEngine.timelineEnd(project, clip))
+                }
+                continue
             }
-            for (clip in track.clips) {
-                duration = max(duration, StudioEditEngine.timelineEnd(project, clip))
-            }
+            val activeTake = track.activeTakeId
+                ?.let { id -> track.takes.firstOrNull { it.id == id } }
+                ?: track.takes.lastOrNull()
+                ?: continue
+            val placement = activeTake.latencyCompensatedPlacement(project.timelineSampleRate)
+            val sourceLength = (placement.sourceEndFrame - placement.sourceStartFrame).coerceAtLeast(0L)
+            val length = sourceFramesToTimeline(sourceLength, activeTake.inputSampleRate, project.timelineSampleRate)
+            duration = max(duration, placement.timelineStartFrame + length)
         }
         return duration.coerceAtLeast(project.timelineSampleRate.toLong())
     }

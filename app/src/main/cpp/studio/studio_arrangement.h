@@ -169,6 +169,8 @@ public:
         return audio_ != nullptr && sourceEndFrame_ > sourceStartFrame_ && timelineLengthFrames_ > 0;
     }
 
+    int64_t timelineStartFrame() const { return timelineStartFrame_; }
+
     int64_t timelineEndFrame() const {
         return timelineStartFrame_ + timelineLengthFrames_;
     }
@@ -235,11 +237,29 @@ public:
             arrangement->durationFrames_ = std::max(arrangement->durationFrames_, clip.timelineEndFrame());
             arrangement->clips_.push_back(std::move(clip));
         }
+        arrangement->bucketFrames_ = std::max<int64_t>(1, projectSampleRate);
+        const size_t bucketCount = arrangement->durationFrames_ > 0
+            ? static_cast<size_t>((arrangement->durationFrames_ + arrangement->bucketFrames_ - 1) / arrangement->bucketFrames_)
+            : 0U;
+        arrangement->clipBuckets_.resize(bucketCount);
+        for (size_t index = 0; index < arrangement->clips_.size(); ++index) {
+            const auto& clip = arrangement->clips_[index];
+            const int64_t start = std::max<int64_t>(0, clip.timelineStartFrame());
+            const int64_t end = std::max<int64_t>(start + 1, clip.timelineEndFrame());
+            const size_t firstBucket = static_cast<size_t>(start / arrangement->bucketFrames_);
+            const size_t lastBucket = static_cast<size_t>((end - 1) / arrangement->bucketFrames_);
+            for (size_t bucket = firstBucket; bucket <= lastBucket && bucket < arrangement->clipBuckets_.size(); ++bucket) {
+                arrangement->clipBuckets_[bucket].push_back(index);
+            }
+        }
         return arrangement;
     }
 
     void mix(int64_t projectFrame, float& left, float& right) const {
-        for (const auto& clip : clips_) clip.mix(projectFrame, left, right);
+        if (projectFrame < 0 || bucketFrames_ <= 0 || clipBuckets_.empty()) return;
+        const size_t bucket = static_cast<size_t>(projectFrame / bucketFrames_);
+        if (bucket >= clipBuckets_.size()) return;
+        for (const size_t index : clipBuckets_[bucket]) clips_[index].mix(projectFrame, left, right);
     }
 
     size_t clipCount() const { return clips_.size(); }
@@ -247,6 +267,8 @@ public:
 
 private:
     std::vector<PlaybackClip> clips_;
+    std::vector<std::vector<size_t>> clipBuckets_;
+    int64_t bucketFrames_ = 48'000;
     int64_t durationFrames_ = 0;
 };
 

@@ -12,6 +12,8 @@ data class StudioLatencyMeasurement(
 }
 
 object StudioLatencyNative {
+    fun cancel() = nativeCancel()
+
     fun measure(
         preferredInputDeviceId: Int?,
         preferredOutputDeviceId: Int?,
@@ -44,8 +46,11 @@ object StudioLatencyNative {
         -20_004 -> "Hiệu chỉnh quá thời gian hoặc thiết bị bị ngắt kết nối"
         -20_005 -> "Microphone không nhận đủ tín hiệu click. Hãy đưa loa/tai nghe gần microphone hơn và thử lại."
         -20_006 -> "Input và output không chạy cùng sample rate cho phép auto calibration"
+        -20_007 -> "Hiệu chỉnh đã được hủy"
         else -> "Hiệu chỉnh latency thất bại (mã $code)"
     }
+
+    private external fun nativeCancel()
 
     private external fun nativeMeasure(
         preferredInputDeviceId: Int,

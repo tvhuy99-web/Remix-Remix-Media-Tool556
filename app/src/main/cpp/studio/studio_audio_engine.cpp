@@ -309,12 +309,6 @@ public:
         if (path == nullptr || inputStream_ == nullptr || recording_.load() || writerThread_.joinable()) {
             return kCustomErrorRecordingState;
         }
-        for (int attempt = 0; attempt < 8 && !inputScratch_.empty(); ++attempt) {
-            const int32_t drainFrames = std::min<int32_t>(1024, static_cast<int32_t>(inputScratch_.size()));
-            auto drained = inputStream_->read(inputScratch_.data(), drainFrames, 0);
-            if (drained != oboe::Result::OK || drained.value() <= 0) break;
-        }
-
         const int32_t sampleRate = std::max(1, inputStream_->getSampleRate());
         recordingSampleRate_.store(sampleRate);
         FILE* file = std::fopen(path, "wb+");
@@ -365,6 +359,9 @@ public:
         int32_t numFrames
     ) override {
         if (audioData == nullptr || numFrames <= 0) return oboe::DataCallbackResult::Continue;
+        if (audioStream == inputStream_.get()) {
+            return captureInputCallback(audioData, numFrames);
+        }
         const int64_t requestedSeek = pendingSeekFrame_.exchange(kNoSeek);
         if (requestedSeek >= 0) {
             const int64_t upper = maxTimelineDuration();
@@ -372,8 +369,6 @@ public:
             playheadFrame_ = static_cast<double>(std::max<int64_t>(0, safe));
             transportFrame_.store(static_cast<int64_t>(playheadFrame_));
         }
-
-        captureInput(numFrames);
 
         if (audioStream->getFormat() != oboe::AudioFormat::Float) {
             std::memset(audioData, 0, static_cast<size_t>(numFrames) * audioStream->getBytesPerFrame());
@@ -455,7 +450,7 @@ public:
     }
 
     jlongArray diagnostics(JNIEnv* env) const {
-        constexpr jsize kFieldCount = 22;
+        constexpr jsize kFieldCount = 23;
         jlong values[kFieldCount] = {};
         values[5] = -1;
         values[13] = lastInputSampleRate_.load();
@@ -491,6 +486,7 @@ public:
         const auto arrangement = std::atomic_load_explicit(&arrangement_, std::memory_order_acquire);
         values[20] = arrangement ? static_cast<jlong>(arrangement->clipCount()) : 0;
         values[21] = arrangement ? arrangement->durationFrames() : 0;
+        values[22] = inputReadFrames_.load();
 
         auto array = env->NewLongArray(kFieldCount);
         if (array != nullptr) env->SetLongArrayRegion(array, 0, kFieldCount, values);
@@ -537,6 +533,7 @@ private:
         builder.setChannelConversionAllowed(true);
         builder.setFormatConversionAllowed(true);
         builder.setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium);
+        builder.setDataCallback(this);
         builder.setErrorCallback(this);
         if (preferredDeviceId >= 0) builder.setDeviceId(preferredDeviceId);
         const auto result = builder.openStream(inputStream_);
@@ -566,33 +563,26 @@ private:
         }
     }
 
-    void captureInput(int32_t requestedFrames) {
-        if (!recording_.load() || !inputStream_ || inputScratch_.empty() || pcm16Scratch_.empty()) return;
-        const int32_t framesToRead = std::min<int32_t>(requestedFrames, static_cast<int32_t>(inputScratch_.size()));
-        if (framesToRead <= 0) return;
+    oboe::DataCallbackResult captureInputCallback(void* audioData, int32_t numFrames) {
+        if (!recording_.load() || audioData == nullptr || numFrames <= 0 || pcm16Scratch_.empty()) {
+            return oboe::DataCallbackResult::Continue;
+        }
         inputReadActive_.store(true, std::memory_order_release);
-        auto result = inputStream_->read(inputScratch_.data(), framesToRead, 0);
-        int32_t framesRead = 0;
-        if (result == oboe::Result::OK) {
-            framesRead = std::max(0, std::min(framesToRead, result.value()));
-            inputReadFrames_.fetch_add(framesRead);
-        } else if (result == oboe::Result::ErrorDisconnected) {
-            recording_.store(false);
-            disconnectCount_.fetch_add(1);
-            inputReadActive_.store(false, std::memory_order_release);
-            return;
+        const int32_t framesToCapture = std::min<int32_t>(numFrames, static_cast<int32_t>(pcm16Scratch_.size()));
+        const auto* input = static_cast<const float*>(audioData);
+        for (int32_t frame = 0; frame < framesToCapture; ++frame) {
+            pcm16Scratch_[static_cast<size_t>(frame)] = floatToPcm16(input[static_cast<size_t>(frame)]);
         }
-        for (int32_t frame = 0; frame < framesRead; ++frame) {
-            pcm16Scratch_[static_cast<size_t>(frame)] = floatToPcm16(inputScratch_[static_cast<size_t>(frame)]);
+        inputReadFrames_.fetch_add(framesToCapture);
+        const size_t accepted = ringBuffer_.push(pcm16Scratch_.data(), static_cast<size_t>(framesToCapture));
+        if (accepted < static_cast<size_t>(framesToCapture)) {
+            ringOverrunFrames_.fetch_add(static_cast<int64_t>(framesToCapture) - static_cast<int64_t>(accepted));
         }
-        for (int32_t frame = framesRead; frame < framesToRead; ++frame) {
-            pcm16Scratch_[static_cast<size_t>(frame)] = 0;
-        }
-        const size_t accepted = ringBuffer_.push(pcm16Scratch_.data(), static_cast<size_t>(framesToRead));
-        if (accepted < static_cast<size_t>(framesToRead)) {
-            ringOverrunFrames_.fetch_add(static_cast<int64_t>(framesToRead) - static_cast<int64_t>(accepted));
+        if (framesToCapture < numFrames) {
+            ringOverrunFrames_.fetch_add(static_cast<int64_t>(numFrames - framesToCapture));
         }
         inputReadActive_.store(false, std::memory_order_release);
+        return oboe::DataCallbackResult::Continue;
     }
 
     void sampleBeat(double sourceFrame, float& left, float& right) const {
@@ -668,7 +658,7 @@ private:
             }
             recordedFrames_.fetch_add(static_cast<int64_t>(count));
             framesSinceSync += static_cast<int64_t>(count);
-            if (recordedFrames_.load() * static_cast<int64_t>(sizeof(int16_t)) > 0xfffffff0LL) {
+            if (recordedFrames_.load() * static_cast<int64_t>(sizeof(int16_t)) > 0xffffffdaLL) {
                 writerError_.store(kCustomErrorWriter);
                 recording_.store(false);
                 break;

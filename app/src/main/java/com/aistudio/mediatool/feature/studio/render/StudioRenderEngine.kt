@@ -38,21 +38,27 @@ class StudioRenderEngine(context: Context) {
 
     suspend fun renderStems(project: StudioProject): File = withContext(Dispatchers.IO) {
         val rendered = mutableListOf<File>()
-        project.tracks
-            .filter { !it.muted }
-            .forEachIndexed { index, track ->
-                val sources = buildTrackSources(project, track)
-                if (sources.isEmpty()) return@forEachIndexed
-                val safeName = DocumentUtils.sanitizeFileName(track.name).ifBlank { "Track_${index + 1}" }
-                val target = FileExportManager.resultFile(appContext, "${project.name}_${safeName}", "wav")
-                execute(
-                    buildCommand(project, sources, target, StudioExportFormat.WAV, applyMaster = false),
-                    "studio_export_stem",
-                )
-                if (target.isFile && target.length() > 0L) rendered += target
-            }
-        require(rendered.isNotEmpty()) { "Không có stem nào để xuất" }
-        FileExportManager.zipFiles(appContext, rendered, "${project.name}_Studio_Stems")
+        val temporaryFiles = mutableListOf<File>()
+        try {
+            project.tracks
+                .filter { !it.muted }
+                .forEachIndexed { index, track ->
+                    val sources = buildTrackSources(project, track)
+                    if (sources.isEmpty()) return@forEachIndexed
+                    val safeName = DocumentUtils.sanitizeFileName(track.name).ifBlank { "Track_${index + 1}" }
+                    val target = FileExportManager.resultFile(appContext, "${project.name}_${safeName}", "wav")
+                    temporaryFiles += target
+                    execute(
+                        buildCommand(project, sources, target, StudioExportFormat.WAV, applyMaster = false),
+                        "studio_export_stem",
+                    )
+                    if (target.isFile && target.length() > 0L) rendered += target
+                }
+            require(rendered.isNotEmpty()) { "Không có stem nào để xuất" }
+            FileExportManager.zipFiles(appContext, rendered, "${project.name}_Studio_Stems")
+        } finally {
+            temporaryFiles.forEach { file -> runCatching { file.delete() } }
+        }
     }
 
     private suspend fun execute(command: String, phase: String) {

@@ -8,6 +8,7 @@ import kotlin.math.min
 /** Canonical PCM16 WAV helpers used by Studio take recovery, derived processors and waveform analysis. */
 object StudioWavFile {
     const val HEADER_BYTES = 44
+    private const val MAX_RIFF_DATA_BYTES = 0xffff_ffffL - 36L
 
     data class Info(
         val sampleRate: Int,
@@ -20,7 +21,7 @@ object StudioWavFile {
         if (!raw.isFile || raw.length() <= 0L || sampleRate <= 0 || channelCount !in 1..8) return null
         val frameBytes = channelCount * 2L
         val alignedBytes = raw.length() - (raw.length() % frameBytes)
-        if (alignedBytes <= 0L || alignedBytes > UInt.MAX_VALUE.toLong()) return null
+        if (alignedBytes <= 0L || alignedBytes > MAX_RIFF_DATA_BYTES) return null
         target.parentFile?.mkdirs()
         target.delete()
         FileOutputStream(target).use { output ->
@@ -47,7 +48,7 @@ object StudioWavFile {
         val frameBytes = channelCount * 2L
         val available = (file.length() - HEADER_BYTES).coerceAtLeast(0L)
         val alignedBytes = available - (available % frameBytes)
-        if (alignedBytes <= 0L || alignedBytes > UInt.MAX_VALUE.toLong()) return null
+        if (alignedBytes <= 0L || alignedBytes > MAX_RIFF_DATA_BYTES) return null
         val finalLength = HEADER_BYTES + alignedBytes
 
         RandomAccessFile(file, "rw").use { wav ->

@@ -6,6 +6,7 @@ import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
+import com.aistudio.mediatool.feature.studio.domain.latencyCompensatedPlacement
 
 /** Builds the validated PCM/WAV monitor snapshot before the realtime callback sees it. */
 object StudioPlaybackPlanner {
@@ -23,7 +24,7 @@ object StudioPlaybackPlanner {
                     val arrangement = if (track.clips.isNotEmpty()) {
                         track.clips
                     } else {
-                        activeTake(track)?.let { listOf(fullTakeClip(it)) }.orEmpty()
+                        activeTake(track)?.let { listOf(fullTakeClip(project, it)) }.orEmpty()
                     }
                     arrangement.forEach { clip ->
                         val file = requireNotNull(repository.assetFile(project.id, clip.sourceAssetId)) {
@@ -59,12 +60,15 @@ object StudioPlaybackPlanner {
         track.activeTakeId?.let { id -> track.takes.firstOrNull { it.id == id } }
             ?: track.takes.lastOrNull()
 
-    private fun fullTakeClip(take: StudioTake): StudioClip = StudioClip(
-        id = "monitor-${take.id}",
-        sourceAssetId = take.assetId,
-        sourceTakeId = take.id,
-        timelineStartFrame = (take.recordedTimelineFrame - take.latencyCompensationFrames).coerceAtLeast(0L),
-        sourceStartFrame = 0L,
-        sourceEndFrame = take.recordedFrames,
-    )
+    private fun fullTakeClip(project: StudioProject, take: StudioTake): StudioClip {
+        val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
+        return StudioClip(
+            id = "monitor-${take.id}",
+            sourceAssetId = take.assetId,
+            sourceTakeId = take.id,
+            timelineStartFrame = placement.timelineStartFrame,
+            sourceStartFrame = placement.sourceStartFrame,
+            sourceEndFrame = placement.sourceEndFrame,
+        )
+    }
 }

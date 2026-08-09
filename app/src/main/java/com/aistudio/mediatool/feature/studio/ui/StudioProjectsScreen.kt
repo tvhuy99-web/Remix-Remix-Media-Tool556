@@ -31,15 +31,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.feature.studio.data.StudioProjectRepository
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.ui.components.ToolScaffold
+import java.util.Date
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.Date
 
 @Composable
 fun StudioProjectsScreen(
@@ -58,7 +60,9 @@ fun StudioProjectsScreen(
         projects = withContext(Dispatchers.IO) { repository.listProjects() }
     }
 
-    val beatPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val beatPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
         if (uri == null || importing) return@rememberLauncherForActivityResult
         importing = true
         errorMessage = null
@@ -71,13 +75,13 @@ fun StudioProjectsScreen(
                 onOpenProject(project.id)
             }.onFailure { error ->
                 importing = false
-                errorMessage = error.message ?: "Không thể tạo dự án Studio"
+                errorMessage = error.message ?: "Không thể tạo bài mới"
             }
         }
     }
 
     ToolScaffold(
-        title = "Studio",
+        title = "Phòng thu",
         onNavigateBack = onNavigateBack,
     ) { innerPadding ->
         Column(
@@ -89,14 +93,10 @@ fun StudioProjectsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = "Dự án của tôi",
+                text = "Bài hát của bạn",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Mỗi dự án giữ beat, Take, derived asset và thiết lập Pro trong bộ nhớ ứng dụng. Studio Lab dùng lại các processor MediaTool mà không phá source.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { heading() },
             )
 
             Button(
@@ -109,10 +109,10 @@ fun StudioProjectsScreen(
                         modifier = Modifier.padding(end = 12.dp),
                         strokeWidth = 2.dp,
                     )
-                    Text("Đang nhập beat...")
+                    Text("Đang tạo bài...")
                 } else {
                     Icon(Icons.Default.Add, contentDescription = null)
-                    Text("  Dự án mới từ nhạc beat")
+                    Text("  Tạo bài mới từ nhạc nền")
                 }
             }
 
@@ -127,9 +127,9 @@ fun StudioProjectsScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Icon(Icons.Default.MusicNote, contentDescription = null)
-                        Text("Chưa có dự án", fontWeight = FontWeight.SemiBold)
+                        Text("Chưa có bài nào", fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Chọn một nhạc beat để tạo Studio project đầu tiên.",
+                            "Chọn một nhạc nền để bắt đầu thu giọng.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -137,45 +137,69 @@ fun StudioProjectsScreen(
             }
 
             projects.forEach { project ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        ) {
-                            Icon(Icons.Default.MusicNote, contentDescription = null)
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(project.name, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    project.beatAsset()?.displayName ?: "Chưa có beat",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (project.updatedAt > 0L) {
-                                    Text(
-                                        "Cập nhật ${DateFormat.getMediumDateFormat(context).format(Date(project.updatedAt))}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { onOpenProject(project.id) },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("Mở Studio") }
-                            OutlinedButton(
-                                onClick = { onOpenLab(project.id) },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("Studio Lab") }
-                        }
+                ProjectCard(
+                    project = project,
+                    updatedDate = if (project.updatedAt > 0L) {
+                        DateFormat.getMediumDateFormat(context).format(Date(project.updatedAt))
+                    } else {
+                        null
+                    },
+                    onOpenProject = { onOpenProject(project.id) },
+                    onOpenTools = { onOpenLab(project.id) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProjectCard(
+    project: StudioProject,
+    updatedDate: String?,
+    onOpenProject: () -> Unit,
+    onOpenTools: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Icon(Icons.Default.MusicNote, contentDescription = null)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(project.name, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        project.beatAsset()?.displayName ?: "Chưa có nhạc nền",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    updatedDate?.let {
+                        Text(
+                            "Chỉnh sửa $it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
+            }
+
+            Button(
+                onClick = onOpenProject,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Mở phòng thu")
+            }
+            OutlinedButton(
+                onClick = onOpenTools,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Chỉnh âm thanh")
             }
         }
     }

@@ -148,7 +148,7 @@ object StudioSessionRuntime {
         }
     }
 
-    private fun openInternal(context: Context, projectId: String) {
+    private suspend fun openInternal(context: Context, projectId: String) {
         if (_state.value.status == StudioSessionStatus.RECORDING) stopRecordingInternal()
         closeEngineInternal()
         appContext = context

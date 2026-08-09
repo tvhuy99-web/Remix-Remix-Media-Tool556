@@ -40,7 +40,7 @@ class StudioProjectStore(context: Context) {
             output.fd.sync()
         }
 
-        if (target.exists()) {
+        if (target.exists() && isValidSnapshot(target, project.id)) {
             backup.delete()
             if (!target.renameTo(backup)) {
                 target.copyTo(backup, overwrite = true)
@@ -55,8 +55,8 @@ class StudioProjectStore(context: Context) {
         }
         check(target.isFile && target.length() > 0L) { "Không thể lưu dự án Studio" }
         // Keep the previous valid project snapshot. loadFromDirectory() can then
-        // recover from a later torn/corrupted primary file instead of having a
-        // fallback that only exists during the save operation itself.
+        // recover from a later torn/corrupted primary file. If the primary was
+        // already corrupt, do not overwrite a known-good backup with it.
     }
 
     fun delete(projectId: String): Boolean {
@@ -87,6 +87,12 @@ class StudioProjectStore(context: Context) {
         require(project.id == directory.name) { "Id dự án Studio không khớp thư mục" }
         return project
     }
+
+    private fun isValidSnapshot(file: File, expectedProjectId: String): Boolean =
+        runCatching {
+            file.isFile && file.length() > 0L &&
+                StudioProjectCodec.decode(file.readText(Charsets.UTF_8)).id == expectedProjectId
+        }.getOrDefault(false)
 
     private fun requireValidProjectId(projectId: String) {
         require(PROJECT_ID.matches(projectId)) { "Id dự án Studio không hợp lệ" }

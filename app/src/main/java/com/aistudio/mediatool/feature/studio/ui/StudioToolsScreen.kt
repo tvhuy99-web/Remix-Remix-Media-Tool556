@@ -56,11 +56,11 @@ import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioProSettings
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTempoSettings
+import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import com.aistudio.mediatool.feature.studio.integration.StudioMediaIntegrationProcessor
 import com.aistudio.mediatool.feature.studio.integration.StudioMediaProcessorKind
 import com.aistudio.mediatool.feature.studio.render.StudioProFilterBuilder
 import com.aistudio.mediatool.ui.components.ToolScaffold
-import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -68,113 +68,110 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun StudioToolsScreen(
-    projectId: String,
-    onNavigateBack: () -> Unit,
-) {
+fun StudioToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
     val context = LocalContext.current
     val repository = remember { StudioProjectRepository(context) }
     val processor = remember { StudioMediaIntegrationProcessor(context) }
     val scope = rememberCoroutineScope()
+    val player = remember { ExoPlayer.Builder(context).build() }
+
     var project by remember { mutableStateOf<StudioProject?>(null) }
-    var selectedSourceId by remember { mutableStateOf<String?>(null) }
-    var latestProcessedId by remember { mutableStateOf<String?>(null) }
-    var voiceCleanupReady by remember { mutableStateOf(false) }
+    var selectedId by remember { mutableStateOf<String?>(null) }
+    var latestId by remember { mutableStateOf<String?>(null) }
+    var modelReady by remember { mutableStateOf(false) }
     var processing by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
     var status by remember { mutableStateOf("Sẵn sàng") }
     var error by remember { mutableStateOf<String?>(null) }
-    var previewingAssetId by remember { mutableStateOf<String?>(null) }
+    var playingId by remember { mutableStateOf<String?>(null) }
 
-    val previewPlayer = remember { ExoPlayer.Builder(context).build() }
-    DisposableEffect(previewPlayer) {
+    DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) previewingAssetId = null
+                if (playbackState == Player.STATE_ENDED) playingId = null
             }
         }
-        previewPlayer.addListener(listener)
+        player.addListener(listener)
         onDispose {
-            previewPlayer.removeListener(listener)
-            previewPlayer.release()
+            player.removeListener(listener)
+            player.release()
         }
     }
 
     fun stopPreview() {
-        previewPlayer.stop()
-        previewPlayer.clearMediaItems()
-        previewingAssetId = null
+        player.stop()
+        player.clearMediaItems()
+        playingId = null
     }
 
-    fun togglePreview(assetId: String) {
-        if (previewingAssetId == assetId && previewPlayer.isPlaying) {
+    fun preview(assetId: String) {
+        if (playingId == assetId && player.isPlaying) {
             stopPreview()
             return
         }
         scope.launch {
             val file = withContext(Dispatchers.IO) { repository.assetFile(projectId, assetId) }
             if (file == null) {
-                error = "Không tìm thấy tệp âm thanh để nghe thử"
+                error = "Không tìm thấy âm thanh để nghe thử"
                 return@launch
             }
             stopPreview()
-            previewPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
-            previewPlayer.prepare()
-            previewPlayer.play()
-            previewingAssetId = assetId
+            player.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+            player.prepare()
+            player.play()
+            playingId = assetId
             error = null
         }
     }
 
-    suspend fun loadProject(forceModelRefresh: Boolean) {
+    suspend fun reload(refreshModel: Boolean) {
         val loaded = withContext(Dispatchers.IO) { repository.load(projectId) }
         project = loaded
-        if (loaded?.asset(selectedSourceId) == null) selectedSourceId = loaded?.defaultToolSourceId()
-        voiceCleanupReady = withContext(Dispatchers.IO) {
-            processor.isVoiceCleanupModelReady(forceRefresh = forceModelRefresh)
+        if (loaded?.asset(selectedId) == null) selectedId = loaded?.defaultToolSourceId()
+        modelReady = withContext(Dispatchers.IO) {
+            processor.isVoiceCleanupModelReady(forceRefresh = refreshModel)
         }
     }
 
     LaunchedEffect(projectId) {
         StudioSessionRuntime.closeProject()
-        loadProject(forceModelRefresh = true)
+        reload(refreshModel = true)
     }
 
-    fun runProcessor(kind: StudioMediaProcessorKind) {
-        val sourceId = selectedSourceId ?: return
+    fun runTool(kind: StudioMediaProcessorKind) {
+        val sourceId = selectedId ?: return
         if (processing) return
         stopPreview()
         processing = true
         progress = 0f
         error = null
-        status = "Đang ${friendlyProcessorAction(kind)}..."
+        status = "Đang ${toolAction(kind)}..."
         scope.launch {
             runCatching {
                 processor.process(projectId, sourceId, kind) { value, _ ->
                     withContext(Dispatchers.Main) {
                         progress = value.coerceIn(0f, 1f)
-                        status = "Đang ${friendlyProcessorAction(kind)}..."
                     }
                 }
             }.onSuccess { result ->
                 project = result.project
-                latestProcessedId = result.asset.id
+                latestId = result.asset.id
                 progress = 1f
                 status = "Đã tạo bản mới"
-            }.onFailure { throwable ->
-                error = friendlyToolError(throwable.message ?: "Không thể xử lý âm thanh")
+            }.onFailure {
+                error = friendlyToolError(it.message ?: "Không thể xử lý âm thanh")
                 status = "Chưa thể hoàn tất"
             }
             processing = false
         }
     }
 
-    ToolScaffold(title = "Chỉnh âm thanh", onNavigateBack = onNavigateBack) { innerPadding ->
+    ToolScaffold(title = "Chỉnh âm thanh", onNavigateBack = onNavigateBack) { padding ->
         val loaded = project
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -191,33 +188,29 @@ fun StudioToolsScreen(
                 modifier = Modifier.semantics { heading() },
             )
 
-            SourcePickerCard(
+            SourceCard(
                 project = loaded,
-                selectedSourceId = selectedSourceId,
+                selectedId = selectedId,
                 enabled = !processing,
-                previewingAssetId = previewingAssetId,
-                onSelected = { assetId ->
+                playingId = playingId,
+                onSelect = {
                     stopPreview()
-                    selectedSourceId = assetId
-                    latestProcessedId = null
+                    selectedId = it
+                    latestId = null
                 },
-                onPreview = ::togglePreview,
+                onPreview = ::preview,
             )
 
-            SoundToolsCard(
-                voiceCleanupReady = voiceCleanupReady,
-                processing = processing,
-                onProcess = ::runProcessor,
-            )
+            ToolsCard(modelReady, processing, ::runTool)
 
-            ProToolsCard(
+            ProCard(
                 project = loaded,
                 enabled = !processing,
-                onSave = { next ->
+                onSave = { settings ->
                     scope.launch {
                         runCatching {
                             withContext(Dispatchers.IO) {
-                                repository.updateProSettings(projectId, next)
+                                repository.updateProSettings(projectId, settings)
                             }
                         }.onSuccess {
                             project = it
@@ -228,15 +221,15 @@ fun StudioToolsScreen(
                         }
                     }
                 },
-                onCreateProcessed = { next ->
+                onCreate = { settings ->
                     scope.launch {
                         runCatching {
                             withContext(Dispatchers.IO) {
-                                repository.updateProSettings(projectId, next)
+                                repository.updateProSettings(projectId, settings)
                             }
                         }.onSuccess {
                             project = it
-                            runProcessor(StudioMediaProcessorKind.PRO_VOCAL_CHAIN)
+                            runTool(StudioMediaProcessorKind.PRO_VOCAL_CHAIN)
                         }.onFailure {
                             error = friendlyToolError(it.message ?: "Không thể lưu thiết lập")
                         }
@@ -244,31 +237,28 @@ fun StudioToolsScreen(
                 },
             )
 
-            latestProcessedId?.let { processedId ->
-                val processed = project?.asset(processedId) ?: loaded.asset(processedId)
-                if (processed != null) {
-                    ProcessedResultCard(
-                        asset = processed,
+            latestId?.let { id ->
+                (project?.asset(id) ?: loaded.asset(id))?.let { asset ->
+                    ResultCard(
+                        asset = asset,
                         enabled = !processing,
-                        isPlaying = previewingAssetId == processed.id && previewPlayer.isPlaying,
-                        onPreview = { togglePreview(processed.id) },
+                        playing = playingId == asset.id && player.isPlaying,
+                        onPreview = { preview(asset.id) },
                         onApply = {
-                            val sourceId = selectedSourceId ?: return@ProcessedResultCard
+                            val sourceId = selectedId ?: return@ResultCard
                             stopPreview()
                             scope.launch {
                                 runCatching {
                                     withContext(Dispatchers.IO) {
-                                        repository.applyDerivedAsset(projectId, sourceId, processed.id)
+                                        repository.applyDerivedAsset(projectId, sourceId, asset.id)
                                     }
-                                }.onSuccess { updated ->
-                                    project = updated
-                                    selectedSourceId = processed.id
+                                }.onSuccess {
+                                    project = it
+                                    selectedId = asset.id
                                     status = "Bài đang dùng bản mới"
                                     error = null
-                                }.onFailure { throwable ->
-                                    error = friendlyToolError(
-                                        throwable.message ?: "Không thể dùng bản mới trong bài",
-                                    )
+                                }.onFailure {
+                                    error = friendlyToolError(it.message ?: "Không thể dùng bản mới")
                                 }
                             }
                         },
@@ -280,19 +270,15 @@ fun StudioToolsScreen(
                                         val current = requireNotNull(repository.load(projectId)) {
                                             "Không tìm thấy bài"
                                         }
-                                        repository.save(
-                                            StudioDerivedAssetEditor.restoreSource(current, processed.id),
-                                        )
+                                        repository.save(StudioDerivedAssetEditor.restoreSource(current, asset.id))
                                     }
-                                }.onSuccess { updated ->
-                                    project = updated
-                                    selectedSourceId = processed.sourceAssetId
+                                }.onSuccess {
+                                    project = it
+                                    selectedId = asset.sourceAssetId
                                     status = "Đã quay về bản gốc"
                                     error = null
-                                }.onFailure { throwable ->
-                                    error = friendlyToolError(
-                                        throwable.message ?: "Bản này chưa được dùng trong bài",
-                                    )
+                                }.onFailure {
+                                    error = friendlyToolError(it.message ?: "Bản này chưa được dùng trong bài")
                                 }
                             }
                         },
@@ -319,7 +305,7 @@ fun StudioToolsScreen(
                                 .fillMaxWidth()
                                 .semantics {
                                     contentDescription = "Tiến độ xử lý"
-                                    stateDescription = "${(progress * 100f).toInt()} phần trăm"
+                                    stateDescription = "${(progress * 100).toInt()} phần trăm"
                                 },
                         )
                     }
@@ -328,60 +314,44 @@ fun StudioToolsScreen(
                 Text(status, style = MaterialTheme.typography.bodySmall)
             }
 
-            error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error)
-            }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
             OutlinedButton(
                 onClick = {
                     stopPreview()
-                    scope.launch { loadProject(forceModelRefresh = true) }
+                    scope.launch { reload(refreshModel = true) }
                 },
                 enabled = !processing,
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Làm mới")
-            }
+            ) { Text("Làm mới") }
         }
     }
 }
 
 @Composable
-private fun SourcePickerCard(
+private fun SourceCard(
     project: StudioProject,
-    selectedSourceId: String?,
+    selectedId: String?,
     enabled: Boolean,
-    previewingAssetId: String?,
-    onSelected: (String) -> Unit,
+    playingId: String?,
+    onSelect: (String) -> Unit,
     onPreview: (String) -> Unit,
 ) {
     val assets = project.assets.filter {
-        it.kind == StudioAssetKind.BEAT ||
-            it.kind == StudioAssetKind.TAKE ||
-            it.kind == StudioAssetKind.DERIVED
+        it.kind == StudioAssetKind.BEAT || it.kind == StudioAssetKind.TAKE || it.kind == StudioAssetKind.DERIVED
     }
-    val selected = project.asset(selectedSourceId)
-
+    val selected = project.asset(selectedId)
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(
-                "Chọn bản để xử lý",
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.semantics { heading() },
-            )
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SectionTitle("Chọn bản để xử lý")
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 assets.forEach { asset ->
                     FilterChip(
-                        selected = asset.id == selectedSourceId,
-                        onClick = { onSelected(asset.id) },
+                        selected = asset.id == selectedId,
+                        onClick = { onSelect(asset.id) },
                         enabled = enabled,
                         label = { Text(asset.displayName.take(30)) },
                     )
@@ -389,7 +359,7 @@ private fun SourcePickerCard(
             }
             selected?.let { asset ->
                 Text(
-                    friendlyAssetType(asset),
+                    assetType(asset),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -398,13 +368,7 @@ private fun SourcePickerCard(
                     enabled = enabled,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(
-                        if (previewingAssetId == asset.id) {
-                            "Dừng nghe"
-                        } else {
-                            "Nghe thử bản này"
-                        },
-                    )
+                    Text(if (playingId == asset.id) "Dừng nghe" else "Nghe thử bản này")
                 }
             }
         }
@@ -412,39 +376,27 @@ private fun SourcePickerCard(
 }
 
 @Composable
-private fun SoundToolsCard(
-    voiceCleanupReady: Boolean,
+private fun ToolsCard(
+    modelReady: Boolean,
     processing: Boolean,
     onProcess: (StudioMediaProcessorKind) -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(
-                "Làm sạch & hiệu ứng",
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.semantics { heading() },
-            )
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SectionTitle("Làm sạch & hiệu ứng")
             Button(
                 onClick = { onProcess(StudioMediaProcessorKind.VOICE_CLEANUP) },
-                enabled = !processing && voiceCleanupReady,
+                enabled = !processing && modelReady,
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Làm sạch giọng")
-            }
-            if (!voiceCleanupReady) {
+            ) { Text("Làm sạch giọng") }
+            if (!modelReady) {
                 Text(
                     "Cần tải gói Làm sạch giọng trước. Mở công cụ Làm sạch giọng và tải một lần.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { onProcess(StudioMediaProcessorKind.VOCAL_POLISH) },
                     enabled = !processing,
@@ -461,19 +413,19 @@ private fun SoundToolsCard(
 }
 
 @Composable
-private fun ProToolsCard(
+private fun ProCard(
     project: StudioProject,
     enabled: Boolean,
     onSave: (StudioProSettings) -> Unit,
-    onCreateProcessed: (StudioProSettings) -> Unit,
+    onCreate: (StudioProSettings) -> Unit,
 ) {
     var tempo by remember(project.id, project.proSettings.tempo.bpm) {
         mutableFloatStateOf(project.proSettings.tempo.bpm)
     }
-    var beatsPerBar by remember(project.id, project.proSettings.tempo.beatsPerBar) {
+    var beats by remember(project.id, project.proSettings.tempo.beatsPerBar) {
         mutableIntStateOf(project.proSettings.tempo.beatsPerBar)
     }
-    var countEnabled by remember(project.id, project.proSettings.tempo.metronomeEnabled) {
+    var countOn by remember(project.id, project.proSettings.tempo.metronomeEnabled) {
         mutableStateOf(project.proSettings.tempo.metronomeEnabled)
     }
     var countVolume by remember(project.id, project.proSettings.tempo.metronomeGainDb) {
@@ -483,35 +435,31 @@ private fun ProToolsCard(
         mutableStateOf(project.proSettings.vocalFx)
     }
     var previewCount by remember { mutableStateOf(false) }
-    var showFineTune by rememberSaveable { mutableStateOf(false) }
-    val toneGenerator = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 70) }
+    var showDetail by rememberSaveable { mutableStateOf(false) }
+    val tone = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 70) }
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    DisposableEffect(toneGenerator, lifecycleOwner) {
+    DisposableEffect(tone, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
                 previewCount = false
-                toneGenerator.stopTone()
+                tone.stopTone()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            toneGenerator.stopTone()
-            toneGenerator.release()
+            tone.stopTone()
+            tone.release()
         }
     }
 
-    LaunchedEffect(previewCount, tempo, beatsPerBar) {
+    LaunchedEffect(previewCount, tempo, beats) {
         if (!previewCount) return@LaunchedEffect
         var beat = 0
         while (isActive && previewCount) {
-            toneGenerator.startTone(
-                if (beat % beatsPerBar.coerceAtLeast(1) == 0) {
-                    ToneGenerator.TONE_PROP_ACK
-                } else {
-                    ToneGenerator.TONE_PROP_BEEP
-                },
+            tone.startTone(
+                if (beat % beats.coerceAtLeast(1) == 0) ToneGenerator.TONE_PROP_ACK else ToneGenerator.TONE_PROP_BEEP,
                 45,
             )
             beat++
@@ -522,24 +470,16 @@ private fun ProToolsCard(
     fun settings() = StudioProSettings(
         tempo = StudioTempoSettings(
             bpm = tempo.coerceIn(40f, 220f),
-            beatsPerBar = beatsPerBar.coerceIn(2, 12),
-            metronomeEnabled = countEnabled,
+            beatsPerBar = beats.coerceIn(2, 12),
+            metronomeEnabled = countOn,
             metronomeGainDb = countVolume.coerceIn(-36f, 0f),
         ),
         vocalFx = voice,
     )
 
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                "Nhịp & màu giọng",
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.semantics { heading() },
-            )
-
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionTitle("Nhịp & màu giọng")
             Text("Tốc độ: ${tempo.toInt()} nhịp/phút", fontWeight = FontWeight.SemiBold)
             Slider(
                 value = tempo,
@@ -554,15 +494,13 @@ private fun ProToolsCard(
 
             Text("Mỗi ô nhịp", style = MaterialTheme.typography.labelLarge)
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 listOf(3, 4, 6).forEach { value ->
                     FilterChip(
-                        selected = beatsPerBar == value,
-                        onClick = { beatsPerBar = value },
+                        selected = beats == value,
+                        onClick = { beats = value },
                         enabled = enabled,
                         label = { Text("$value nhịp") },
                     )
@@ -576,139 +514,90 @@ private fun ProToolsCard(
             ) {
                 Text("Bật tiếng đếm")
                 Switch(
-                    checked = countEnabled,
-                    onCheckedChange = { countEnabled = it },
+                    checked = countOn,
+                    onCheckedChange = { countOn = it },
                     enabled = enabled,
                     modifier = Modifier.semantics {
                         contentDescription = "Bật tiếng đếm"
-                        stateDescription = if (countEnabled) "Đang bật" else "Đang tắt"
+                        stateDescription = if (countOn) "Đang bật" else "Đang tắt"
                     },
                 )
             }
 
-            Text("Âm lượng tiếng đếm", style = MaterialTheme.typography.labelMedium)
-            Slider(
-                value = countVolume,
-                onValueChange = { countVolume = it },
-                valueRange = -36f..0f,
-                enabled = enabled,
-                modifier = Modifier.semantics {
-                    contentDescription = "Âm lượng tiếng đếm"
-                    stateDescription = levelPercent(countVolume, -36f, 0f)
-                },
-            )
-
+            FriendlySlider("Âm lượng tiếng đếm", countVolume, -36f..0f, enabled) {
+                countVolume = it
+            }
             OutlinedButton(
                 onClick = { previewCount = !previewCount },
                 enabled = enabled,
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (previewCount) "Dừng tiếng đếm" else "Nghe thử tiếng đếm")
-            }
+            ) { Text(if (previewCount) "Dừng tiếng đếm" else "Nghe thử tiếng đếm") }
 
             Text("Màu giọng", fontWeight = FontWeight.SemiBold)
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                FilterChip(
-                    selected = false,
-                    onClick = { voice = StudioProFilterBuilder.naturalPreset() },
-                    enabled = enabled,
-                    label = { Text("Tự nhiên") },
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = { voice = StudioProFilterBuilder.rapPreset() },
-                    enabled = enabled,
-                    label = { Text("Rap") },
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = { voice = StudioProFilterBuilder.brightPreset() },
-                    enabled = enabled,
-                    label = { Text("Sáng") },
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = { voice = StudioProFilterBuilder.warmPreset() },
-                    enabled = enabled,
-                    label = { Text("Ấm") },
-                )
+                PresetChip("Tự nhiên", enabled) { voice = StudioProFilterBuilder.naturalPreset() }
+                PresetChip("Rap", enabled) { voice = StudioProFilterBuilder.rapPreset() }
+                PresetChip("Sáng", enabled) { voice = StudioProFilterBuilder.brightPreset() }
+                PresetChip("Ấm", enabled) { voice = StudioProFilterBuilder.warmPreset() }
             }
 
             OutlinedButton(
-                onClick = { showFineTune = !showFineTune },
+                onClick = { showDetail = !showDetail },
                 enabled = enabled,
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (showFineTune) "Ẩn tùy chỉnh giọng" else "Tùy chỉnh giọng")
+            ) { Text(if (showDetail) "Ẩn tùy chỉnh giọng" else "Tùy chỉnh giọng") }
+
+            if (showDetail) {
+                FriendlySlider("Giảm tiếng ù", voice.highPassHz, 40f..180f, enabled) {
+                    voice = voice.copy(highPassHz = it)
+                }
+                FriendlySlider("Độ ấm", voice.lowGainDb, -6f..6f, enabled) {
+                    voice = voice.copy(lowGainDb = it)
+                }
+                FriendlySlider("Độ rõ", voice.midGainDb, -6f..6f, enabled) {
+                    voice = voice.copy(midGainDb = it)
+                }
+                FriendlySlider("Độ sáng", voice.highGainDb, -6f..6f, enabled) {
+                    voice = voice.copy(highGainDb = it)
+                }
+                FriendlySlider("Độ nén", voice.compressorThresholdDb, -32f..-6f, enabled) {
+                    voice = voice.copy(compressorThresholdDb = it)
+                }
+                FriendlySlider("Độ mạnh khi nén", voice.compressorRatio, 1f..8f, enabled) {
+                    voice = voice.copy(compressorRatio = it)
+                }
+                FriendlySlider("Độ vang", voice.reverbWet, 0f..0.35f, enabled) {
+                    voice = voice.copy(reverbWet = it)
+                }
             }
 
-            if (showFineTune) {
-                FriendlySlider(
-                    label = "Giảm tiếng ù",
-                    value = voice.highPassHz,
-                    range = 40f..180f,
-                    enabled = enabled,
-                ) { voice = voice.copy(highPassHz = it) }
-                FriendlySlider(
-                    label = "Độ ấm",
-                    value = voice.lowGainDb,
-                    range = -6f..6f,
-                    enabled = enabled,
-                ) { voice = voice.copy(lowGainDb = it) }
-                FriendlySlider(
-                    label = "Độ rõ",
-                    value = voice.midGainDb,
-                    range = -6f..6f,
-                    enabled = enabled,
-                ) { voice = voice.copy(midGainDb = it) }
-                FriendlySlider(
-                    label = "Độ sáng",
-                    value = voice.highGainDb,
-                    range = -6f..6f,
-                    enabled = enabled,
-                ) { voice = voice.copy(highGainDb = it) }
-                FriendlySlider(
-                    label = "Độ nén",
-                    value = voice.compressorThresholdDb,
-                    range = -32f..-6f,
-                    enabled = enabled,
-                ) { voice = voice.copy(compressorThresholdDb = it) }
-                FriendlySlider(
-                    label = "Độ mạnh khi nén",
-                    value = voice.compressorRatio,
-                    range = 1f..8f,
-                    enabled = enabled,
-                ) { voice = voice.copy(compressorRatio = it) }
-                FriendlySlider(
-                    label = "Độ vang",
-                    value = voice.reverbWet,
-                    range = 0f..0.35f,
-                    enabled = enabled,
-                ) { voice = voice.copy(reverbWet = it) }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { onSave(settings()) },
                     enabled = enabled,
                     modifier = Modifier.weight(1f),
                 ) { Text("Lưu thiết lập") }
                 Button(
-                    onClick = { onCreateProcessed(settings()) },
+                    onClick = { onCreate(settings()) },
                     enabled = enabled,
                     modifier = Modifier.weight(1f),
                 ) { Text("Tạo bản mới") }
             }
         }
     }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
+}
+
+@Composable
+private fun PresetChip(label: String, enabled: Boolean, onClick: () -> Unit) {
+    FilterChip(selected = false, onClick = onClick, enabled = enabled, label = { Text(label) })
 }
 
 @Composable
@@ -734,44 +623,25 @@ private fun FriendlySlider(
 }
 
 @Composable
-private fun ProcessedResultCard(
+private fun ResultCard(
     asset: StudioAsset,
     enabled: Boolean,
-    isPlaying: Boolean,
+    playing: Boolean,
     onPreview: () -> Unit,
     onApply: () -> Unit,
     onRestore: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(
-                "Bản mới đã sẵn sàng",
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.semantics { heading() },
-            )
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SectionTitle("Bản mới đã sẵn sàng")
             Text(asset.displayName)
-            OutlinedButton(
-                onClick = onPreview,
-                enabled = enabled,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (isPlaying) "Dừng nghe" else "Nghe thử kết quả")
+            OutlinedButton(onClick = onPreview, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                Text(if (playing) "Dừng nghe" else "Nghe thử kết quả")
             }
-            Button(
-                onClick = onApply,
-                enabled = enabled,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
+            Button(onClick = onApply, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
                 Text("Dùng bản này trong bài")
             }
-            OutlinedButton(
-                onClick = onRestore,
-                enabled = enabled,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
+            OutlinedButton(onClick = onRestore, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
                 Text("Quay về bản gốc")
             }
         }
@@ -779,26 +649,23 @@ private fun ProcessedResultCard(
 }
 
 private fun StudioProject.defaultToolSourceId(): String? {
-    tracks
-        .asSequence()
-        .filter { it.type != StudioTrackType.BEAT }
-        .forEach { track ->
-            track.clips.firstOrNull()?.sourceAssetId?.let { return it }
-            track.activeTakeId
-                ?.let { id -> track.takes.firstOrNull { it.id == id }?.assetId }
-                ?.let { return it }
-            track.takes.lastOrNull()?.assetId?.let { return it }
-        }
+    tracks.asSequence().filter { it.type != StudioTrackType.BEAT }.forEach { track ->
+        track.clips.firstOrNull()?.sourceAssetId?.let { return it }
+        track.activeTakeId
+            ?.let { id -> track.takes.firstOrNull { it.id == id }?.assetId }
+            ?.let { return it }
+        track.takes.lastOrNull()?.assetId?.let { return it }
+    }
     return beatAssetId ?: assets.firstOrNull()?.id
 }
 
-private fun friendlyAssetType(asset: StudioAsset): String = when (asset.kind) {
+private fun assetType(asset: StudioAsset): String = when (asset.kind) {
     StudioAssetKind.BEAT -> "Nhạc nền"
     StudioAssetKind.TAKE -> "Bản thu giọng"
     StudioAssetKind.DERIVED -> "Bản đã xử lý"
 }
 
-private fun friendlyProcessorAction(kind: StudioMediaProcessorKind): String = when (kind) {
+private fun toolAction(kind: StudioMediaProcessorKind): String = when (kind) {
     StudioMediaProcessorKind.VOICE_CLEANUP -> "làm sạch giọng"
     StudioMediaProcessorKind.VOCAL_POLISH -> "làm giọng rõ hơn"
     StudioMediaProcessorKind.SPATIAL_8D -> "tạo hiệu ứng không gian"

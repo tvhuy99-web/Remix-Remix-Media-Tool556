@@ -253,6 +253,14 @@ public:
         if (path == nullptr || inputStream_ == nullptr || recording_.load() || writerThread_.joinable()) {
             return kCustomErrorRecordingState;
         }
+        // Drain pre-record input so the first saved sample belongs to the same
+        // transport boundary that starts on the next output callback.
+        for (int attempt = 0; attempt < 8 && !inputScratch_.empty(); ++attempt) {
+            const int32_t drainFrames = std::min<int32_t>(1024, static_cast<int32_t>(inputScratch_.size()));
+            auto drained = inputStream_->read(inputScratch_.data(), drainFrames, 0);
+            if (drained != oboe::Result::OK || drained.value() <= 0) break;
+        }
+
         const int32_t sampleRate = std::max(1, inputStream_->getSampleRate());
         recordingSampleRate_.store(sampleRate);
         FILE* file = std::fopen(path, "wb+");
@@ -270,8 +278,8 @@ public:
         ringOverrunFrames_.store(0);
         inputReadFrames_.store(0);
         writerRunning_.store(true);
-        writerThread_ = std::thread([this]() { writerLoop(); });
         recording_.store(true);
+        writerThread_ = std::thread([this]() { writerLoop(); });
         playing_.store(true);
         return 0;
     }
@@ -473,19 +481,25 @@ private:
         if (framesToRead <= 0) return;
         inputReadActive_.store(true, std::memory_order_release);
         auto result = inputStream_->read(inputScratch_.data(), framesToRead, 0);
+        int32_t framesRead = 0;
         if (result == oboe::Result::OK) {
-            const int32_t framesRead = std::max(0, result.value());
-            for (int32_t frame = 0; frame < framesRead; ++frame) {
-                pcm16Scratch_[static_cast<size_t>(frame)] = floatToPcm16(inputScratch_[static_cast<size_t>(frame)]);
-            }
-            const size_t accepted = ringBuffer_.push(pcm16Scratch_.data(), static_cast<size_t>(framesRead));
-            if (accepted < static_cast<size_t>(framesRead)) {
-                ringOverrunFrames_.fetch_add(static_cast<int64_t>(framesRead) - static_cast<int64_t>(accepted));
-            }
+            framesRead = std::max(0, std::min(framesToRead, result.value()));
             inputReadFrames_.fetch_add(framesRead);
         } else if (result == oboe::Result::ErrorDisconnected) {
             recording_.store(false);
             disconnectCount_.fetch_add(1);
+            inputReadActive_.store(false, std::memory_order_release);
+            return;
+        }
+        for (int32_t frame = 0; frame < framesRead; ++frame) {
+            pcm16Scratch_[static_cast<size_t>(frame)] = floatToPcm16(inputScratch_[static_cast<size_t>(frame)]);
+        }
+        for (int32_t frame = framesRead; frame < framesToRead; ++frame) {
+            pcm16Scratch_[static_cast<size_t>(frame)] = 0;
+        }
+        const size_t accepted = ringBuffer_.push(pcm16Scratch_.data(), static_cast<size_t>(framesToRead));
+        if (accepted < static_cast<size_t>(framesToRead)) {
+            ringOverrunFrames_.fetch_add(static_cast<int64_t>(framesToRead) - static_cast<int64_t>(accepted));
         }
         inputReadActive_.store(false, std::memory_order_release);
     }

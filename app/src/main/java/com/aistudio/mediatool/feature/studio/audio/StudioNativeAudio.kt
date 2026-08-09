@@ -117,10 +117,9 @@ class StudioNativeAudio(context: Context) : Closeable {
         nativeRelease(handle)
     }
 
-    private inline fun <T> withHandle(block: (Long) -> T): T {
+    private inline fun withHandle(block: (Long) -> StudioAudioOperationResult): StudioAudioOperationResult {
         val handle = nativeHandle
-        @Suppress("UNCHECKED_CAST")
-        return if (handle == 0L) StudioAudioOperationResult.Released as T else block(handle)
+        return if (handle == 0L) StudioAudioOperationResult.Released else block(handle)
     }
 
     private fun resultOf(code: Int): StudioAudioOperationResult =

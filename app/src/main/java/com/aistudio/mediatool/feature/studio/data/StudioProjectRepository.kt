@@ -4,7 +4,11 @@ import android.content.Context
 import android.net.Uri
 import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.feature.studio.domain.STUDIO_TIMELINE_SAMPLE_RATE
+import com.aistudio.mediatool.feature.studio.domain.StudioAsset
+import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
+import com.aistudio.mediatool.feature.studio.domain.StudioTake
+import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import java.io.File
@@ -14,6 +18,7 @@ class StudioProjectRepository(context: Context) {
     private val appContext = context.applicationContext
     private val projectStore = StudioProjectStore(appContext)
     private val assetStore = StudioAssetStore(appContext, projectStore)
+    private val takeStore = StudioTakeStore(projectStore)
 
     fun listProjects(): List<StudioProject> = projectStore.listProjects()
 
@@ -59,7 +64,148 @@ class StudioProjectRepository(context: Context) {
         return updated
     }
 
+    fun updatePreparedBeat(
+        projectId: String,
+        sampleRate: Int,
+        channelCount: Int,
+        durationFrames: Long,
+    ): StudioProject {
+        val project = requireNotNull(load(projectId)) { "Không tìm thấy dự án Studio" }
+        val beatId = requireNotNull(project.beatAssetId) { "Dự án Studio chưa có beat" }
+        val updatedAssets = project.assets.map { asset ->
+            if (asset.id == beatId) {
+                asset.copy(
+                    sampleRate = sampleRate,
+                    channelCount = channelCount,
+                    durationFrames = durationFrames,
+                )
+            } else {
+                asset
+            }
+        }
+        return if (updatedAssets == project.assets) project else save(project.copy(assets = updatedAssets))
+    }
+
+    fun beginTake(
+        projectId: String,
+        recordedTimelineFrame: Long,
+        inputSampleRate: Int,
+        inputDeviceId: Int?,
+    ): PendingStudioTake {
+        var project = requireNotNull(load(projectId)) { "Không tìm thấy dự án Studio" }
+        var vocalTrack = project.tracks.firstOrNull { it.type == StudioTrackType.VOCAL }
+        if (vocalTrack == null) {
+            vocalTrack = StudioTrack(
+                id = UUID.randomUUID().toString(),
+                type = StudioTrackType.VOCAL,
+                name = "Vocal",
+            )
+            project = save(project.copy(tracks = project.tracks + vocalTrack))
+        }
+        return takeStore.begin(
+            projectId = project.id,
+            trackId = vocalTrack.id,
+            recordedTimelineFrame = recordedTimelineFrame,
+            inputSampleRate = inputSampleRate,
+            inputDeviceId = inputDeviceId,
+            channelCount = 1,
+        )
+    }
+
+    fun pendingTakeFile(pending: PendingStudioTake): File = takeStore.partialFile(pending)
+
+    fun finalizeTake(
+        pending: PendingStudioTake,
+        status: StudioTakeStatus = StudioTakeStatus.COMPLETE,
+    ): StudioProject {
+        val finalized = requireNotNull(takeStore.finalizeAudioFile(pending)) {
+            "Bản thu Studio không chứa dữ liệu hợp lệ"
+        }
+        var project = requireNotNull(load(pending.projectId)) { "Không tìm thấy dự án Studio" }
+
+        val alreadyCommitted = project.tracks.any { track -> track.takes.any { it.id == pending.takeId } }
+        if (alreadyCommitted) {
+            takeStore.commit(pending)
+            return project
+        }
+
+        val trackIndex = project.tracks.indexOfFirst { it.id == pending.trackId }
+        val baseTrack = if (trackIndex >= 0) {
+            project.tracks[trackIndex]
+        } else {
+            StudioTrack(
+                id = pending.trackId,
+                type = StudioTrackType.VOCAL,
+                name = "Vocal",
+            )
+        }
+        val takeNumber = baseTrack.takes.size + 1
+        val asset = StudioAsset(
+            id = pending.assetId,
+            kind = StudioAssetKind.TAKE,
+            relativePath = finalized.relativePath,
+            displayName = "Vocal Take $takeNumber",
+            mimeType = "audio/wav",
+            bytes = finalized.file.length(),
+            sampleRate = finalized.info.sampleRate,
+            channelCount = finalized.info.channelCount,
+            durationFrames = finalized.info.dataFrames,
+        )
+        val take = StudioTake(
+            id = pending.takeId,
+            assetId = asset.id,
+            recordedTimelineFrame = pending.recordedTimelineFrame,
+            recordedFrames = finalized.info.dataFrames,
+            inputDeviceId = pending.inputDeviceId,
+            inputSampleRate = finalized.info.sampleRate,
+            latencyCompensationFrames = 0L,
+            status = status,
+        )
+        val updatedTrack = baseTrack.copy(
+            primaryAssetId = asset.id,
+            activeTakeId = take.id,
+            takes = baseTrack.takes + take,
+        )
+        val updatedTracks = if (trackIndex >= 0) {
+            project.tracks.toMutableList().apply { this[trackIndex] = updatedTrack }
+        } else {
+            project.tracks + updatedTrack
+        }
+        project = save(
+            project.copy(
+                assets = project.assets.filterNot { it.id == asset.id } + asset,
+                tracks = updatedTracks,
+            ),
+        )
+        takeStore.commit(pending)
+        return project
+    }
+
+    fun recoverInterruptedTakes(projectId: String): StudioProject? {
+        var project = load(projectId) ?: return null
+        takeStore.loadPending(projectId).forEach { pending ->
+            val recovered = runCatching {
+                finalizeTake(pending, status = StudioTakeStatus.RECOVERED)
+            }.getOrElse {
+                val partial = runCatching { takeStore.partialFile(pending) }.getOrNull()
+                if (partial == null || !partial.isFile || partial.length() <= StudioWavFile.HEADER_BYTES) {
+                    takeStore.cancel(pending)
+                }
+                null
+            }
+            if (recovered != null) project = recovered
+        }
+        return project
+    }
+
+    fun cancelTake(pending: PendingStudioTake) = takeStore.cancel(pending)
+
     fun delete(projectId: String): Boolean = projectStore.delete(projectId)
+
+    fun projectDirectory(projectId: String): File = projectStore.projectDirectory(projectId)
+
+    fun resolveProjectFile(projectId: String, relativePath: String): File =
+        projectStore.resolveAssetFile(projectId, relativePath)
 
     fun assetFile(projectId: String, assetId: String): File? {
         val project = load(projectId) ?: return null

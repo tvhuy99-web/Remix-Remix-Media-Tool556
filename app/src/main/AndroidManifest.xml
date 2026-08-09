@@ -47,6 +47,10 @@
             android:exported="false"
             android:foregroundServiceType="microphone|mediaProjection" />
         <service
+            android:name=".feature.studio.audio.StudioSessionService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+        <service
             android:name=".core.ml.StemService"
             android:exported="false"
             android:foregroundServiceType="mediaProcessing" />

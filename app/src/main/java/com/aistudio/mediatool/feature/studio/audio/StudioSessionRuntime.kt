@@ -3,12 +3,14 @@ package com.aistudio.mediatool.feature.studio.audio
 import android.content.Context
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.feature.studio.data.PendingStudioTake
+import com.aistudio.mediatool.feature.studio.data.StudioEditEngine
 import com.aistudio.mediatool.feature.studio.data.StudioProjectRepository
 import com.aistudio.mediatool.feature.studio.data.StudioWaveform
 import com.aistudio.mediatool.feature.studio.data.StudioWaveformStore
 import com.aistudio.mediatool.feature.studio.data.selectActiveTake
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
+import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -18,8 +20,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.ArrayDeque
 import java.util.concurrent.Executors
 import kotlin.math.max
+import kotlin.math.roundToLong
 
 enum class StudioSessionStatus {
     CLOSED,
@@ -28,6 +32,11 @@ enum class StudioSessionStatus {
     PLAYING,
     RECORDING,
     ERROR,
+}
+
+enum class StudioRecordingKind {
+    FULL_TAKE,
+    PUNCH,
 }
 
 data class StudioSessionState(
@@ -41,20 +50,35 @@ data class StudioSessionState(
     val waveforms: Map<String, StudioWaveform> = emptyMap(),
     val diagnostics: StudioAudioDiagnostics? = null,
     val recoveredTakeCount: Int = 0,
+    val selectedClipId: String? = null,
+    val canUndo: Boolean = false,
+    val canRedo: Boolean = false,
+    val punchStartFrame: Long? = null,
+    val punchEndFrame: Long? = null,
+    val recordingKind: StudioRecordingKind? = null,
 ) {
     val isPrepared: Boolean
         get() = status == StudioSessionStatus.READY ||
             status == StudioSessionStatus.PLAYING ||
             status == StudioSessionStatus.RECORDING
+
+    val hasPunchRange: Boolean
+        get() = punchStartFrame != null && punchEndFrame != null && punchEndFrame > punchStartFrame
 }
 
-/**
- * Process-scoped owner of the Studio engine. A foreground service keeps the
- * process important while recording; if the process is nevertheless killed,
- * the take journal is recovered on the next open.
- */
+private data class PendingPunch(
+    val startFrame: Long,
+    val endFrame: Long,
+    val recordStartFrame: Long,
+    val trackId: String,
+)
+
+/** Process-scoped Studio session, edit history and realtime transport owner. */
 object StudioSessionRuntime {
     private const val TAG = "StudioSession"
+    private const val MAX_EDIT_HISTORY = 50
+    private const val DEFAULT_PUNCH_PREROLL_SECONDS = 3L
+
     private val dispatcher = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "MediaTool-StudioSession").apply { isDaemon = true }
     }.asCoroutineDispatcher()
@@ -68,6 +92,9 @@ object StudioSessionRuntime {
     private var engine: StudioNativeAudio? = null
     private var pollJob: Job? = null
     private var pendingTake: PendingStudioTake? = null
+    private var pendingPunch: PendingPunch? = null
+    private val undoStack = ArrayDeque<StudioProject>()
+    private val redoStack = ArrayDeque<StudioProject>()
 
     fun open(context: Context, projectId: String) {
         val applicationContext = context.applicationContext
@@ -110,11 +137,182 @@ object StudioSessionRuntime {
         mode: StudioInputMode = StudioInputMode.AUTO,
         preferredInputDeviceId: Int? = null,
     ) {
-        scope.launch { startRecordingInternal(mode, preferredInputDeviceId) }
+        scope.launch { startRecordingInternal(mode, preferredInputDeviceId, punch = null) }
+    }
+
+    fun startPunchRecording(
+        mode: StudioInputMode = StudioInputMode.AUTO,
+        preferredInputDeviceId: Int? = null,
+    ) {
+        scope.launch {
+            val current = _state.value
+            val project = current.project ?: return@launch
+            val start = current.punchStartFrame
+            val end = current.punchEndFrame
+            if (start == null || end == null || end <= start) {
+                _state.value = current.copy(errorMessage = "Hãy đặt điểm Punch In và Punch Out trước")
+                return@launch
+            }
+            val vocalTrack = project.tracks.firstOrNull { it.type == StudioTrackType.VOCAL }
+            if (vocalTrack == null || vocalTrack.takes.isEmpty()) {
+                _state.value = current.copy(errorMessage = "Cần ít nhất một vocal take trước khi Punch")
+                return@launch
+            }
+            val preRoll = DEFAULT_PUNCH_PREROLL_SECONDS * project.timelineSampleRate.toLong()
+            val punch = PendingPunch(
+                startFrame = start,
+                endFrame = end,
+                recordStartFrame = (start - preRoll).coerceAtLeast(0L),
+                trackId = vocalTrack.id,
+            )
+            startRecordingInternal(mode, preferredInputDeviceId, punch)
+        }
     }
 
     fun stopRecording() {
         scope.launch { stopRecordingInternal() }
+    }
+
+    fun setPunchStartAtPlayhead() {
+        scope.launch {
+            if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
+            val frame = _state.value.transportFrame
+            val end = _state.value.punchEndFrame?.takeIf { it > frame }
+            _state.value = _state.value.copy(punchStartFrame = frame, punchEndFrame = end)
+        }
+    }
+
+    fun setPunchEndAtPlayhead() {
+        scope.launch {
+            if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
+            val frame = _state.value.transportFrame
+            val start = _state.value.punchStartFrame
+            if (start == null || frame <= start) {
+                _state.value = _state.value.copy(errorMessage = "Punch Out phải nằm sau Punch In")
+            } else {
+                _state.value = _state.value.copy(punchEndFrame = frame, errorMessage = null)
+            }
+        }
+    }
+
+    fun clearPunchRange() {
+        scope.launch {
+            if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
+            _state.value = _state.value.copy(punchStartFrame = null, punchEndFrame = null)
+        }
+    }
+
+    fun selectClip(clipId: String?) {
+        scope.launch {
+            if (_state.value.status != StudioSessionStatus.RECORDING) {
+                _state.value = _state.value.copy(selectedClipId = clipId)
+            }
+        }
+    }
+
+    fun beginEditing(trackId: String) {
+        scope.launch {
+            applyEdit("materialize_arrangement") { project -> StudioEditEngine.materializeTrack(project, trackId) }
+        }
+    }
+
+    fun splitSelectedAtPlayhead() {
+        scope.launch {
+            val clipId = _state.value.selectedClipId ?: return@launch
+            val frame = _state.value.transportFrame
+            applyEdit("split") { project -> StudioEditEngine.split(project, clipId, frame) }
+        }
+    }
+
+    fun trimSelectedStartToPlayhead() {
+        scope.launch {
+            val clipId = _state.value.selectedClipId ?: return@launch
+            val frame = _state.value.transportFrame
+            applyEdit("trim_start") { project -> StudioEditEngine.trimStart(project, clipId, frame) }
+        }
+    }
+
+    fun trimSelectedEndToPlayhead() {
+        scope.launch {
+            val clipId = _state.value.selectedClipId ?: return@launch
+            val frame = _state.value.transportFrame
+            applyEdit("trim_end") { project -> StudioEditEngine.trimEnd(project, clipId, frame) }
+        }
+    }
+
+    fun moveSelectedByMillis(milliseconds: Long) {
+        scope.launch {
+            val current = _state.value
+            val clipId = current.selectedClipId ?: return@launch
+            val project = current.project ?: return@launch
+            val deltaFrames = milliseconds * project.timelineSampleRate.toLong() / 1_000L
+            applyEdit("move") { StudioEditEngine.move(it, clipId, deltaFrames) }
+        }
+    }
+
+    fun deleteSelectedClip() {
+        scope.launch {
+            val clipId = _state.value.selectedClipId ?: return@launch
+            applyEdit("delete") { StudioEditEngine.delete(it, clipId) }
+        }
+    }
+
+    fun adjustSelectedGain(deltaDb: Float) {
+        scope.launch {
+            val current = _state.value
+            val clipId = current.selectedClipId ?: return@launch
+            val clip = current.project?.tracks?.asSequence()?.flatMap { it.clips.asSequence() }?.firstOrNull { it.id == clipId }
+                ?: return@launch
+            applyEdit("gain") { StudioEditEngine.setGain(it, clipId, clip.gainDb + deltaDb) }
+        }
+    }
+
+    fun adjustSelectedFadeIn(millisecondsDelta: Long) {
+        scope.launch { adjustSelectedFade(millisecondsDelta, isFadeIn = true) }
+    }
+
+    fun adjustSelectedFadeOut(millisecondsDelta: Long) {
+        scope.launch { adjustSelectedFade(millisecondsDelta, isFadeIn = false) }
+    }
+
+    fun undo() {
+        scope.launch {
+            if (_state.value.status == StudioSessionStatus.RECORDING || undoStack.isEmpty()) return@launch
+            val repo = repository ?: return@launch
+            val current = _state.value.project ?: return@launch
+            val previous = undoStack.removeLast()
+            pushBounded(redoStack, current)
+            val saved = repo.save(previous)
+            syncArrangement(saved)
+            _state.value = _state.value.copy(
+                project = saved,
+                selectedClipId = _state.value.selectedClipId?.takeIf { id -> saved.hasClip(id) },
+                durationFrames = projectDurationFrames(saved),
+                canUndo = undoStack.isNotEmpty(),
+                canRedo = redoStack.isNotEmpty(),
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun redo() {
+        scope.launch {
+            if (_state.value.status == StudioSessionStatus.RECORDING || redoStack.isEmpty()) return@launch
+            val repo = repository ?: return@launch
+            val current = _state.value.project ?: return@launch
+            val next = redoStack.removeLast()
+            pushBounded(undoStack, current)
+            val saved = repo.save(next)
+            syncArrangement(saved)
+            _state.value = _state.value.copy(
+                project = saved,
+                selectedClipId = _state.value.selectedClipId?.takeIf { id -> saved.hasClip(id) },
+                durationFrames = projectDurationFrames(saved),
+                canUndo = undoStack.isNotEmpty(),
+                canRedo = redoStack.isNotEmpty(),
+                errorMessage = null,
+            )
+        }
     }
 
     fun selectTake(trackId: String, takeId: String) {
@@ -124,6 +322,7 @@ object StudioSessionRuntime {
             if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
             runCatching { repo.selectActiveTake(projectId, trackId, takeId) }
                 .onSuccess { project ->
+                    syncArrangement(project)
                     _state.value = _state.value.copy(
                         project = project,
                         durationFrames = projectDurationFrames(project),
@@ -144,6 +343,8 @@ object StudioSessionRuntime {
         scope.launch {
             if (_state.value.status == StudioSessionStatus.RECORDING) stopRecordingInternal()
             closeEngineInternal()
+            undoStack.clear()
+            redoStack.clear()
             _state.value = StudioSessionState()
         }
     }
@@ -151,6 +352,9 @@ object StudioSessionRuntime {
     private suspend fun openInternal(context: Context, projectId: String) {
         if (_state.value.status == StudioSessionStatus.RECORDING) stopRecordingInternal()
         closeEngineInternal()
+        undoStack.clear()
+        redoStack.clear()
+        pendingPunch = null
         appContext = context
         repository = StudioProjectRepository(context)
         waveformStore = StudioWaveformStore(context)
@@ -171,7 +375,7 @@ object StudioSessionRuntime {
             _state.value = _state.value.copy(
                 project = project,
                 recoveredTakeCount = recoveredTakeCount,
-                message = "Đang chuẩn bị beat cho realtime engine...",
+                message = "Đang chuẩn bị beat và arrangement...",
             )
 
             val prepared = StudioBeatPreparer(context, repo, waves).prepare(projectId)
@@ -187,6 +391,10 @@ object StudioSessionRuntime {
                         channelCount = 2,
                     ),
                     "Không thể nạp beat vào Studio Audio Core",
+                )
+                requireSuccess(
+                    native.setArrangement(StudioPlaybackPlanner.build(project, repo), project.timelineSampleRate),
+                    "Không thể nạp vocal arrangement",
                 )
                 requireSuccess(native.start(), "Không thể khởi động Studio Audio Core")
             } catch (error: Throwable) {
@@ -214,6 +422,7 @@ object StudioSessionRuntime {
                 fields = mapOf(
                     "beat_frames" to prepared.frameCount,
                     "recovered_takes" to recoveredTakeCount,
+                    "monitor_clips" to diagnostics?.arrangementClipCount,
                     "output_sample_rate" to diagnostics?.sampleRate,
                     "audio_api" to diagnostics?.audioApiLabel,
                 ),
@@ -238,6 +447,7 @@ object StudioSessionRuntime {
     private fun startRecordingInternal(
         mode: StudioInputMode,
         preferredInputDeviceId: Int?,
+        punch: PendingPunch?,
     ) {
         val native = engine ?: return
         val repo = repository ?: return
@@ -248,16 +458,21 @@ object StudioSessionRuntime {
 
         val wasPlaying = current.status == StudioSessionStatus.PLAYING
         native.setPlaying(false)
+        val recordStart = punch?.recordStartFrame ?: current.transportFrame
+        native.seek(recordStart)
+        native.setPunchMuteWindow(punch?.startFrame, punch?.endFrame)
         _state.value = current.copy(
             status = StudioSessionStatus.READY,
-            message = "Đang chuẩn bị microphone...",
+            transportFrame = recordStart,
+            message = if (punch != null) "Đang chuẩn bị Punch..." else "Đang chuẩn bị microphone...",
             errorMessage = null,
         )
 
         fun failRecordingSetup(message: String) {
-            if (wasPlaying) native.setPlaying(true)
+            native.setPunchMuteWindow(null, null)
+            if (wasPlaying && punch == null) native.setPlaying(true)
             _state.value = current.copy(
-                status = if (wasPlaying) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
+                status = if (wasPlaying && punch == null) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
                 message = null,
                 errorMessage = message,
                 diagnostics = native.diagnostics(),
@@ -284,7 +499,7 @@ object StudioSessionRuntime {
         val pending = runCatching {
             repo.beginTake(
                 projectId = project.id,
-                recordedTimelineFrame = inputDiagnostics.transportFrame,
+                recordedTimelineFrame = recordStart,
                 inputSampleRate = inputSampleRate,
                 inputDeviceId = inputDiagnostics.inputDeviceId,
             )
@@ -305,20 +520,24 @@ object StudioSessionRuntime {
         when (val result = native.startRecording(target)) {
             StudioAudioOperationResult.Success -> {
                 pendingTake = pending
+                pendingPunch = punch?.copy(trackId = pending.trackId)
                 _state.value = _state.value.copy(
                     status = StudioSessionStatus.RECORDING,
+                    recordingKind = if (punch != null) StudioRecordingKind.PUNCH else StudioRecordingKind.FULL_TAKE,
                     message = null,
                     errorMessage = null,
-                    transportFrame = pending.recordedTimelineFrame,
+                    transportFrame = recordStart,
                     diagnostics = native.diagnostics(),
                 )
                 DiagnosticLogger.info(
                     component = TAG,
-                    event = "studio_take_started",
+                    event = if (punch != null) "studio_punch_started" else "studio_take_started",
                     sessionId = project.id,
                     fields = mapOf(
                         "take_id" to pending.takeId,
-                        "timeline_frame" to pending.recordedTimelineFrame,
+                        "timeline_frame" to recordStart,
+                        "punch_start" to punch?.startFrame,
+                        "punch_end" to punch?.endFrame,
                         "input_sample_rate" to inputSampleRate,
                         "input_device_id" to pending.inputDeviceId,
                         "input_mode" to mode.name,
@@ -339,44 +558,69 @@ object StudioSessionRuntime {
         val repo = repository ?: return
         val context = appContext
         val pending = pendingTake
+        val punch = pendingPunch
         if (_state.value.status != StudioSessionStatus.RECORDING && pending == null) return
 
         native.setPlaying(false)
         val stopResult = native.stopRecording()
+        native.setPunchMuteWindow(null, null)
         var project = _state.value.project
+        var selectedClipId = _state.value.selectedClipId
         var errorMessage: String? = null
         if (pending != null) {
-            runCatching { repo.finalizeTake(pending) }
-                .onSuccess { finalized -> project = finalized }
+            runCatching {
+                val currentTrack = project?.tracks?.firstOrNull { it.id == pending.trackId }
+                val keepArrangement = punch != null || currentTrack?.clips?.isNotEmpty() == true
+                var finalized = repo.finalizeTake(pending, activateTake = !keepArrangement)
+                if (punch != null) {
+                    val edit = StudioEditEngine.replacePunchRange(
+                        project = finalized,
+                        trackId = punch.trackId,
+                        newTakeId = pending.takeId,
+                        punchStart = punch.startFrame,
+                        punchEnd = punch.endFrame,
+                        recordedTakeStart = punch.recordStartFrame,
+                    )
+                    pushBounded(undoStack, finalized)
+                    redoStack.clear()
+                    finalized = repo.save(edit.project)
+                    selectedClipId = edit.selectedClipId
+                }
+                finalized
+            }.onSuccess { finalized -> project = finalized }
                 .onFailure { error ->
-                    // Keep the journal on disk. Opening the project again retries recovery.
                     errorMessage = error.message ?: "Không thể hoàn tất Studio take"
                 }
         }
         pendingTake = null
+        pendingPunch = null
         context?.let { StudioSessionService.stop(it) }
 
         val refreshedProject = project ?: _state.value.project
-        val refreshedWaves = if (refreshedProject != null) {
-            loadWaveforms(refreshedProject, null)
-        } else {
-            _state.value.waveforms
+        if (refreshedProject != null && errorMessage == null) {
+            runCatching { syncArrangement(refreshedProject) }
+                .onFailure { error -> errorMessage = error.message ?: "Không thể cập nhật monitor arrangement" }
         }
+        val refreshedWaves = if (refreshedProject != null) loadWaveforms(refreshedProject, null) else _state.value.waveforms
         if (stopResult is StudioAudioOperationResult.Error && errorMessage == null) {
             errorMessage = "Audio writer báo lỗi ${stopResult.nativeCode}; bản thu đã được giữ để recovery kiểm tra"
         }
         _state.value = _state.value.copy(
             project = refreshedProject,
             status = StudioSessionStatus.READY,
+            recordingKind = null,
             message = null,
+            selectedClipId = selectedClipId,
             durationFrames = refreshedProject?.let(::projectDurationFrames) ?: _state.value.durationFrames,
             waveforms = refreshedWaves,
             diagnostics = native.diagnostics(),
+            canUndo = undoStack.isNotEmpty(),
+            canRedo = redoStack.isNotEmpty(),
             errorMessage = errorMessage,
         )
         DiagnosticLogger.info(
             component = TAG,
-            event = "studio_take_stopped",
+            event = if (punch != null) "studio_punch_stopped" else "studio_take_stopped",
             sessionId = refreshedProject?.id,
             fields = mapOf(
                 "take_id" to pending?.takeId,
@@ -393,6 +637,13 @@ object StudioSessionRuntime {
                 delay(40L)
                 val diagnostics = native.diagnostics() ?: continue
                 val current = _state.value
+                val punch = pendingPunch
+                if (current.status == StudioSessionStatus.RECORDING && punch != null &&
+                    diagnostics.transportFrame >= punch.endFrame
+                ) {
+                    stopRecordingInternal()
+                    continue
+                }
                 if (current.status == StudioSessionStatus.RECORDING &&
                     (!diagnostics.isRecording || diagnostics.writerErrorCode != 0)
                 ) {
@@ -401,19 +652,75 @@ object StudioSessionRuntime {
                 }
                 val status = if (
                     current.status == StudioSessionStatus.PLAYING && !diagnostics.isPlaying
-                ) {
-                    StudioSessionStatus.READY
-                } else {
-                    current.status
-                }
+                ) StudioSessionStatus.READY else current.status
                 _state.value = current.copy(
                     status = status,
                     transportFrame = diagnostics.transportFrame,
-                    durationFrames = max(current.durationFrames, diagnostics.transportFrame),
+                    durationFrames = max(current.durationFrames, max(diagnostics.transportFrame, diagnostics.arrangementDurationFrames)),
                     diagnostics = diagnostics,
                 )
             }
         }
+    }
+
+    private fun applyEdit(
+        label: String,
+        transform: (StudioProject) -> StudioEditEngine.EditResult,
+    ) {
+        val current = _state.value
+        if (current.status == StudioSessionStatus.RECORDING) return
+        val repo = repository ?: return
+        val project = current.project ?: return
+        runCatching {
+            val edit = transform(project)
+            if (edit.project == project) return@runCatching edit
+            pushBounded(undoStack, project)
+            redoStack.clear()
+            val saved = repo.save(edit.project)
+            syncArrangement(saved)
+            edit.copy(project = saved)
+        }.onSuccess { edit ->
+            _state.value = _state.value.copy(
+                project = edit.project,
+                selectedClipId = edit.selectedClipId,
+                durationFrames = projectDurationFrames(edit.project),
+                canUndo = undoStack.isNotEmpty(),
+                canRedo = redoStack.isNotEmpty(),
+                errorMessage = null,
+            )
+            DiagnosticLogger.info(
+                component = TAG,
+                event = "studio_edit",
+                sessionId = edit.project.id,
+                fields = mapOf("command" to label, "selected_clip" to edit.selectedClipId),
+            )
+        }.onFailure { error ->
+            _state.value = _state.value.copy(errorMessage = error.message ?: "Không thể chỉnh sửa clip")
+        }
+    }
+
+    private fun adjustSelectedFade(millisecondsDelta: Long, isFadeIn: Boolean) {
+        val current = _state.value
+        val clipId = current.selectedClipId ?: return
+        val project = current.project ?: return
+        val clip = project.tracks.asSequence().flatMap { it.clips.asSequence() }.firstOrNull { it.id == clipId } ?: return
+        val asset = project.asset(clip.sourceAssetId) ?: return
+        val sourceRate = asset.sampleRate ?: project.timelineSampleRate
+        val deltaFrames = millisecondsDelta * sourceRate.toLong() / 1_000L
+        val fadeIn = if (isFadeIn) (clip.fadeInFrames + deltaFrames).coerceAtLeast(0L) else clip.fadeInFrames
+        val fadeOut = if (isFadeIn) clip.fadeOutFrames else (clip.fadeOutFrames + deltaFrames).coerceAtLeast(0L)
+        applyEdit(if (isFadeIn) "fade_in" else "fade_out") {
+            StudioEditEngine.setFades(it, clipId, fadeIn, fadeOut)
+        }
+    }
+
+    private fun syncArrangement(project: StudioProject) {
+        val native = engine ?: return
+        val repo = repository ?: return
+        requireSuccess(
+            native.setArrangement(StudioPlaybackPlanner.build(project, repo), project.timelineSampleRate),
+            "Không thể cập nhật vocal arrangement",
+        )
     }
 
     private fun loadWaveforms(
@@ -442,6 +749,7 @@ object StudioSessionRuntime {
         engine?.close()
         engine = null
         pendingTake = null
+        pendingPunch = null
     }
 
     private fun projectDurationFrames(project: StudioProject): Long {
@@ -459,14 +767,7 @@ object StudioSessionRuntime {
                 duration = max(duration, start + length)
             }
             for (clip in track.clips) {
-                val asset = project.asset(clip.sourceAssetId) ?: continue
-                val rate = asset.sampleRate ?: project.timelineSampleRate
-                val length = sourceFramesToTimeline(
-                    (clip.sourceEndFrame - clip.sourceStartFrame).coerceAtLeast(0L),
-                    rate,
-                    project.timelineSampleRate,
-                )
-                duration = max(duration, clip.timelineStartFrame + length)
+                duration = max(duration, StudioEditEngine.timelineEnd(project, clip))
             }
         }
         return duration.coerceAtLeast(project.timelineSampleRate.toLong())
@@ -474,7 +775,7 @@ object StudioSessionRuntime {
 
     private fun sourceFramesToTimeline(sourceFrames: Long, sourceRate: Int, timelineRate: Int): Long {
         if (sourceFrames <= 0L || sourceRate <= 0 || timelineRate <= 0) return 0L
-        return ((sourceFrames.toDouble() * timelineRate.toDouble()) / sourceRate.toDouble()).toLong()
+        return (sourceFrames.toDouble() * timelineRate.toDouble() / sourceRate.toDouble()).roundToLong()
     }
 
     private fun requireSuccess(result: StudioAudioOperationResult, prefix: String) {
@@ -486,4 +787,11 @@ object StudioSessionRuntime {
         StudioAudioOperationResult.Released -> "$prefix: engine đã được giải phóng"
         is StudioAudioOperationResult.Error -> "$prefix (mã ${result.nativeCode})"
     }
+
+    private fun pushBounded(stack: ArrayDeque<StudioProject>, project: StudioProject) {
+        stack.addLast(project)
+        while (stack.size > MAX_EDIT_HISTORY) stack.removeFirst()
+    }
+
+    private fun StudioProject.hasClip(clipId: String): Boolean = tracks.any { track -> track.clips.any { it.id == clipId } }
 }

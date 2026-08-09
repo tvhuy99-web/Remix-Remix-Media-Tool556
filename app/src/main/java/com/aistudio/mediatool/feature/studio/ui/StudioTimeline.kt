@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,6 +27,8 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -36,6 +38,7 @@ import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
+import com.aistudio.mediatool.feature.studio.domain.latencyCompensatedPlacement
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -59,7 +62,13 @@ fun StudioTimeline(
     val timelineFrames = durationFrames.coerceAtLeast(project.timelineSampleRate.toLong())
     val durationSeconds = timelineFrames.toDouble() / project.timelineSampleRate.toDouble()
 
-    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics {
+                contentDescription = "Dòng thời gian âm thanh. Chạm vào sóng âm để chuyển vị trí phát hoặc chọn một đoạn."
+            },
+    ) {
         val timelineWidthDp = max(
             maxWidth.value,
             (durationSeconds * pixelsPerSecond.coerceAtLeast(12f)).toFloat(),
@@ -126,7 +135,7 @@ fun StudioTakeSelector(
             .filter { it.type == StudioTrackType.VOCAL && it.takes.isNotEmpty() }
             .forEach { track ->
                 Text(
-                    "${track.name}: ${track.takes.size} take",
+                    "Các bản thu · ${track.takes.size} bản",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -135,19 +144,16 @@ fun StudioTakeSelector(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     track.takes.forEachIndexed { index, take ->
-                        AssistChip(
+                        FilterChip(
+                            selected = track.activeTakeId == take.id,
                             onClick = { onSelectTake(track.id, take.id) },
-                            label = {
-                                Text(
-                                    if (track.activeTakeId == take.id) "Take ${index + 1} ✓" else "Take ${index + 1}",
-                                )
-                            },
+                            label = { Text("Bản ${index + 1}") },
                         )
                     }
                 }
                 if (track.clips.isNotEmpty()) {
                     Text(
-                        "Arrangement đang dùng ${track.clips.size} clip; đổi Active Take không phá arrangement.",
+                        "Phần đã ghép vẫn được giữ khi bạn đổi bản đang chọn.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -170,7 +176,7 @@ private fun TimelineRuler(
     val lineColor = MaterialTheme.colorScheme.outline
     val textColor = MaterialTheme.colorScheme.onSurfaceVariant
     val playheadColor = MaterialTheme.colorScheme.primary
-    val punchColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+    val selectedRangeColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
     val background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
     val labelPaint = remember(textColor) {
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -178,6 +184,7 @@ private fun TimelineRuler(
             textSize = 28f
         }
     }
+
     Canvas(
         modifier = Modifier
             .width(width)
@@ -192,8 +199,8 @@ private fun TimelineRuler(
                 }
             },
     ) {
-        drawPunchRange(durationFrames, punchStartFrame, punchEndFrame, punchColor)
-        val seconds = durationFrames.toDouble() / sampleRate.toDouble()
+        drawSelectedRange(durationFrames, punchStartFrame, punchEndFrame, selectedRangeColor)
+        val seconds = durationFrames.toDouble() / sampleRate.coerceAtLeast(1).toDouble()
         val majorInterval = when {
             pixelsPerSecond >= 110f -> 1
             pixelsPerSecond >= 55f -> 5
@@ -237,18 +244,23 @@ private fun TimelineTrackLane(
     val baselineColor = MaterialTheme.colorScheme.outlineVariant
     val playheadColor = MaterialTheme.colorScheme.primary
     val selectionColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-    val punchColor = MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
+    val selectedRangeColor = MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
     val background = MaterialTheme.colorScheme.surface
     val regions = remember(project, track, waveforms) { buildRegions(project, track, waveforms) }
 
     Column(modifier = Modifier.width(width).padding(top = 4.dp)) {
+        val name = friendlyTrackName(track)
         val label = when {
-            track.clips.isNotEmpty() -> "${track.name} • ${track.clips.size} clip"
+            track.clips.isNotEmpty() -> "$name · ${track.clips.size} đoạn"
             track.takes.isNotEmpty() -> {
                 val activeIndex = track.takes.indexOfFirst { it.id == track.activeTakeId }
-                if (activeIndex >= 0) "${track.name} • Take ${activeIndex + 1}/${track.takes.size}" else "${track.name} • ${track.takes.size} take"
+                if (activeIndex >= 0) {
+                    "$name · Bản ${activeIndex + 1}/${track.takes.size}"
+                } else {
+                    "$name · ${track.takes.size} bản thu"
+                }
             }
-            else -> track.name
+            else -> name
         }
         Text(
             text = label,
@@ -276,7 +288,7 @@ private fun TimelineTrackLane(
         ) {
             val centerY = size.height / 2f
             drawLine(baselineColor, Offset(0f, centerY), Offset(size.width, centerY), strokeWidth = 1f)
-            drawPunchRange(durationFrames, punchStartFrame, punchEndFrame, punchColor)
+            drawSelectedRange(durationFrames, punchStartFrame, punchEndFrame, selectedRangeColor)
             regions.forEach { region ->
                 val startX = frameToX(region.timelineStart, durationFrames, size.width)
                 val endX = frameToX(region.timelineEnd, durationFrames, size.width)
@@ -324,7 +336,11 @@ private fun buildRegions(
                 sourceStartFrame = 0L,
                 sourceEndFrame = waveform.totalFrames,
                 timelineStart = 0L,
-                timelineEnd = framesToTimeline(waveform.totalFrames, waveform.sampleRate, project.timelineSampleRate),
+                timelineEnd = framesToTimeline(
+                    waveform.totalFrames,
+                    waveform.sampleRate,
+                    project.timelineSampleRate,
+                ),
             ),
         )
     }
@@ -333,15 +349,21 @@ private fun buildRegions(
     }
     val take = activeTake(track) ?: return emptyList()
     val waveform = waveforms[take.assetId] ?: return emptyList()
-    val start = (take.recordedTimelineFrame - take.latencyCompensationFrames).coerceAtLeast(0L)
+    val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
+    val sourceStart = placement.sourceStartFrame.coerceIn(0L, waveform.totalFrames)
+    val sourceEnd = placement.sourceEndFrame.coerceIn(sourceStart, waveform.totalFrames)
     return listOf(
         WaveRegion(
             clipId = null,
             waveform = waveform,
-            sourceStartFrame = 0L,
-            sourceEndFrame = take.recordedFrames.coerceAtMost(waveform.totalFrames),
-            timelineStart = start,
-            timelineEnd = start + framesToTimeline(take.recordedFrames, take.inputSampleRate, project.timelineSampleRate),
+            sourceStartFrame = sourceStart,
+            sourceEndFrame = sourceEnd,
+            timelineStart = placement.timelineStartFrame,
+            timelineEnd = placement.timelineStartFrame + framesToTimeline(
+                sourceEnd - sourceStart,
+                take.inputSampleRate,
+                project.timelineSampleRate,
+            ),
         ),
     )
 }
@@ -356,7 +378,11 @@ private fun clipRegion(
     val sourceRate = asset?.sampleRate ?: waveform.sampleRate
     val sourceStart = clip.sourceStartFrame.coerceIn(0L, waveform.totalFrames)
     val sourceEnd = clip.sourceEndFrame.coerceIn(sourceStart, waveform.totalFrames)
-    val timelineLength = framesToTimeline(sourceEnd - sourceStart, sourceRate, project.timelineSampleRate)
+    val timelineLength = framesToTimeline(
+        sourceEnd - sourceStart,
+        sourceRate,
+        project.timelineSampleRate,
+    )
     return WaveRegion(
         clipId = clip.id,
         waveform = waveform,
@@ -368,7 +394,8 @@ private fun clipRegion(
 }
 
 private fun activeTake(track: StudioTrack): StudioTake? =
-    track.activeTakeId?.let { id -> track.takes.firstOrNull { it.id == id } } ?: track.takes.lastOrNull()
+    track.activeTakeId?.let { id -> track.takes.firstOrNull { it.id == id } }
+        ?: track.takes.lastOrNull()
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWaveRegion(
     region: WaveRegion,
@@ -377,6 +404,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWaveRegion(
     centerY: Float,
     color: androidx.compose.ui.graphics.Color,
 ) {
+    if (region.waveform.pointCount <= 0) return
     val widthPx = (endX - startX).coerceAtLeast(1f)
     val pixelCount = widthPx.roundToInt().coerceAtLeast(1)
     val sourceLength = (region.sourceEndFrame - region.sourceStartFrame).coerceAtLeast(1L)
@@ -401,14 +429,14 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWaveRegion(
     }
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPunchRange(
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSelectedRange(
     durationFrames: Long,
-    punchStartFrame: Long?,
-    punchEndFrame: Long?,
+    startFrame: Long?,
+    endFrame: Long?,
     color: androidx.compose.ui.graphics.Color,
 ) {
-    val start = punchStartFrame ?: return
-    val end = punchEndFrame ?: return
+    val start = startFrame ?: return
+    val end = endFrame ?: return
     if (end <= start || durationFrames <= 0L) return
     val left = frameToX(start, durationFrames, size.width)
     val right = frameToX(end, durationFrames, size.width)
@@ -416,27 +444,36 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPunchRange(
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlayhead(
-    transportFrame: Long,
+    frame: Long,
     durationFrames: Long,
     color: androidx.compose.ui.graphics.Color,
 ) {
     if (durationFrames <= 0L) return
-    val x = frameToX(transportFrame, durationFrames, size.width)
+    val x = frameToX(frame, durationFrames, size.width)
     drawLine(color, Offset(x, 0f), Offset(x, size.height), strokeWidth = 2f)
 }
 
-private fun frameToX(frame: Long, durationFrames: Long, width: Float): Float =
-    (frame.coerceIn(0L, durationFrames).toDouble() / durationFrames.coerceAtLeast(1L).toDouble() * width)
-        .toFloat()
-        .coerceIn(0f, width)
+private fun frameToX(frame: Long, durationFrames: Long, width: Float): Float {
+    if (durationFrames <= 0L || width <= 0f) return 0f
+    return (frame.coerceIn(0L, durationFrames).toDouble() / durationFrames.toDouble() * width).toFloat()
+}
 
-private fun framesToTimeline(sourceFrames: Long, sourceRate: Int, projectRate: Int): Long {
-    if (sourceFrames <= 0 || sourceRate <= 0 || projectRate <= 0) return 0L
-    return (sourceFrames.toDouble() * projectRate.toDouble() / sourceRate.toDouble()).toLong()
+private fun framesToTimeline(frames: Long, sourceRate: Int, timelineRate: Int): Long {
+    if (frames <= 0L || sourceRate <= 0 || timelineRate <= 0) return 0L
+    return (frames.toDouble() * timelineRate.toDouble() / sourceRate.toDouble()).toLong()
+}
+
+private fun friendlyTrackName(track: StudioTrack): String = when (track.type) {
+    StudioTrackType.BEAT -> "Nhạc nền"
+    StudioTrackType.VOCAL -> "Giọng chính"
+    StudioTrackType.BACKING_VOCAL -> "Giọng bè"
+    StudioTrackType.ADLIB -> "Giọng phụ"
+    StudioTrackType.INSTRUMENT -> "Nhạc cụ"
+    StudioTrackType.OTHER -> track.name.ifBlank { "Âm thanh khác" }
 }
 
 private fun formatRulerTime(seconds: Long): String {
     val minutes = seconds / 60L
-    val remaining = seconds % 60L
-    return "%d:%02d".format(minutes, remaining)
+    val rest = seconds % 60L
+    return "%d:%02d".format(minutes, rest)
 }

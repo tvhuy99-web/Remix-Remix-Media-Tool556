@@ -32,6 +32,7 @@ class StudioAudioFocusManager(
 
     private var activeRequest: AudioFocusRequest? = null
     private var legacyActive = false
+    private var activeGain: Int? = null
 
     fun requestPlayback(): Boolean = request(AudioManager.AUDIOFOCUS_GAIN)
 
@@ -47,12 +48,23 @@ class StudioAudioFocusManager(
             manager.abandonAudioFocus(listener)
         }
         legacyActive = false
+        activeGain = null
+    }
+
+    private fun request(gain: Int, restorePreviousOnFailure: Boolean = true): Boolean {
+        val previousGain = activeGain
+        abandon()
+        val granted = requestFresh(gain)
+        if (granted) return true
+        if (restorePreviousOnFailure && previousGain != null && previousGain != gain) {
+            request(gain = previousGain, restorePreviousOnFailure = false)
+        }
+        return false
     }
 
     @Suppress("DEPRECATION")
-    private fun request(gain: Int): Boolean {
+    private fun requestFresh(gain: Int): Boolean {
         val manager = audioManager ?: return false
-        abandon()
         val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val request = AudioFocusRequest.Builder(gain)
                 .setAudioAttributes(attributes)
@@ -67,6 +79,8 @@ class StudioAudioFocusManager(
                 legacyActive = focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
             }
         }
-        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        val granted = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        if (granted) activeGain = gain
+        return granted
     }
 }

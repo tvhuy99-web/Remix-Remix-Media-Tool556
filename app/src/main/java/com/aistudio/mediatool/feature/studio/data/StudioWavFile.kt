@@ -1,10 +1,11 @@
 package com.aistudio.mediatool.feature.studio.data
 
 import java.io.File
+import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import kotlin.math.min
 
-/** Canonical PCM16 WAV helpers used by Studio take recovery and waveform analysis. */
+/** Canonical PCM16 WAV helpers used by Studio take recovery, derived processors and waveform analysis. */
 object StudioWavFile {
     const val HEADER_BYTES = 44
 
@@ -14,6 +15,32 @@ object StudioWavFile {
         val dataFrames: Long,
         val dataBytes: Long,
     )
+
+    fun writeFromRawPcm16(raw: File, target: File, sampleRate: Int, channelCount: Int): Info? {
+        if (!raw.isFile || raw.length() <= 0L || sampleRate <= 0 || channelCount !in 1..8) return null
+        val frameBytes = channelCount * 2L
+        val alignedBytes = raw.length() - (raw.length() % frameBytes)
+        if (alignedBytes <= 0L || alignedBytes > UInt.MAX_VALUE.toLong()) return null
+        target.parentFile?.mkdirs()
+        target.delete()
+        FileOutputStream(target).use { output ->
+            output.write(canonicalHeader(sampleRate, channelCount, alignedBytes.toInt()))
+            raw.inputStream().buffered().use { input ->
+                val buffer = ByteArray(256 * 1024)
+                var remaining = alignedBytes
+                while (remaining > 0L) {
+                    val read = input.read(buffer, 0, min(buffer.size.toLong(), remaining).toInt())
+                    if (read <= 0) break
+                    output.write(buffer, 0, read)
+                    remaining -= read
+                }
+                require(remaining == 0L) { "PCM source kết thúc sớm" }
+            }
+            output.flush()
+            output.fd.sync()
+        }
+        return inspectCanonicalPcm16(target)
+    }
 
     fun repairCanonicalPcm16(file: File, sampleRate: Int, channelCount: Int): Info? {
         if (!file.isFile || sampleRate <= 0 || channelCount !in 1..8 || file.length() <= HEADER_BYTES) return null

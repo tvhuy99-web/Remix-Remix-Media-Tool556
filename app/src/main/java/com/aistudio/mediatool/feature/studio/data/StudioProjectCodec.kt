@@ -5,6 +5,7 @@ import com.aistudio.mediatool.feature.studio.domain.STUDIO_TIMELINE_SAMPLE_RATE
 import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioClip
+import com.aistudio.mediatool.feature.studio.domain.StudioMasterMix
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
@@ -24,11 +25,12 @@ object StudioProjectCodec {
         putNullable("beatAssetId", project.beatAssetId)
         put("assets", JSONArray().apply { project.assets.forEach { put(assetToJson(it)) } })
         put("tracks", JSONArray().apply { project.tracks.forEach { put(trackToJson(it)) } })
+        put("masterMix", masterMixToJson(project.masterMix))
     }.toString(2)
 
     fun decode(raw: String): StudioProject {
         val json = JSONObject(raw)
-        val schemaVersion = json.optInt("schemaVersion", STUDIO_PROJECT_SCHEMA_VERSION)
+        val schemaVersion = json.optInt("schemaVersion", 1)
         require(schemaVersion in 1..STUDIO_PROJECT_SCHEMA_VERSION) {
             "Phiên bản dự án Studio chưa được hỗ trợ: $schemaVersion"
         }
@@ -47,6 +49,7 @@ object StudioProjectCodec {
             beatAssetId = json.nullableString("beatAssetId"),
             assets = json.optJSONArray("assets").mapObjects(::assetFromJson),
             tracks = json.optJSONArray("tracks").mapObjects(::trackFromJson),
+            masterMix = json.optJSONObject("masterMix")?.let(::masterMixFromJson) ?: StudioMasterMix(),
         )
     }
 
@@ -97,7 +100,7 @@ object StudioProjectCodec {
         name = json.optString("name").ifBlank { "Track" },
         primaryAssetId = json.nullableString("primaryAssetId"),
         activeTakeId = json.nullableString("activeTakeId"),
-        volumeDb = json.optDouble("volumeDb", 0.0).toFloat(),
+        volumeDb = json.optDouble("volumeDb", 0.0).toFloat().coerceIn(-60f, 18f),
         pan = json.optDouble("pan", 0.0).toFloat().coerceIn(-1f, 1f),
         muted = json.optBoolean("muted", false),
         solo = json.optBoolean("solo", false),
@@ -147,9 +150,19 @@ object StudioProjectCodec {
         timelineStartFrame = json.optLong("timelineStartFrame", 0L),
         sourceStartFrame = json.optLong("sourceStartFrame", 0L),
         sourceEndFrame = json.optLong("sourceEndFrame", 0L),
-        gainDb = json.optDouble("gainDb", 0.0).toFloat(),
+        gainDb = json.optDouble("gainDb", 0.0).toFloat().coerceIn(-60f, 18f),
         fadeInFrames = json.optLong("fadeInFrames", 0L),
         fadeOutFrames = json.optLong("fadeOutFrames", 0L),
+    )
+
+    private fun masterMixToJson(mix: StudioMasterMix) = JSONObject().apply {
+        put("gainDb", mix.gainDb.toDouble())
+        put("limiterEnabled", mix.limiterEnabled)
+    }
+
+    private fun masterMixFromJson(json: JSONObject) = StudioMasterMix(
+        gainDb = json.optDouble("gainDb", 0.0).toFloat().coerceIn(-24f, 12f),
+        limiterEnabled = json.optBoolean("limiterEnabled", true),
     )
 
     private inline fun <reified T : Enum<T>> enumOrDefault(value: String, fallback: T): T =

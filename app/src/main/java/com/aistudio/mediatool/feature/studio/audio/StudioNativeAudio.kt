@@ -17,8 +17,18 @@ data class StudioPlaybackClip(
     val sourceStartFrame: Long,
     val sourceEndFrame: Long,
     val gainDb: Float = 0f,
+    val pan: Float = 0f,
     val fadeInFrames: Long = 0L,
     val fadeOutFrames: Long = 0L,
+)
+
+data class StudioPlaybackPlan(
+    val clips: List<StudioPlaybackClip>,
+    val beatGainDb: Float = 0f,
+    val beatPan: Float = 0f,
+    val beatMuted: Boolean = false,
+    val masterGainDb: Float = 0f,
+    val limiterEnabled: Boolean = true,
 )
 
 /** Thread-safe Kotlin owner for the realtime Oboe Studio engine. */
@@ -59,15 +69,16 @@ class StudioNativeAudio(context: Context) : Closeable {
         withHandle { resultOf(nativeLoadBeat(it, file.absolutePath, sampleRate, channelCount)) }
     }
 
-    fun setArrangement(
-        clips: List<StudioPlaybackClip>,
+    fun setPlaybackPlan(
+        plan: StudioPlaybackPlan,
         projectSampleRate: Int,
     ): StudioAudioOperationResult = synchronized(nativeLock) {
+        val clips = plan.clips
         if (projectSampleRate <= 0 || clips.any { !it.file.isFile || it.sourceEndFrame <= it.sourceStartFrame }) {
             return@synchronized StudioAudioOperationResult.Error(-10_006)
         }
         withHandle { handle ->
-            resultOf(
+            val result = resultOf(
                 nativeSetArrangement(
                     handle = handle,
                     paths = clips.map { it.file.absolutePath }.toTypedArray(),
@@ -75,11 +86,23 @@ class StudioNativeAudio(context: Context) : Closeable {
                     sourceStarts = LongArray(clips.size) { clips[it].sourceStartFrame },
                     sourceEnds = LongArray(clips.size) { clips[it].sourceEndFrame },
                     gainsDb = FloatArray(clips.size) { clips[it].gainDb },
+                    pans = FloatArray(clips.size) { clips[it].pan.coerceIn(-1f, 1f) },
                     fadeIns = LongArray(clips.size) { clips[it].fadeInFrames },
                     fadeOuts = LongArray(clips.size) { clips[it].fadeOutFrames },
                     projectSampleRate = projectSampleRate,
                 ),
             )
+            if (result is StudioAudioOperationResult.Success) {
+                nativeSetMixConfig(
+                    handle,
+                    plan.beatGainDb.coerceIn(-60f, 18f),
+                    plan.beatPan.coerceIn(-1f, 1f),
+                    plan.beatMuted,
+                    plan.masterGainDb.coerceIn(-24f, 12f),
+                    plan.limiterEnabled,
+                )
+            }
+            result
         }
     }
 
@@ -185,10 +208,19 @@ class StudioNativeAudio(context: Context) : Closeable {
         sourceStarts: LongArray,
         sourceEnds: LongArray,
         gainsDb: FloatArray,
+        pans: FloatArray,
         fadeIns: LongArray,
         fadeOuts: LongArray,
         projectSampleRate: Int,
     ): Int
+    private external fun nativeSetMixConfig(
+        handle: Long,
+        beatGainDb: Float,
+        beatPan: Float,
+        beatMuted: Boolean,
+        masterGainDb: Float,
+        limiterEnabled: Boolean,
+    )
     private external fun nativeSetPunchMuteWindow(handle: Long, startFrame: Long, endFrame: Long)
     private external fun nativeSetPlaying(handle: Long, playing: Boolean)
     private external fun nativeSeek(handle: Long, projectFrame: Long)

@@ -110,6 +110,7 @@ object StudioSessionRuntime {
     private var renderEngine: StudioRenderEngine? = null
     private var deviceManager: StudioAudioDeviceManager? = null
     private var engine: StudioNativeAudio? = null
+    private var openJob: Job? = null
     private var pollJob: Job? = null
     private var operationJob: Job? = null
     private var pendingTake: PendingStudioTake? = null
@@ -119,14 +120,13 @@ object StudioSessionRuntime {
 
     fun open(context: Context, projectId: String) {
         val applicationContext = context.applicationContext
+        if (_state.value.projectId == projectId && _state.value.isPrepared && engine != null) return
+        openJob?.cancel()
         if (_state.value.projectId != projectId) {
             operationJob?.cancel()
             operationJob = null
         }
-        scope.launch {
-            if (_state.value.projectId == projectId && _state.value.isPrepared && engine != null) return@launch
-            openInternal(applicationContext, projectId)
-        }
+        openJob = scope.launch { openInternal(applicationContext, projectId) }
     }
 
     fun play() {
@@ -504,6 +504,8 @@ object StudioSessionRuntime {
     }
 
     fun closeProject() {
+        openJob?.cancel()
+        openJob = null
         operationJob?.cancel()
         operationJob = null
         scope.launch {
@@ -610,6 +612,9 @@ object StudioSessionRuntime {
                     "audio_api" to diagnostics?.audioApiLabel,
                 ),
             )
+        } catch (cancelled: CancellationException) {
+            closeEngineInternal()
+            throw cancelled
         } catch (error: Throwable) {
             closeEngineInternal()
             _state.value = _state.value.copy(

@@ -80,7 +80,6 @@ class StudioRenderEngine(context: Context) {
             return listOf(
                 RenderSource(
                     file = file,
-                    channelCount = asset.channelCount ?: 2,
                     sourceSampleRate = asset.sampleRate ?: project.timelineSampleRate,
                     sourceStartFrame = null,
                     sourceEndFrame = null,
@@ -103,7 +102,6 @@ class StudioRenderEngine(context: Context) {
             val file = requireNotNull(repository.assetFile(project.id, asset.id)) { "Thiếu file audio cho ${asset.displayName}" }
             RenderSource(
                 file = file,
-                channelCount = asset.channelCount ?: 1,
                 sourceSampleRate = asset.sampleRate ?: project.timelineSampleRate,
                 sourceStartFrame = clip.sourceStartFrame,
                 sourceEndFrame = clip.sourceEndFrame,
@@ -135,14 +133,11 @@ class StudioRenderEngine(context: Context) {
                 chain += "asetpts=PTS-STARTPTS"
             }
             chain += "aresample=${project.timelineSampleRate}"
+            chain += "aformat=channel_layouts=stereo"
             chain += "volume=${formatDb(source.gainDb)}dB"
             val left = if (source.pan > 0f) 1f - source.pan else 1f
             val right = if (source.pan < 0f) 1f + source.pan else 1f
-            chain += if (source.channelCount <= 1) {
-                "pan=stereo|c0=${formatNumber(left)}*c0|c1=${formatNumber(right)}*c0"
-            } else {
-                "pan=stereo|c0=${formatNumber(left)}*c0|c1=${formatNumber(right)}*c1"
-            }
+            chain += "pan=stereo|c0=${formatNumber(left)}*c0|c1=${formatNumber(right)}*c1"
             val sourceLength = if (source.sourceStartFrame != null && source.sourceEndFrame != null) {
                 (source.sourceEndFrame - source.sourceStartFrame).coerceAtLeast(0L)
             } else null
@@ -154,8 +149,7 @@ class StudioRenderEngine(context: Context) {
                 chain += "afade=t=out:st=${seconds(fadeStart, source.sourceSampleRate)}:d=${seconds(source.fadeOutFrames, source.sourceSampleRate)}"
             }
             if (source.timelineStartFrame > 0L) {
-                val delayMs = source.timelineStartFrame * 1_000.0 / project.timelineSampleRate.toDouble()
-                chain += "adelay=${String.format(Locale.US, "%.6f", delayMs)}:all=1"
+                chain += "adelay=${source.timelineStartFrame}S:all=1"
             }
             filters += "[$index:a]${chain.joinToString(",")}[$label]"
         }
@@ -203,7 +197,6 @@ class StudioRenderEngine(context: Context) {
 
     private data class RenderSource(
         val file: File,
-        val channelCount: Int,
         val sourceSampleRate: Int,
         val sourceStartFrame: Long?,
         val sourceEndFrame: Long?,

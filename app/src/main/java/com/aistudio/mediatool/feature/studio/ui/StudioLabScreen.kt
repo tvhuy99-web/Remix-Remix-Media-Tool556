@@ -36,16 +36,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.aistudio.mediatool.core.ml.ModelDownloader
-import com.aistudio.mediatool.core.ml.VoiceCleanupModelRegistry
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
+import com.aistudio.mediatool.feature.studio.data.StudioDerivedAssetEditor
 import com.aistudio.mediatool.feature.studio.data.StudioProjectRepository
 import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioProSettings
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTempoSettings
-import com.aistudio.mediatool.feature.studio.domain.StudioVocalFxSettings
 import com.aistudio.mediatool.feature.studio.integration.StudioMediaIntegrationProcessor
 import com.aistudio.mediatool.feature.studio.integration.StudioMediaProcessorKind
 import com.aistudio.mediatool.feature.studio.render.StudioProFilterBuilder
@@ -69,6 +67,7 @@ fun StudioLabScreen(
     var project by remember { mutableStateOf<StudioProject?>(null) }
     var selectedSourceId by remember { mutableStateOf<String?>(null) }
     var latestDerivedId by remember { mutableStateOf<String?>(null) }
+    var voiceCleanupReady by remember { mutableStateOf(false) }
     var processing by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
     var status by remember { mutableStateOf("Sẵn sàng") }
@@ -79,12 +78,14 @@ fun StudioLabScreen(
         val loaded = withContext(Dispatchers.IO) { repository.load(projectId) }
         project = loaded
         selectedSourceId = loaded?.defaultLabSourceId()
+        voiceCleanupReady = withContext(Dispatchers.IO) { processor.isVoiceCleanupModelReady() }
     }
 
     fun reload() {
         scope.launch {
             project = withContext(Dispatchers.IO) { repository.load(projectId) }
             if (project?.asset(selectedSourceId) == null) selectedSourceId = project?.defaultLabSourceId()
+            voiceCleanupReady = withContext(Dispatchers.IO) { processor.isVoiceCleanupModelReady() }
         }
     }
 
@@ -136,7 +137,7 @@ fun StudioLabScreen(
 
             Text(loaded.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text(
-                "Lab xử lý theo kiểu non-destructive: Take và asset gốc luôn được giữ. Processor chỉ tạo DERIVED asset mới.",
+                "Lab xử lý non-destructive: Take và asset gốc luôn được giữ. Processor chỉ tạo DERIVED asset mới, có lineage để quay về source.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
@@ -151,7 +152,7 @@ fun StudioLabScreen(
             )
 
             MediaToolIntegrationCard(
-                voiceCleanupReady = processor.isVoiceCleanupModelReady(),
+                voiceCleanupReady = voiceCleanupReady,
                 processing = processing,
                 onProcess = ::runProcessor,
             )
@@ -183,7 +184,7 @@ fun StudioLabScreen(
             )
 
             latestDerivedId?.let { derivedId ->
-                val derived = loaded.asset(derivedId) ?: project?.asset(derivedId)
+                val derived = project?.asset(derivedId) ?: loaded.asset(derivedId)
                 if (derived != null) {
                     DerivedResultCard(
                         asset = derived,
@@ -197,10 +198,28 @@ fun StudioLabScreen(
                                     }
                                 }.onSuccess { updated ->
                                     project = updated
+                                    selectedSourceId = derived.id
                                     status = "Arrangement đang dùng ${derived.displayName}"
                                     error = null
                                 }.onFailure { throwable ->
                                     error = throwable.message ?: "Không thể áp dụng derived asset"
+                                }
+                            }
+                        },
+                        onRestore = {
+                            scope.launch {
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        val current = requireNotNull(repository.load(projectId)) { "Không tìm thấy dự án Studio" }
+                                        repository.save(StudioDerivedAssetEditor.restoreSource(current, derived.id))
+                                    }
+                                }.onSuccess { updated ->
+                                    project = updated
+                                    selectedSourceId = derived.sourceAssetId
+                                    status = "Đã quay arrangement về source"
+                                    error = null
+                                }.onFailure { throwable ->
+                                    error = throwable.message ?: "Derived này chưa được dùng trong arrangement"
                                 }
                             }
                         },
@@ -238,7 +257,7 @@ private fun SourceAssetCard(
     onSelected: (String) -> Unit,
 ) {
     val assets = project.assets.filter { asset ->
-        asset.kind == StudioAssetKind.TAKE || asset.kind == StudioAssetKind.DERIVED || asset.id == project.beatAssetId
+        asset.kind == StudioAssetKind.BEAT || asset.kind == StudioAssetKind.TAKE || asset.kind == StudioAssetKind.DERIVED
     }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -372,12 +391,7 @@ private fun StudioProCard(
             )
 
             Text("Tempo ${bpm.toInt()} BPM • $beatsPerBar/4", fontWeight = FontWeight.SemiBold)
-            Slider(
-                value = bpm,
-                onValueChange = { bpm = it },
-                valueRange = 40f..220f,
-                enabled = enabled,
-            )
+            Slider(value = bpm, onValueChange = { bpm = it }, valueRange = 40f..220f, enabled = enabled)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(3, 4, 6).forEach { value ->
                     FilterChip(
@@ -397,12 +411,7 @@ private fun StudioProCard(
                 Switch(checked = metronomeEnabled, onCheckedChange = { metronomeEnabled = it }, enabled = enabled)
             }
             Text("Metronome gain ${metronomeGain.toInt()} dB", style = MaterialTheme.typography.labelSmall)
-            Slider(
-                value = metronomeGain,
-                onValueChange = { metronomeGain = it },
-                valueRange = -36f..0f,
-                enabled = enabled,
-            )
+            Slider(value = metronomeGain, onValueChange = { metronomeGain = it }, valueRange = -36f..0f, enabled = enabled)
             OutlinedButton(
                 onClick = { previewClick = !previewClick },
                 enabled = enabled,
@@ -420,18 +429,10 @@ private fun StudioProCard(
                 FilterChip(selected = false, onClick = { fx = StudioProFilterBuilder.warmPreset() }, enabled = enabled, label = { Text("Warm") })
             }
 
-            FxSlider("High-pass", fx.highPassHz, "${fx.highPassHz.toInt()} Hz", 40f..180f, enabled) {
-                fx = fx.copy(highPassHz = it)
-            }
-            FxSlider("Low EQ", fx.lowGainDb, signedDb(fx.lowGainDb), -6f..6f, enabled) {
-                fx = fx.copy(lowGainDb = it)
-            }
-            FxSlider("Presence EQ", fx.midGainDb, signedDb(fx.midGainDb), -6f..6f, enabled) {
-                fx = fx.copy(midGainDb = it)
-            }
-            FxSlider("Air EQ", fx.highGainDb, signedDb(fx.highGainDb), -6f..6f, enabled) {
-                fx = fx.copy(highGainDb = it)
-            }
+            FxSlider("High-pass", fx.highPassHz, "${fx.highPassHz.toInt()} Hz", 40f..180f, enabled) { fx = fx.copy(highPassHz = it) }
+            FxSlider("Low EQ", fx.lowGainDb, signedDb(fx.lowGainDb), -6f..6f, enabled) { fx = fx.copy(lowGainDb = it) }
+            FxSlider("Presence EQ", fx.midGainDb, signedDb(fx.midGainDb), -6f..6f, enabled) { fx = fx.copy(midGainDb = it) }
+            FxSlider("Air EQ", fx.highGainDb, signedDb(fx.highGainDb), -6f..6f, enabled) { fx = fx.copy(highGainDb = it) }
             FxSlider("Compressor threshold", fx.compressorThresholdDb, "${fx.compressorThresholdDb.toInt()} dB", -32f..-6f, enabled) {
                 fx = fx.copy(compressorThresholdDb = it)
             }
@@ -475,6 +476,7 @@ private fun DerivedResultCard(
     asset: StudioAsset,
     enabled: Boolean,
     onApply: () -> Unit,
+    onRestore: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -487,6 +489,9 @@ private fun DerivedResultCard(
             )
             Button(onClick = onApply, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
                 Text("Dùng bản này trong arrangement")
+            }
+            OutlinedButton(onClick = onRestore, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                Text("Quay arrangement về source")
             }
         }
     }

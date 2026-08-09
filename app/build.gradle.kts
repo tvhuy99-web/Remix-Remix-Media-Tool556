@@ -115,6 +115,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        prefab = true
     }
 
     externalNativeBuild {
@@ -138,7 +139,7 @@ android {
         )
         jniLibs {
             useLegacyPackaging = false
-            // FFmpegKit, ONNX Runtime và LiteRT có thể cùng đóng gói libc++_shared.so.
+            // FFmpegKit, ONNX Runtime, LiteRT và Oboe có thể cùng đóng gói libc++_shared.so.
             // CI mở từng APK để xác nhận ARM64 chỉ còn một bản.
             pickFirsts += setOf("lib/**/libc++_shared.so")
         }
@@ -186,6 +187,7 @@ dependencies {
     implementation(libs.ffmpeg.kit.full)
     // FFmpegKit 8.1.7 AAR currently does not reliably expose this runtime dependency.
     implementation(libs.smart.exception.java)
+    implementation(libs.oboe)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

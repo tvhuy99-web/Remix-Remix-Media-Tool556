@@ -46,6 +46,7 @@ private data class ToolEntry(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
+    onNavigateToStudio: () -> Unit,
     onNavigateToRecord: () -> Unit,
     onNavigateToTrim: () -> Unit,
     onNavigateToJoin: () -> Unit,
@@ -58,6 +59,7 @@ fun MainScreen(
     onNavigateToSettings: () -> Unit,
 ) {
     val tools = listOf(
+        ToolEntry("Studio", Icons.Default.MusicNote, onNavigateToStudio),
         ToolEntry("Ghi âm", Icons.Default.Mic, onNavigateToRecord),
         ToolEntry("Cắt", Icons.Default.ContentCut, onNavigateToTrim),
         ToolEntry("Nối audio", Icons.Default.Add, onNavigateToJoin),

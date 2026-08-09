@@ -8,39 +8,41 @@ import java.io.Closeable
  * of this engine in the Studio Recording step.
  */
 class StudioNativeAudio : Closeable {
+    private val nativeLock = Any()
     private var nativeHandle: Long = nativeCreate()
 
-    val isReleased: Boolean get() = nativeHandle == 0L
+    val isReleased: Boolean
+        get() = synchronized(nativeLock) { nativeHandle == 0L }
 
-    fun openOutput(preferredDeviceId: Int? = null): StudioAudioOperationResult {
+    fun openOutput(preferredDeviceId: Int? = null): StudioAudioOperationResult = synchronized(nativeLock) {
         val handle = nativeHandle
-        if (handle == 0L) return StudioAudioOperationResult.Released
-        return resultOf(nativeOpenOutput(handle, preferredDeviceId ?: -1))
+        if (handle == 0L) return@synchronized StudioAudioOperationResult.Released
+        resultOf(nativeOpenOutput(handle, preferredDeviceId ?: -1))
     }
 
-    fun start(): StudioAudioOperationResult {
+    fun start(): StudioAudioOperationResult = synchronized(nativeLock) {
         val handle = nativeHandle
-        if (handle == 0L) return StudioAudioOperationResult.Released
-        return resultOf(nativeStart(handle))
+        if (handle == 0L) return@synchronized StudioAudioOperationResult.Released
+        resultOf(nativeStart(handle))
     }
 
-    fun stop(): StudioAudioOperationResult {
+    fun stop(): StudioAudioOperationResult = synchronized(nativeLock) {
         val handle = nativeHandle
-        if (handle == 0L) return StudioAudioOperationResult.Released
-        return resultOf(nativeStop(handle))
+        if (handle == 0L) return@synchronized StudioAudioOperationResult.Released
+        resultOf(nativeStop(handle))
     }
 
-    fun closeStream() {
+    fun closeStream() = synchronized(nativeLock) {
         val handle = nativeHandle
         if (handle != 0L) nativeClose(handle)
     }
 
-    fun diagnostics(): StudioAudioDiagnostics? {
+    fun diagnostics(): StudioAudioDiagnostics? = synchronized(nativeLock) {
         val handle = nativeHandle
-        if (handle == 0L) return null
+        if (handle == 0L) return@synchronized null
         val values = nativeDiagnostics(handle)
-        if (values.size < DIAGNOSTIC_FIELD_COUNT || values[0] <= 0L) return null
-        return StudioAudioDiagnostics(
+        if (values.size < DIAGNOSTIC_FIELD_COUNT || values[0] <= 0L) return@synchronized null
+        StudioAudioDiagnostics(
             sampleRate = values[0].toInt(),
             channelCount = values[1].toInt(),
             framesPerBurst = values[2].toInt(),
@@ -55,9 +57,9 @@ class StudioNativeAudio : Closeable {
         )
     }
 
-    override fun close() {
+    override fun close() = synchronized(nativeLock) {
         val handle = nativeHandle
-        if (handle == 0L) return
+        if (handle == 0L) return@synchronized
         nativeHandle = 0L
         nativeRelease(handle)
     }

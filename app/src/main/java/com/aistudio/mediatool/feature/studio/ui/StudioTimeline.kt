@@ -22,7 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -33,6 +33,7 @@ import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
+import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.max
 
@@ -87,7 +88,7 @@ fun StudioTimeline(
                 onSeek = onSeek,
             )
             project.tracks.forEach { track ->
-                val active = activeTrackSource(project, track)
+                val active = activeTrackSource(track)
                 TimelineTrackLane(
                     track = track,
                     waveform = active?.assetId?.let(waveforms::get),
@@ -185,7 +186,12 @@ private fun TimelineRuler(
             val second = tick * majorInterval
             val x = ((second / seconds.coerceAtLeast(0.001)) * size.width).toFloat()
             drawLine(lineColor, Offset(x, size.height * 0.55f), Offset(x, size.height), strokeWidth = 1f)
-            drawContext.canvas.nativeCanvas.drawText(formatTime(second.toLong()), x + 5f, size.height * 0.42f, labelPaint)
+            drawContext.canvas.nativeCanvas.drawText(
+                formatRulerTime(second.toLong()),
+                x + 5f,
+                size.height * 0.42f,
+                labelPaint,
+            )
         }
         val playheadX = (transportFrame.toDouble() / durationFrames.toDouble() * size.width).toFloat()
             .coerceIn(0f, size.width)
@@ -286,7 +292,7 @@ private data class ActiveTrackSource(
     val take: StudioTake?,
 )
 
-private fun activeTrackSource(project: StudioProject, track: StudioTrack): ActiveTrackSource? {
+private fun activeTrackSource(track: StudioTrack): ActiveTrackSource? {
     if (track.type == StudioTrackType.BEAT) {
         return track.primaryAssetId?.let { ActiveTrackSource(it, null) }
     }
@@ -301,5 +307,5 @@ private fun framesToTimeline(frames: Long, sourceRate: Int, timelineRate: Int): 
     return (frames.toDouble() * timelineRate.toDouble() / sourceRate.toDouble()).toLong()
 }
 
-private fun formatTime(totalSeconds: Long): String =
-    "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
+private fun formatRulerTime(totalSeconds: Long): String =
+    String.format(Locale.US, "%d:%02d", totalSeconds / 60L, totalSeconds % 60L)

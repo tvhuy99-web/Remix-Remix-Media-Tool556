@@ -66,6 +66,7 @@ data class StudioTrack(
     val type: StudioTrackType,
     val name: String,
     val primaryAssetId: String? = null,
+    val activeTakeId: String? = null,
     val volumeDb: Float = 0f,
     val pan: Float = 0f,
     val muted: Boolean = false,
@@ -86,5 +87,12 @@ data class StudioProject(
     val assets: List<StudioAsset> = emptyList(),
     val tracks: List<StudioTrack> = emptyList(),
 ) {
-    fun beatAsset(): StudioAsset? = beatAssetId?.let { id -> assets.firstOrNull { it.id == id } }
+    fun asset(assetId: String?): StudioAsset? =
+        assetId?.let { id -> assets.firstOrNull { it.id == id } }
+
+    fun beatAsset(): StudioAsset? = asset(beatAssetId)
+
+    fun take(takeId: String?): StudioTake? = takeId?.let { id ->
+        tracks.asSequence().flatMap { it.takes.asSequence() }.firstOrNull { it.id == id }
+    }
 }

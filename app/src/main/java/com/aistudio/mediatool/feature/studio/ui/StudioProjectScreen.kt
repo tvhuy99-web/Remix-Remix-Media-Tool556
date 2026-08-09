@@ -62,6 +62,9 @@ fun StudioProjectScreen(
     LaunchedEffect(projectId) {
         StudioSessionRuntime.open(context, projectId)
     }
+    LaunchedEffect(session.inputMode) {
+        inputMode = session.inputMode
+    }
 
     fun beginRecordingAfterPermission() {
         when (requestedRecordingKind) {
@@ -103,6 +106,10 @@ fun StudioProjectScreen(
     val showingProject = session.projectId == projectId
     val project = session.project.takeIf { showingProject }
     val status = if (showingProject) session.status else StudioSessionStatus.LOADING
+    val editEnabled = status != StudioSessionStatus.RECORDING && !session.isBusy
+    val routingEnabled = editEnabled && status != StudioSessionStatus.LOADING && status != StudioSessionStatus.ERROR
+    val mixerEnabled = !session.isBusy && status != StudioSessionStatus.LOADING && status != StudioSessionStatus.ERROR
+    val exportEnabled = status == StudioSessionStatus.READY || status == StudioSessionStatus.PLAYING
 
     ToolScaffold(
         title = project?.name ?: "Studio",
@@ -116,7 +123,7 @@ fun StudioProjectScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            if (status == StudioSessionStatus.LOADING) {
+            if (status == StudioSessionStatus.LOADING || session.isBusy) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -124,7 +131,14 @@ fun StudioProjectScreen(
                 ) {
                     CircularProgressIndicator()
                     Column {
-                        Text("Đang chuẩn bị Studio...", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            when (status) {
+                                StudioSessionStatus.CALIBRATING -> "Đang hiệu chỉnh latency..."
+                                StudioSessionStatus.RENDERING -> "Đang render Studio..."
+                                else -> "Đang chuẩn bị Studio..."
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                        )
                         session.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
@@ -162,8 +176,11 @@ fun StudioProjectScreen(
                     StudioInputMode.entries.forEach { mode ->
                         FilterChip(
                             selected = inputMode == mode,
-                            onClick = { inputMode = mode },
-                            enabled = status != StudioSessionStatus.RECORDING,
+                            onClick = {
+                                inputMode = mode
+                                StudioSessionRuntime.setInputMode(mode)
+                            },
+                            enabled = routingEnabled,
                             label = {
                                 Text(
                                     when (mode) {
@@ -186,6 +203,12 @@ fun StudioProjectScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
+                StudioRoutingLatencyCard(
+                    session = session,
+                    inputMode = inputMode,
+                    enabled = routingEnabled,
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -198,7 +221,7 @@ fun StudioProjectScreen(
                     value = pixelsPerSecond,
                     onValueChange = { pixelsPerSecond = it },
                     valueRange = 28f..150f,
-                    enabled = status != StudioSessionStatus.RECORDING,
+                    enabled = editEnabled,
                 )
 
                 StudioTimeline(
@@ -219,7 +242,7 @@ fun StudioProjectScreen(
                     selectedClipId = session.selectedClipId,
                     canUndo = session.canUndo,
                     canRedo = session.canRedo,
-                    enabled = status != StudioSessionStatus.RECORDING,
+                    enabled = editEnabled,
                 )
 
                 PunchCard(
@@ -228,6 +251,7 @@ fun StudioProjectScreen(
                     punchEndFrame = session.punchEndFrame,
                     recordingKind = session.recordingKind,
                     status = status,
+                    enabled = !session.isBusy,
                     onPunchRecord = { requestRecording(StudioRecordingKind.PUNCH) },
                 )
 
@@ -237,7 +261,19 @@ fun StudioProjectScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                session.message?.takeIf { it.isNotBlank() }?.let { message ->
+                StudioMixerCard(
+                    project = loaded,
+                    enabled = mixerEnabled,
+                )
+
+                StudioExportCard(
+                    context = context,
+                    project = loaded,
+                    session = session,
+                    enabled = exportEnabled,
+                )
+
+                session.message?.takeIf { it.isNotBlank() && !session.isBusy }?.let { message ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Text(message, modifier = Modifier.padding(12.dp))
                     }
@@ -293,7 +329,7 @@ private fun TransportCard(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { StudioSessionRuntime.seek(0L) },
-                    enabled = status != StudioSessionStatus.RECORDING,
+                    enabled = prepared && status != StudioSessionStatus.RECORDING,
                     modifier = Modifier.weight(0.8f),
                 ) { Text("⏮") }
                 Button(
@@ -419,6 +455,7 @@ private fun PunchCard(
     punchEndFrame: Long?,
     recordingKind: StudioRecordingKind?,
     status: StudioSessionStatus,
+    enabled: Boolean,
     onPunchRecord: () -> Unit,
 ) {
     val hasVocal = project.tracks.any { it.type == StudioTrackType.VOCAL && it.takes.isNotEmpty() }
@@ -438,19 +475,19 @@ private fun PunchCard(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(
                     onClick = StudioSessionRuntime::setPunchStartAtPlayhead,
-                    enabled = status != StudioSessionStatus.RECORDING,
+                    enabled = enabled && status != StudioSessionStatus.RECORDING,
                     modifier = Modifier.weight(1f),
                 ) { Text("Đặt Punch In") }
                 OutlinedButton(
                     onClick = StudioSessionRuntime::setPunchEndAtPlayhead,
-                    enabled = status != StudioSessionStatus.RECORDING,
+                    enabled = enabled && status != StudioSessionStatus.RECORDING,
                     modifier = Modifier.weight(1f),
                 ) { Text("Đặt Punch Out") }
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(
                     onClick = StudioSessionRuntime::clearPunchRange,
-                    enabled = status != StudioSessionStatus.RECORDING,
+                    enabled = enabled && status != StudioSessionStatus.RECORDING,
                     modifier = Modifier.weight(1f),
                 ) { Text("Xóa vùng") }
                 Button(
@@ -461,7 +498,7 @@ private fun PunchCard(
                             onPunchRecord()
                         }
                     },
-                    enabled = hasVocal && (validRange || recordingKind == StudioRecordingKind.PUNCH),
+                    enabled = enabled && hasVocal && (validRange || recordingKind == StudioRecordingKind.PUNCH),
                     modifier = Modifier.weight(1f),
                 ) {
                     Text(if (recordingKind == StudioRecordingKind.PUNCH) "DỪNG PUNCH" else "● PUNCH REC")
@@ -481,7 +518,7 @@ private fun AudioDiagnosticsCard(diagnostics: StudioAudioDiagnostics) {
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                "Output ${diagnostics.sampleRate} Hz • ${diagnostics.bufferSizeFrames} frames • ${String.format(Locale.US, "%.1f", diagnostics.approximateBufferMs)} ms buffer",
+                "Output ${diagnostics.sampleRate} Hz • device ${diagnostics.outputDeviceId} • ${diagnostics.bufferSizeFrames} frames • ${String.format(Locale.US, "%.1f", diagnostics.approximateBufferMs)} ms buffer",
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
@@ -508,6 +545,8 @@ private fun statusLabel(status: StudioSessionStatus, kind: StudioRecordingKind?)
     StudioSessionStatus.READY -> "Sẵn sàng"
     StudioSessionStatus.PLAYING -> "Đang phát arrangement"
     StudioSessionStatus.RECORDING -> if (kind == StudioRecordingKind.PUNCH) "Đang Punch" else "Đang Overdub / thu vocal"
+    StudioSessionStatus.CALIBRATING -> "Đang hiệu chỉnh latency"
+    StudioSessionStatus.RENDERING -> "Đang render"
     StudioSessionStatus.ERROR -> "Lỗi"
 }
 

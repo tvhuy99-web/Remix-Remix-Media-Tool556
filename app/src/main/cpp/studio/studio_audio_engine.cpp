@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <oboe/Oboe.h>
 
+#include "studio_arrangement.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -19,13 +21,18 @@
 
 namespace {
 
+using mediatool::studio::PlaybackClipDefinition;
+using mediatool::studio::StudioArrangement;
+
 constexpr int32_t kDefaultProjectSampleRate = 48'000;
 constexpr int32_t kRecordingChannelCount = 1;
 constexpr int64_t kNoSeek = -1;
+constexpr int64_t kNoPunch = -1;
 constexpr int32_t kCustomErrorFile = -10'001;
 constexpr int32_t kCustomErrorBeatFormat = -10'002;
 constexpr int32_t kCustomErrorRecordingState = -10'004;
 constexpr int32_t kCustomErrorWriter = -10'005;
+constexpr int32_t kCustomErrorArrangement = -10'006;
 constexpr size_t kWavHeaderBytes = 44;
 
 class SpscPcm16RingBuffer {
@@ -57,8 +64,8 @@ public:
         if (data_.empty() || target == nullptr || capacity == 0) return 0;
         const uint64_t write = writeIndex_.load(std::memory_order_acquire);
         const uint64_t read = readIndex_.load(std::memory_order_relaxed);
-        const size_t available = static_cast<size_t>(write - read);
-        const size_t count = std::min(available, capacity);
+        const size_t availableFrames = static_cast<size_t>(write - read);
+        const size_t count = std::min(availableFrames, capacity);
         for (size_t index = 0; index < count; ++index) {
             target[index] = data_[(read + index) & mask_];
         }
@@ -189,13 +196,39 @@ public:
         return 0;
     }
 
+    int32_t setArrangement(const std::vector<PlaybackClipDefinition>& definitions, int32_t projectSampleRate) {
+        if (projectSampleRate <= 0) return kCustomErrorArrangement;
+        if (definitions.empty()) {
+            std::shared_ptr<const StudioArrangement> empty;
+            std::atomic_store_explicit(&arrangement_, empty, std::memory_order_release);
+            return 0;
+        }
+        auto prepared = StudioArrangement::build(definitions, projectSampleRate);
+        if (!prepared) return kCustomErrorArrangement;
+        std::atomic_store_explicit(&arrangement_, prepared, std::memory_order_release);
+        return 0;
+    }
+
+    void setPunchMuteWindow(int64_t startFrame, int64_t endFrame) {
+        if (startFrame >= 0 && endFrame > startFrame) {
+            punchMuteStart_.store(startFrame);
+            punchMuteEnd_.store(endFrame);
+        } else {
+            punchMuteStart_.store(kNoPunch);
+            punchMuteEnd_.store(kNoPunch);
+        }
+    }
+
     void setPlaying(bool playing) {
         playing_.store(playing);
     }
 
     void seek(int64_t projectFrame) {
-        const int64_t upper = beatFrameCount_ > 0 ? beatFrameCount_ : projectFrame;
-        pendingSeekFrame_.store(std::max<int64_t>(0, std::min(projectFrame, upper)));
+        const int64_t upper = maxTimelineDuration();
+        const int64_t safe = upper > 0
+            ? std::max<int64_t>(0, std::min(projectFrame, upper))
+            : std::max<int64_t>(0, projectFrame);
+        pendingSeekFrame_.store(safe);
     }
 
     int32_t prepareInput(int32_t preferredDeviceId, int32_t inputMode) {
@@ -253,8 +286,6 @@ public:
         if (path == nullptr || inputStream_ == nullptr || recording_.load() || writerThread_.joinable()) {
             return kCustomErrorRecordingState;
         }
-        // Drain pre-record input so the first saved sample belongs to the same
-        // transport boundary that starts on the next output callback.
         for (int attempt = 0; attempt < 8 && !inputScratch_.empty(); ++attempt) {
             const int32_t drainFrames = std::min<int32_t>(1024, static_cast<int32_t>(inputScratch_.size()));
             auto drained = inputStream_->read(inputScratch_.data(), drainFrames, 0);
@@ -301,6 +332,9 @@ public:
         stopRecording();
         closeOutputOnly();
         unloadBeat();
+        setPunchMuteWindow(kNoPunch, kNoPunch);
+        std::shared_ptr<const StudioArrangement> empty;
+        std::atomic_store_explicit(&arrangement_, empty, std::memory_order_release);
     }
 
     oboe::DataCallbackResult onAudioReady(
@@ -311,8 +345,10 @@ public:
         if (audioData == nullptr || numFrames <= 0) return oboe::DataCallbackResult::Continue;
         const int64_t requestedSeek = pendingSeekFrame_.exchange(kNoSeek);
         if (requestedSeek >= 0) {
-            playheadFrame_ = static_cast<double>(requestedSeek);
-            transportFrame_.store(requestedSeek);
+            const int64_t upper = maxTimelineDuration();
+            const int64_t safe = upper > 0 ? std::min(requestedSeek, upper) : requestedSeek;
+            playheadFrame_ = static_cast<double>(std::max<int64_t>(0, safe));
+            transportFrame_.store(static_cast<int64_t>(playheadFrame_));
         }
 
         captureInput(numFrames);
@@ -327,13 +363,26 @@ public:
         const bool shouldAdvance = playing_.load() || recording_.load();
         const double step = static_cast<double>(std::max(1, projectSampleRate_)) /
             static_cast<double>(outputSampleRate);
+        const auto arrangement = std::atomic_load_explicit(&arrangement_, std::memory_order_acquire);
+        const int64_t punchStart = punchMuteStart_.load();
+        const int64_t punchEnd = punchMuteEnd_.load();
+        const int64_t duration = maxTimelineDuration(arrangement);
 
         for (int32_t frame = 0; frame < numFrames; ++frame) {
             float left = 0.0f;
             float right = 0.0f;
+            const int64_t projectFrame = std::max<int64_t>(0, static_cast<int64_t>(std::llround(playheadFrame_)));
             if (shouldAdvance && beatSamples_ != nullptr && beatFrameCount_ > 0 && playheadFrame_ < beatFrameCount_) {
                 sampleBeat(playheadFrame_, left, right);
             }
+            const bool punchMuted = recording_.load() && punchStart >= 0 && punchEnd > punchStart &&
+                projectFrame >= punchStart && projectFrame < punchEnd;
+            if (shouldAdvance && arrangement && !punchMuted) {
+                arrangement->mix(projectFrame, left, right);
+            }
+            left = std::max(-1.0f, std::min(1.0f, left));
+            right = std::max(-1.0f, std::min(1.0f, right));
+
             const size_t base = static_cast<size_t>(frame) * static_cast<size_t>(outputChannels);
             if (outputChannels == 1) {
                 output[base] = 0.5f * (left + right);
@@ -347,8 +396,8 @@ public:
 
             if (shouldAdvance) {
                 playheadFrame_ += step;
-                if (!recording_.load() && beatFrameCount_ > 0 && playheadFrame_ >= beatFrameCount_) {
-                    playheadFrame_ = static_cast<double>(beatFrameCount_);
+                if (!recording_.load() && duration > 0 && playheadFrame_ >= static_cast<double>(duration)) {
+                    playheadFrame_ = static_cast<double>(duration);
                     playing_.store(false);
                 }
             }
@@ -367,7 +416,7 @@ public:
     }
 
     jlongArray diagnostics(JNIEnv* env) const {
-        constexpr jsize kFieldCount = 20;
+        constexpr jsize kFieldCount = 22;
         jlong values[kFieldCount] = {};
         values[5] = -1;
         values[13] = lastInputSampleRate_.load();
@@ -400,6 +449,9 @@ public:
         values[17] = playing_.load() ? 1 : 0;
         values[18] = recording_.load() ? 1 : 0;
         values[19] = writerError_.load();
+        const auto arrangement = std::atomic_load_explicit(&arrangement_, std::memory_order_acquire);
+        values[20] = arrangement ? static_cast<jlong>(arrangement->clipCount()) : 0;
+        values[21] = arrangement ? arrangement->durationFrames() : 0;
 
         auto array = env->NewLongArray(kFieldCount);
         if (array != nullptr) env->SetLongArrayRegion(array, 0, kFieldCount, values);
@@ -522,6 +574,14 @@ private:
         right = readChannel(1);
     }
 
+    int64_t maxTimelineDuration() const {
+        return maxTimelineDuration(std::atomic_load_explicit(&arrangement_, std::memory_order_acquire));
+    }
+
+    int64_t maxTimelineDuration(const std::shared_ptr<const StudioArrangement>& arrangement) const {
+        return std::max<int64_t>(beatFrameCount_, arrangement ? arrangement->durationFrames() : 0L);
+    }
+
     void writerLoop() {
         std::vector<int16_t> localBuffer(8'192);
         int64_t framesSinceSync = 0;
@@ -601,6 +661,7 @@ private:
 
     std::shared_ptr<oboe::AudioStream> outputStream_;
     std::shared_ptr<oboe::AudioStream> inputStream_;
+    std::shared_ptr<const StudioArrangement> arrangement_;
 
     void* beatMapping_ = nullptr;
     size_t beatMappingBytes_ = 0;
@@ -629,6 +690,8 @@ private:
     std::atomic<int64_t> recordedFrames_{0};
     std::atomic<int64_t> ringOverrunFrames_{0};
     std::atomic<int64_t> inputReadFrames_{0};
+    std::atomic<int64_t> punchMuteStart_{kNoPunch};
+    std::atomic<int64_t> punchMuteEnd_{kNoPunch};
     std::atomic<int32_t> writerError_{0};
     std::atomic<int32_t> lastInputSampleRate_{0};
     std::atomic<int32_t> lastInputDeviceId_{-1};
@@ -646,6 +709,10 @@ std::string jStringToUtf8(JNIEnv* env, jstring value) {
     std::string result(chars);
     env->ReleaseStringUTFChars(value, chars);
     return result;
+}
+
+bool sameLength(JNIEnv* env, jsize count, jarray array) {
+    return array != nullptr && env->GetArrayLength(array) == count;
 }
 
 }  // namespace
@@ -700,6 +767,72 @@ Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeLoadBea
     if (!engine) return -1;
     const std::string nativePath = jStringToUtf8(env, path);
     return engine->loadBeat(nativePath.c_str(), sampleRate, channels);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeSetArrangement(
+    JNIEnv* env,
+    jobject,
+    jlong handle,
+    jobjectArray paths,
+    jlongArray timelineStarts,
+    jlongArray sourceStarts,
+    jlongArray sourceEnds,
+    jfloatArray gainsDb,
+    jlongArray fadeIns,
+    jlongArray fadeOuts,
+    jint projectSampleRate
+) {
+    auto* engine = fromHandle(handle);
+    if (!engine || paths == nullptr) return -1;
+    const jsize count = env->GetArrayLength(paths);
+    if (!sameLength(env, count, timelineStarts) || !sameLength(env, count, sourceStarts) ||
+        !sameLength(env, count, sourceEnds) || !sameLength(env, count, gainsDb) ||
+        !sameLength(env, count, fadeIns) || !sameLength(env, count, fadeOuts)) {
+        return kCustomErrorArrangement;
+    }
+
+    std::vector<jlong> timeline(static_cast<size_t>(count));
+    std::vector<jlong> sourceStart(static_cast<size_t>(count));
+    std::vector<jlong> sourceEnd(static_cast<size_t>(count));
+    std::vector<jfloat> gain(static_cast<size_t>(count));
+    std::vector<jlong> fadeIn(static_cast<size_t>(count));
+    std::vector<jlong> fadeOut(static_cast<size_t>(count));
+    if (count > 0) {
+        env->GetLongArrayRegion(timelineStarts, 0, count, timeline.data());
+        env->GetLongArrayRegion(sourceStarts, 0, count, sourceStart.data());
+        env->GetLongArrayRegion(sourceEnds, 0, count, sourceEnd.data());
+        env->GetFloatArrayRegion(gainsDb, 0, count, gain.data());
+        env->GetLongArrayRegion(fadeIns, 0, count, fadeIn.data());
+        env->GetLongArrayRegion(fadeOuts, 0, count, fadeOut.data());
+        if (env->ExceptionCheck()) return kCustomErrorArrangement;
+    }
+
+    std::vector<PlaybackClipDefinition> definitions;
+    definitions.reserve(static_cast<size_t>(count));
+    for (jsize index = 0; index < count; ++index) {
+        auto pathValue = static_cast<jstring>(env->GetObjectArrayElement(paths, index));
+        const std::string path = jStringToUtf8(env, pathValue);
+        if (pathValue != nullptr) env->DeleteLocalRef(pathValue);
+        if (path.empty()) return kCustomErrorArrangement;
+        PlaybackClipDefinition definition;
+        definition.path = path;
+        definition.timelineStartFrame = timeline[static_cast<size_t>(index)];
+        definition.sourceStartFrame = sourceStart[static_cast<size_t>(index)];
+        definition.sourceEndFrame = sourceEnd[static_cast<size_t>(index)];
+        definition.gainDb = gain[static_cast<size_t>(index)];
+        definition.fadeInFrames = fadeIn[static_cast<size_t>(index)];
+        definition.fadeOutFrames = fadeOut[static_cast<size_t>(index)];
+        definitions.push_back(std::move(definition));
+    }
+    return engine->setArrangement(definitions, projectSampleRate);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeSetPunchMuteWindow(
+    JNIEnv*, jobject, jlong handle, jlong startFrame, jlong endFrame
+) {
+    if (auto* engine = fromHandle(handle)) engine->setPunchMuteWindow(startFrame, endFrame);
 }
 
 extern "C" JNIEXPORT void JNICALL

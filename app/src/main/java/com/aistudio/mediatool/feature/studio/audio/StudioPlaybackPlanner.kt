@@ -7,6 +7,7 @@ import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 
+/** Builds the validated PCM/WAV monitor snapshot before the realtime callback sees it. */
 object StudioPlaybackPlanner {
     fun build(
         project: StudioProject,

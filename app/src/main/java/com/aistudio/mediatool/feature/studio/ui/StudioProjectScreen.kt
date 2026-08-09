@@ -39,8 +39,12 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aistudio.mediatool.feature.studio.audio.StudioAudioDiagnostics
 import com.aistudio.mediatool.feature.studio.audio.StudioInputMode
+import com.aistudio.mediatool.feature.studio.audio.StudioRecordingKind
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionStatus
+import com.aistudio.mediatool.feature.studio.domain.StudioClip
+import com.aistudio.mediatool.feature.studio.domain.StudioProject
+import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import java.util.Locale
 
@@ -53,23 +57,24 @@ fun StudioProjectScreen(
     val session by StudioSessionRuntime.state.collectAsStateWithLifecycle()
     var inputMode by rememberSaveable { mutableStateOf(StudioInputMode.AUTO) }
     var pixelsPerSecond by rememberSaveable { mutableFloatStateOf(58f) }
+    var requestedRecordingKind by remember { mutableStateOf(StudioRecordingKind.FULL_TAKE) }
 
     LaunchedEffect(projectId) {
         StudioSessionRuntime.open(context, projectId)
     }
 
     fun beginRecordingAfterPermission() {
-        StudioSessionRuntime.startRecording(mode = inputMode)
+        when (requestedRecordingKind) {
+            StudioRecordingKind.FULL_TAKE -> StudioSessionRuntime.startRecording(mode = inputMode)
+            StudioRecordingKind.PUNCH -> StudioSessionRuntime.startPunchRecording(mode = inputMode)
+        }
     }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) {
-            beginRecordingAfterPermission()
-        } else {
-            Toast.makeText(context, "Cần quyền microphone để thu Studio", Toast.LENGTH_SHORT).show()
-        }
+        if (granted) beginRecordingAfterPermission()
+        else Toast.makeText(context, "Cần quyền microphone để thu Studio", Toast.LENGTH_SHORT).show()
     }
 
     fun requestMicrophone() {
@@ -84,7 +89,8 @@ fun StudioProjectScreen(
         ActivityResultContracts.RequestPermission(),
     ) { _ -> requestMicrophone() }
 
-    fun requestRecording() {
+    fun requestRecording(kind: StudioRecordingKind) {
+        requestedRecordingKind = kind
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -132,85 +138,21 @@ fun StudioProjectScreen(
                     ) {
                         Text("Không thể mở Studio", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
                         Text(session.errorMessage ?: "Lỗi không xác định")
-                        Button(onClick = { StudioSessionRuntime.open(context, projectId) }) {
-                            Text("Thử lại")
-                        }
+                        Button(onClick = { StudioSessionRuntime.open(context, projectId) }) { Text("Thử lại") }
                     }
                 }
             }
 
             project?.let { loaded ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column {
-                                Text(
-                                    formatFrames(session.transportFrame, loaded.timelineSampleRate),
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    fontWeight = FontWeight.Light,
-                                )
-                                Text(
-                                    statusLabel(status),
-                                    color = if (status == StudioSessionStatus.RECORDING) {
-                                        MaterialTheme.colorScheme.error
-                                    } else {
-                                        MaterialTheme.colorScheme.primary
-                                    },
-                                    style = MaterialTheme.typography.labelLarge,
-                                )
-                            }
-                            Text(
-                                "${formatFrames(session.durationFrames, loaded.timelineSampleRate)} tổng",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            OutlinedButton(
-                                onClick = { StudioSessionRuntime.seek(0L) },
-                                enabled = status != StudioSessionStatus.RECORDING,
-                                modifier = Modifier.weight(0.8f),
-                            ) { Text("⏮") }
-                            Button(
-                                onClick = {
-                                    if (status == StudioSessionStatus.PLAYING) {
-                                        StudioSessionRuntime.pause()
-                                    } else {
-                                        StudioSessionRuntime.play()
-                                    }
-                                },
-                                enabled = session.isPrepared && status != StudioSessionStatus.RECORDING,
-                                modifier = Modifier.weight(1.2f),
-                            ) {
-                                Text(if (status == StudioSessionStatus.PLAYING) "TẠM DỪNG" else "PHÁT")
-                            }
-                            Button(
-                                onClick = {
-                                    if (status == StudioSessionStatus.RECORDING) {
-                                        StudioSessionRuntime.stopRecording()
-                                    } else {
-                                        requestRecording()
-                                    }
-                                },
-                                enabled = session.isPrepared,
-                                modifier = Modifier.weight(1.2f),
-                            ) {
-                                Text(if (status == StudioSessionStatus.RECORDING) "DỪNG THU" else "● REC")
-                            }
-                        }
-                    }
-                }
+                TransportCard(
+                    project = loaded,
+                    status = status,
+                    recordingKind = session.recordingKind,
+                    transportFrame = session.transportFrame,
+                    durationFrames = session.durationFrames,
+                    prepared = session.isPrepared,
+                    onRecord = { requestRecording(StudioRecordingKind.FULL_TAKE) },
+                )
 
                 Text("Nguồn thu", fontWeight = FontWeight.SemiBold)
                 Row(
@@ -265,7 +207,28 @@ fun StudioProjectScreen(
                     transportFrame = session.transportFrame,
                     durationFrames = session.durationFrames,
                     pixelsPerSecond = pixelsPerSecond,
+                    selectedClipId = session.selectedClipId,
+                    punchStartFrame = session.punchStartFrame,
+                    punchEndFrame = session.punchEndFrame,
                     onSeek = StudioSessionRuntime::seek,
+                    onClipSelected = StudioSessionRuntime::selectClip,
+                )
+
+                EditingCard(
+                    project = loaded,
+                    selectedClipId = session.selectedClipId,
+                    canUndo = session.canUndo,
+                    canRedo = session.canRedo,
+                    enabled = status != StudioSessionStatus.RECORDING,
+                )
+
+                PunchCard(
+                    project = loaded,
+                    punchStartFrame = session.punchStartFrame,
+                    punchEndFrame = session.punchEndFrame,
+                    recordingKind = session.recordingKind,
+                    status = status,
+                    onPunchRecord = { requestRecording(StudioRecordingKind.PUNCH) },
                 )
 
                 StudioTakeSelector(
@@ -281,16 +244,227 @@ fun StudioProjectScreen(
                 }
                 session.errorMessage?.let { error ->
                     Card(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            error,
-                            modifier = Modifier.padding(12.dp),
-                            color = MaterialTheme.colorScheme.error,
-                        )
+                        Text(error, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error)
                     }
                 }
 
-                session.diagnostics?.let { diagnostics ->
-                    AudioDiagnosticsCard(diagnostics)
+                session.diagnostics?.let { diagnostics -> AudioDiagnosticsCard(diagnostics) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransportCard(
+    project: StudioProject,
+    status: StudioSessionStatus,
+    recordingKind: StudioRecordingKind?,
+    transportFrame: Long,
+    durationFrames: Long,
+    prepared: Boolean,
+    onRecord: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(
+                        formatFrames(transportFrame, project.timelineSampleRate),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Light,
+                    )
+                    Text(
+                        statusLabel(status, recordingKind),
+                        color = if (status == StudioSessionStatus.RECORDING) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+                Text(
+                    "${formatFrames(durationFrames, project.timelineSampleRate)} tổng",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { StudioSessionRuntime.seek(0L) },
+                    enabled = status != StudioSessionStatus.RECORDING,
+                    modifier = Modifier.weight(0.8f),
+                ) { Text("⏮") }
+                Button(
+                    onClick = {
+                        if (status == StudioSessionStatus.PLAYING) StudioSessionRuntime.pause() else StudioSessionRuntime.play()
+                    },
+                    enabled = prepared && status != StudioSessionStatus.RECORDING,
+                    modifier = Modifier.weight(1.2f),
+                ) { Text(if (status == StudioSessionStatus.PLAYING) "TẠM DỪNG" else "PHÁT") }
+                Button(
+                    onClick = {
+                        if (status == StudioSessionStatus.RECORDING) StudioSessionRuntime.stopRecording() else onRecord()
+                    },
+                    enabled = prepared,
+                    modifier = Modifier.weight(1.2f),
+                ) {
+                    Text(if (status == StudioSessionStatus.RECORDING) "DỪNG THU" else "● REC")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditingCard(
+    project: StudioProject,
+    selectedClipId: String?,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    enabled: Boolean,
+) {
+    val vocalTrack = project.tracks.firstOrNull { it.type == StudioTrackType.VOCAL }
+    val selectedClip = project.findClip(selectedClipId)
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text("Editing • Non-destructive", fontWeight = FontWeight.Bold)
+            Text(
+                "Split, Trim, Move, Gain và Fade chỉ thay metadata. WAV Take gốc không bị sửa.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = StudioSessionRuntime::undo,
+                    enabled = enabled && canUndo,
+                    modifier = Modifier.weight(1f),
+                ) { Text("↶ Undo") }
+                OutlinedButton(
+                    onClick = StudioSessionRuntime::redo,
+                    enabled = enabled && canRedo,
+                    modifier = Modifier.weight(1f),
+                ) { Text("↷ Redo") }
+            }
+
+            if (vocalTrack != null && vocalTrack.takes.isNotEmpty() && vocalTrack.clips.isEmpty()) {
+                Button(
+                    onClick = { StudioSessionRuntime.beginEditing(vocalTrack.id) },
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Tạo arrangement từ Take hiện tại") }
+            }
+
+            if (selectedClip != null) {
+                Text(
+                    "Clip đã chọn • Gain ${String.format(Locale.US, "%.1f", selectedClip.gainDb)} dB",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(onClick = StudioSessionRuntime::splitSelectedAtPlayhead, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Split")
+                    }
+                    OutlinedButton(onClick = StudioSessionRuntime::trimSelectedStartToPlayhead, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Trim đầu")
+                    }
+                    OutlinedButton(onClick = StudioSessionRuntime::trimSelectedEndToPlayhead, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Trim cuối")
+                    }
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { StudioSessionRuntime.moveSelectedByMillis(-100L) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("← 100ms")
+                    }
+                    OutlinedButton(onClick = { StudioSessionRuntime.moveSelectedByMillis(100L) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("100ms →")
+                    }
+                    OutlinedButton(onClick = StudioSessionRuntime::deleteSelectedClip, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Xóa")
+                    }
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { StudioSessionRuntime.adjustSelectedGain(-1f) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Gain -1")
+                    }
+                    OutlinedButton(onClick = { StudioSessionRuntime.adjustSelectedGain(1f) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Gain +1")
+                    }
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { StudioSessionRuntime.adjustSelectedFadeIn(-50L) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Fade In -")
+                    }
+                    OutlinedButton(onClick = { StudioSessionRuntime.adjustSelectedFadeIn(50L) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Fade In +")
+                    }
+                    OutlinedButton(onClick = { StudioSessionRuntime.adjustSelectedFadeOut(-50L) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Fade Out -")
+                    }
+                    OutlinedButton(onClick = { StudioSessionRuntime.adjustSelectedFadeOut(50L) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                        Text("Fade Out +")
+                    }
+                }
+            } else if (vocalTrack?.clips?.isNotEmpty() == true) {
+                Text("Chạm một clip vocal trên Timeline để chỉnh sửa.", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PunchCard(
+    project: StudioProject,
+    punchStartFrame: Long?,
+    punchEndFrame: Long?,
+    recordingKind: StudioRecordingKind?,
+    status: StudioSessionStatus,
+    onPunchRecord: () -> Unit,
+) {
+    val hasVocal = project.tracks.any { it.type == StudioTrackType.VOCAL && it.takes.isNotEmpty() }
+    val validRange = punchStartFrame != null && punchEndFrame != null && punchEndFrame > punchStartFrame
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text("Overdub & Punch", fontWeight = FontWeight.Bold)
+            Text(
+                "Overdub nghe beat + arrangement hiện tại khi thu. Punch có pre-roll 3 giây, mute vocal cũ trong vùng chọn và tự dừng ở Punch Out.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "IN ${punchStartFrame?.let { formatFrames(it, project.timelineSampleRate) } ?: "--:--.---"}   •   OUT ${punchEndFrame?.let { formatFrames(it, project.timelineSampleRate) } ?: "--:--.---"}",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = StudioSessionRuntime::setPunchStartAtPlayhead,
+                    enabled = status != StudioSessionStatus.RECORDING,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Đặt Punch In") }
+                OutlinedButton(
+                    onClick = StudioSessionRuntime::setPunchEndAtPlayhead,
+                    enabled = status != StudioSessionStatus.RECORDING,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Đặt Punch Out") }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = StudioSessionRuntime::clearPunchRange,
+                    enabled = status != StudioSessionStatus.RECORDING,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Xóa vùng") }
+                Button(
+                    onClick = {
+                        if (status == StudioSessionStatus.RECORDING && recordingKind == StudioRecordingKind.PUNCH) {
+                            StudioSessionRuntime.stopRecording()
+                        } else {
+                            onPunchRecord()
+                        }
+                    },
+                    enabled = hasVocal && (validRange || recordingKind == StudioRecordingKind.PUNCH),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (recordingKind == StudioRecordingKind.PUNCH) "DỪNG PUNCH" else "● PUNCH REC")
                 }
             }
         }
@@ -300,10 +474,7 @@ fun StudioProjectScreen(
 @Composable
 private fun AudioDiagnosticsCard(diagnostics: StudioAudioDiagnostics) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text("Audio diagnostics", fontWeight = FontWeight.SemiBold)
             Text(
                 "${diagnostics.audioApiLabel} • ${diagnostics.performanceModeLabel} • ${diagnostics.sharingModeLabel}",
@@ -313,11 +484,12 @@ private fun AudioDiagnosticsCard(diagnostics: StudioAudioDiagnostics) {
                 "Output ${diagnostics.sampleRate} Hz • ${diagnostics.bufferSizeFrames} frames • ${String.format(Locale.US, "%.1f", diagnostics.approximateBufferMs)} ms buffer",
                 style = MaterialTheme.typography.bodySmall,
             )
+            Text(
+                "Monitor arrangement: ${diagnostics.arrangementClipCount} clip • ${formatFrames(diagnostics.arrangementDurationFrames, 48_000)}",
+                style = MaterialTheme.typography.bodySmall,
+            )
             diagnostics.inputSampleRate?.let { rate ->
-                Text(
-                    "Mic $rate Hz • device ${diagnostics.inputDeviceId ?: "mặc định"}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                Text("Mic $rate Hz • device ${diagnostics.inputDeviceId ?: "mặc định"}", style = MaterialTheme.typography.bodySmall)
             }
             if (diagnostics.ringOverrunFrames > 0L) {
                 Text(
@@ -330,13 +502,18 @@ private fun AudioDiagnosticsCard(diagnostics: StudioAudioDiagnostics) {
     }
 }
 
-private fun statusLabel(status: StudioSessionStatus): String = when (status) {
+private fun statusLabel(status: StudioSessionStatus, kind: StudioRecordingKind?): String = when (status) {
     StudioSessionStatus.CLOSED -> "Đã đóng"
     StudioSessionStatus.LOADING -> "Đang chuẩn bị"
     StudioSessionStatus.READY -> "Sẵn sàng"
-    StudioSessionStatus.PLAYING -> "Đang phát"
-    StudioSessionStatus.RECORDING -> "Đang thu vocal"
+    StudioSessionStatus.PLAYING -> "Đang phát arrangement"
+    StudioSessionStatus.RECORDING -> if (kind == StudioRecordingKind.PUNCH) "Đang Punch" else "Đang Overdub / thu vocal"
     StudioSessionStatus.ERROR -> "Lỗi"
+}
+
+private fun StudioProject.findClip(id: String?): StudioClip? {
+    if (id == null) return null
+    return tracks.asSequence().flatMap { it.clips.asSequence() }.firstOrNull { it.id == id }
 }
 
 private fun formatFrames(frame: Long, sampleRate: Int): String {

@@ -4,9 +4,14 @@ import android.content.Context
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import java.io.Closeable
+
+private const val TYPE_USB_HEADSET_COMPAT = 22
+private const val TYPE_BLE_HEADSET_COMPAT = 26
+private const val TYPE_BLE_SPEAKER_COMPAT = 27
 
 data class StudioAudioDevice(
     val id: Int,
@@ -35,11 +40,11 @@ data class StudioAudioDevice(
             AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Tai nghe có mic"
             AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Tai nghe dây"
             AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio"
-            AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Headset"
+            TYPE_USB_HEADSET_COMPAT -> "USB Headset"
             AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth SCO"
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth A2DP"
-            AudioDeviceInfo.TYPE_BLE_HEADSET -> "Bluetooth LE Headset"
-            AudioDeviceInfo.TYPE_BLE_SPEAKER -> "Bluetooth LE Speaker"
+            TYPE_BLE_HEADSET_COMPAT -> "Bluetooth LE Headset"
+            TYPE_BLE_SPEAKER_COMPAT -> "Bluetooth LE Speaker"
             AudioDeviceInfo.TYPE_HDMI -> "HDMI"
             else -> "Audio device"
         }
@@ -58,8 +63,8 @@ class StudioAudioDeviceManager(
     private val audioManager = context.applicationContext.getSystemService(AudioManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
     private val callback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = publish()
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = publish()
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) = publish()
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) = publish()
     }
 
     init {
@@ -93,7 +98,7 @@ class StudioAudioDeviceManager(
         id = info.id,
         type = info.type,
         productName = info.productName?.toString().orEmpty(),
-        address = info.address.orEmpty(),
+        address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.address.orEmpty() else "",
         isInput = info.isSource,
         isOutput = info.isSink,
         sampleRates = info.sampleRates.filter { it > 0 }.distinct().sorted(),
@@ -107,10 +112,10 @@ class StudioAudioDeviceManager(
     )
 
     private fun devicePriority(type: Int): Int = when (type) {
-        AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_HEADSET -> 0
+        AudioDeviceInfo.TYPE_USB_DEVICE, TYPE_USB_HEADSET_COMPAT -> 0
         AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> 1
         AudioDeviceInfo.TYPE_BUILTIN_MIC, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> 2
-        AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER,
+        TYPE_BLE_HEADSET_COMPAT, TYPE_BLE_SPEAKER_COMPAT,
         AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> 3
         else -> 4
     }

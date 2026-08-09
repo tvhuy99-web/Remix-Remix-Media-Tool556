@@ -11,6 +11,8 @@ import com.aistudio.mediatool.feature.studio.data.selectActiveTake
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
+import com.aistudio.mediatool.feature.studio.render.StudioExportFormat
+import com.aistudio.mediatool.feature.studio.render.StudioRenderEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -31,6 +33,8 @@ enum class StudioSessionStatus {
     READY,
     PLAYING,
     RECORDING,
+    CALIBRATING,
+    RENDERING,
     ERROR,
 }
 
@@ -56,6 +60,13 @@ data class StudioSessionState(
     val punchStartFrame: Long? = null,
     val punchEndFrame: Long? = null,
     val recordingKind: StudioRecordingKind? = null,
+    val audioDevices: StudioAudioDeviceSnapshot = StudioAudioDeviceSnapshot(),
+    val selectedInputDeviceId: Int? = null,
+    val selectedOutputDeviceId: Int? = null,
+    val inputMode: StudioInputMode = StudioInputMode.AUTO,
+    val latencyProfile: StudioLatencyProfile? = null,
+    val exportResultPath: String? = null,
+    val exportResultLabel: String? = null,
 ) {
     val isPrepared: Boolean
         get() = status == StudioSessionStatus.READY ||
@@ -64,6 +75,9 @@ data class StudioSessionState(
 
     val hasPunchRange: Boolean
         get() = punchStartFrame != null && punchEndFrame != null && punchEndFrame > punchStartFrame
+
+    val isBusy: Boolean
+        get() = status == StudioSessionStatus.CALIBRATING || status == StudioSessionStatus.RENDERING
 }
 
 private data class PendingPunch(
@@ -73,7 +87,7 @@ private data class PendingPunch(
     val trackId: String,
 )
 
-/** Process-scoped Studio session, edit history and realtime transport owner. */
+/** Process-scoped Studio session, edit history, routing, latency and realtime transport owner. */
 object StudioSessionRuntime {
     private const val TAG = "StudioSession"
     private const val MAX_EDIT_HISTORY = 50
@@ -89,6 +103,9 @@ object StudioSessionRuntime {
     private var appContext: Context? = null
     private var repository: StudioProjectRepository? = null
     private var waveformStore: StudioWaveformStore? = null
+    private var latencyStore: StudioLatencyStore? = null
+    private var renderEngine: StudioRenderEngine? = null
+    private var deviceManager: StudioAudioDeviceManager? = null
     private var engine: StudioNativeAudio? = null
     private var pollJob: Job? = null
     private var pendingTake: PendingStudioTake? = null
@@ -118,7 +135,7 @@ object StudioSessionRuntime {
         scope.launch {
             val native = engine ?: return@launch
             val current = _state.value
-            if (current.status == StudioSessionStatus.RECORDING) return@launch
+            if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return@launch
             native.setPlaying(false)
             _state.value = current.copy(status = StudioSessionStatus.READY)
         }
@@ -126,22 +143,99 @@ object StudioSessionRuntime {
 
     fun seek(projectFrame: Long) {
         scope.launch {
-            if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
-            val target = projectFrame.coerceIn(0L, max(_state.value.durationFrames, 0L))
+            val current = _state.value
+            if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return@launch
+            val target = projectFrame.coerceIn(0L, max(current.durationFrames, 0L))
             engine?.seek(target)
-            _state.value = _state.value.copy(transportFrame = target)
+            _state.value = current.copy(transportFrame = target)
+        }
+    }
+
+    fun setInputMode(mode: StudioInputMode) {
+        scope.launch {
+            if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy) return@launch
+            _state.value = _state.value.copy(inputMode = mode, latencyProfile = profileForCurrentRoute(mode))
+        }
+    }
+
+    fun selectInputDevice(deviceId: Int?) {
+        scope.launch {
+            if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy) return@launch
+            val validId = deviceId?.takeIf { id -> _state.value.audioDevices.inputs.any { it.id == id } }
+            _state.value = _state.value.copy(
+                selectedInputDeviceId = validId,
+                latencyProfile = profileForCurrentRoute(_state.value.inputMode, inputIdOverride = validId),
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun selectOutputDevice(deviceId: Int?) {
+        scope.launch {
+            val current = _state.value
+            if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return@launch
+            val validId = deviceId?.takeIf { id -> current.audioDevices.outputs.any { it.id == id } }
+            switchOutputRouteInternal(validId)
+        }
+    }
+
+    fun calibrateLatency(mode: StudioInputMode = _state.value.inputMode) {
+        scope.launch { calibrateLatencyInternal(mode) }
+    }
+
+    fun adjustLatencyManual(deltaMilliseconds: Double) {
+        scope.launch {
+            val current = _state.value
+            if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return@launch
+            val store = latencyStore ?: return@launch
+            val diagnostics = current.diagnostics ?: return@launch
+            val route = latencyRoute(
+                inputDeviceId = current.selectedInputDeviceId ?: diagnostics.inputDeviceId,
+                outputDeviceId = current.selectedOutputDeviceId ?: diagnostics.outputDeviceId.takeIf { it >= 0 },
+                mode = current.inputMode,
+                sampleRate = diagnostics.sampleRate,
+            )
+            val profile = store.adjustManual(route, deltaMilliseconds)
+            _state.value = current.copy(
+                latencyProfile = profile,
+                message = "Độ trễ đã chỉnh: ${formatLatency(profile.milliseconds)} ms",
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun resetLatencyProfile() {
+        scope.launch {
+            val current = _state.value
+            if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return@launch
+            val store = latencyStore ?: return@launch
+            val diagnostics = current.diagnostics ?: return@launch
+            val route = latencyRoute(
+                inputDeviceId = current.selectedInputDeviceId ?: diagnostics.inputDeviceId,
+                outputDeviceId = current.selectedOutputDeviceId ?: diagnostics.outputDeviceId.takeIf { it >= 0 },
+                mode = current.inputMode,
+                sampleRate = diagnostics.sampleRate,
+            )
+            store.reset(route)
+            _state.value = current.copy(latencyProfile = null, message = "Đã xóa profile latency của route này")
         }
     }
 
     fun startRecording(
-        mode: StudioInputMode = StudioInputMode.AUTO,
+        mode: StudioInputMode = _state.value.inputMode,
         preferredInputDeviceId: Int? = null,
     ) {
-        scope.launch { startRecordingInternal(mode, preferredInputDeviceId, punch = null) }
+        scope.launch {
+            startRecordingInternal(
+                mode,
+                preferredInputDeviceId ?: _state.value.selectedInputDeviceId,
+                punch = null,
+            )
+        }
     }
 
     fun startPunchRecording(
-        mode: StudioInputMode = StudioInputMode.AUTO,
+        mode: StudioInputMode = _state.value.inputMode,
         preferredInputDeviceId: Int? = null,
     ) {
         scope.launch {
@@ -165,7 +259,11 @@ object StudioSessionRuntime {
                 recordStartFrame = (start - preRoll).coerceAtLeast(0L),
                 trackId = vocalTrack.id,
             )
-            startRecordingInternal(mode, preferredInputDeviceId, punch)
+            startRecordingInternal(
+                mode,
+                preferredInputDeviceId ?: current.selectedInputDeviceId,
+                punch,
+            )
         }
     }
 
@@ -175,7 +273,7 @@ object StudioSessionRuntime {
 
     fun setPunchStartAtPlayhead() {
         scope.launch {
-            if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
+            if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy) return@launch
             val frame = _state.value.transportFrame
             val end = _state.value.punchEndFrame?.takeIf { it > frame }
             _state.value = _state.value.copy(punchStartFrame = frame, punchEndFrame = end)
@@ -184,7 +282,7 @@ object StudioSessionRuntime {
 
     fun setPunchEndAtPlayhead() {
         scope.launch {
-            if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
+            if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy) return@launch
             val frame = _state.value.transportFrame
             val start = _state.value.punchStartFrame
             if (start == null || frame <= start) {
@@ -197,14 +295,14 @@ object StudioSessionRuntime {
 
     fun clearPunchRange() {
         scope.launch {
-            if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
+            if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy) return@launch
             _state.value = _state.value.copy(punchStartFrame = null, punchEndFrame = null)
         }
     }
 
     fun selectClip(clipId: String?) {
         scope.launch {
-            if (_state.value.status != StudioSessionStatus.RECORDING) {
+            if (_state.value.status != StudioSessionStatus.RECORDING && !_state.value.isBusy) {
                 _state.value = _state.value.copy(selectedClipId = clipId)
             }
         }
@@ -277,13 +375,13 @@ object StudioSessionRuntime {
 
     fun undo() {
         scope.launch {
-            if (_state.value.status == StudioSessionStatus.RECORDING || undoStack.isEmpty()) return@launch
+            if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy || undoStack.isEmpty()) return@launch
             val repo = repository ?: return@launch
             val current = _state.value.project ?: return@launch
             val previous = undoStack.removeLast()
             pushBounded(redoStack, current)
             val saved = repo.save(previous)
-            syncArrangement(saved)
+            syncPlaybackPlan(saved)
             _state.value = _state.value.copy(
                 project = saved,
                 selectedClipId = _state.value.selectedClipId?.takeIf { id -> saved.hasClip(id) },
@@ -297,13 +395,13 @@ object StudioSessionRuntime {
 
     fun redo() {
         scope.launch {
-            if (_state.value.status == StudioSessionStatus.RECORDING || redoStack.isEmpty()) return@launch
+            if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy || redoStack.isEmpty()) return@launch
             val repo = repository ?: return@launch
             val current = _state.value.project ?: return@launch
             val next = redoStack.removeLast()
             pushBounded(undoStack, current)
             val saved = repo.save(next)
-            syncArrangement(saved)
+            syncPlaybackPlan(saved)
             _state.value = _state.value.copy(
                 project = saved,
                 selectedClipId = _state.value.selectedClipId?.takeIf { id -> saved.hasClip(id) },
@@ -319,10 +417,10 @@ object StudioSessionRuntime {
         scope.launch {
             val repo = repository ?: return@launch
             val projectId = _state.value.projectId ?: return@launch
-            if (_state.value.status == StudioSessionStatus.RECORDING) return@launch
+            if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy) return@launch
             runCatching { repo.selectActiveTake(projectId, trackId, takeId) }
                 .onSuccess { project ->
-                    syncArrangement(project)
+                    syncPlaybackPlan(project)
                     _state.value = _state.value.copy(
                         project = project,
                         durationFrames = projectDurationFrames(project),
@@ -335,6 +433,58 @@ object StudioSessionRuntime {
         }
     }
 
+    fun setTrackVolume(trackId: String, volumeDb: Float) {
+        updateMixer { project ->
+            project.copy(tracks = project.tracks.map { track ->
+                if (track.id == trackId) track.copy(volumeDb = volumeDb.coerceIn(-60f, 18f)) else track
+            })
+        }
+    }
+
+    fun setTrackPan(trackId: String, pan: Float) {
+        updateMixer { project ->
+            project.copy(tracks = project.tracks.map { track ->
+                if (track.id == trackId) track.copy(pan = pan.coerceIn(-1f, 1f)) else track
+            })
+        }
+    }
+
+    fun toggleTrackMute(trackId: String) {
+        updateMixer { project ->
+            project.copy(tracks = project.tracks.map { track ->
+                if (track.id == trackId) track.copy(muted = !track.muted) else track
+            })
+        }
+    }
+
+    fun toggleTrackSolo(trackId: String) {
+        updateMixer { project ->
+            project.copy(tracks = project.tracks.map { track ->
+                if (track.id == trackId) track.copy(solo = !track.solo) else track
+            })
+        }
+    }
+
+    fun setMasterGain(gainDb: Float) {
+        updateMixer { project -> project.copy(masterMix = project.masterMix.copy(gainDb = gainDb.coerceIn(-24f, 12f))) }
+    }
+
+    fun setMasterLimiter(enabled: Boolean) {
+        updateMixer { project -> project.copy(masterMix = project.masterMix.copy(limiterEnabled = enabled)) }
+    }
+
+    fun exportMix(format: StudioExportFormat) {
+        scope.launch { exportInternal(format = format, stems = false) }
+    }
+
+    fun exportStems() {
+        scope.launch { exportInternal(format = StudioExportFormat.WAV, stems = true) }
+    }
+
+    fun clearExportResult() {
+        scope.launch { _state.value = _state.value.copy(exportResultPath = null, exportResultLabel = null) }
+    }
+
     fun clearError() {
         scope.launch { _state.value = _state.value.copy(errorMessage = null) }
     }
@@ -343,6 +493,12 @@ object StudioSessionRuntime {
         scope.launch {
             if (_state.value.status == StudioSessionStatus.RECORDING) stopRecordingInternal()
             closeEngineInternal()
+            deviceManager?.close()
+            deviceManager = null
+            latencyStore = null
+            renderEngine = null
+            repository = null
+            waveformStore = null
             undoStack.clear()
             redoStack.clear()
             _state.value = StudioSessionState()
@@ -352,18 +508,26 @@ object StudioSessionRuntime {
     private suspend fun openInternal(context: Context, projectId: String) {
         if (_state.value.status == StudioSessionStatus.RECORDING) stopRecordingInternal()
         closeEngineInternal()
+        deviceManager?.close()
         undoStack.clear()
         redoStack.clear()
         pendingPunch = null
         appContext = context
         repository = StudioProjectRepository(context)
         waveformStore = StudioWaveformStore(context)
+        latencyStore = StudioLatencyStore(context)
+        renderEngine = StudioRenderEngine(context)
+        deviceManager = StudioAudioDeviceManager(context) { snapshot ->
+            scope.launch { handleDeviceSnapshot(snapshot) }
+        }
         val repo = requireNotNull(repository)
         val waves = requireNotNull(waveformStore)
+        val devices = deviceManager?.snapshot() ?: StudioAudioDeviceSnapshot()
         _state.value = StudioSessionState(
             projectId = projectId,
             status = StudioSessionStatus.LOADING,
             message = "Đang mở dự án và kiểm tra bản thu dở...",
+            audioDevices = devices,
         )
 
         val initialTakeCount = repo.load(projectId)?.tracks?.sumOf { it.takes.size } ?: 0
@@ -393,8 +557,8 @@ object StudioSessionRuntime {
                     "Không thể nạp beat vào Studio Audio Core",
                 )
                 requireSuccess(
-                    native.setArrangement(StudioPlaybackPlanner.build(project, repo), project.timelineSampleRate),
-                    "Không thể nạp vocal arrangement",
+                    native.setPlaybackPlan(StudioPlaybackPlanner.build(project, repo), project.timelineSampleRate),
+                    "Không thể nạp Studio playback plan",
                 )
                 requireSuccess(native.start(), "Không thể khởi động Studio Audio Core")
             } catch (error: Throwable) {
@@ -413,6 +577,8 @@ object StudioSessionRuntime {
                 waveforms = waveformMap,
                 diagnostics = diagnostics,
                 recoveredTakeCount = recoveredTakeCount,
+                audioDevices = devices,
+                latencyProfile = diagnostics?.let { profileForCurrentRoute(StudioInputMode.AUTO, outputIdOverride = it.outputDeviceId.takeIf { id -> id >= 0 }) },
             )
             startPolling(native)
             DiagnosticLogger.info(
@@ -424,12 +590,13 @@ object StudioSessionRuntime {
                     "recovered_takes" to recoveredTakeCount,
                     "monitor_clips" to diagnostics?.arrangementClipCount,
                     "output_sample_rate" to diagnostics?.sampleRate,
+                    "output_device_id" to diagnostics?.outputDeviceId,
                     "audio_api" to diagnostics?.audioApiLabel,
                 ),
             )
         } catch (error: Throwable) {
             closeEngineInternal()
-            _state.value = StudioSessionState(
+            _state.value = _state.value.copy(
                 projectId = projectId,
                 status = StudioSessionStatus.ERROR,
                 errorMessage = error.message ?: "Không thể mở Studio",
@@ -463,6 +630,7 @@ object StudioSessionRuntime {
         native.setPunchMuteWindow(punch?.startFrame, punch?.endFrame)
         _state.value = current.copy(
             status = StudioSessionStatus.READY,
+            inputMode = mode,
             transportFrame = recordStart,
             message = if (punch != null) "Đang chuẩn bị Punch..." else "Đang chuẩn bị microphone...",
             errorMessage = null,
@@ -473,6 +641,7 @@ object StudioSessionRuntime {
             if (wasPlaying && punch == null) native.setPlaying(true)
             _state.value = current.copy(
                 status = if (wasPlaying && punch == null) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
+                inputMode = mode,
                 message = null,
                 errorMessage = message,
                 diagnostics = native.diagnostics(),
@@ -496,12 +665,18 @@ object StudioSessionRuntime {
             failRecordingSetup("Studio không xác định được sample rate microphone")
             return
         }
+        val actualInput = inputDiagnostics.inputDeviceId ?: preferredInputDeviceId
+        val actualOutput = inputDiagnostics.outputDeviceId.takeIf { it >= 0 } ?: current.selectedOutputDeviceId
+        val route = latencyRoute(actualInput, actualOutput, mode, inputDiagnostics.sampleRate)
+        val profile = latencyStore?.find(route)
+        val compensationFrames = profile?.compensationFrames(project.timelineSampleRate) ?: 0L
         val pending = runCatching {
             repo.beginTake(
                 projectId = project.id,
                 recordedTimelineFrame = recordStart,
                 inputSampleRate = inputSampleRate,
-                inputDeviceId = inputDiagnostics.inputDeviceId,
+                inputDeviceId = actualInput,
+                latencyCompensationFrames = compensationFrames,
             )
         }.getOrElse { error ->
             native.stopRecording()
@@ -524,6 +699,8 @@ object StudioSessionRuntime {
                 _state.value = _state.value.copy(
                     status = StudioSessionStatus.RECORDING,
                     recordingKind = if (punch != null) StudioRecordingKind.PUNCH else StudioRecordingKind.FULL_TAKE,
+                    inputMode = mode,
+                    latencyProfile = profile,
                     message = null,
                     errorMessage = null,
                     transportFrame = recordStart,
@@ -540,6 +717,8 @@ object StudioSessionRuntime {
                         "punch_end" to punch?.endFrame,
                         "input_sample_rate" to inputSampleRate,
                         "input_device_id" to pending.inputDeviceId,
+                        "output_device_id" to actualOutput,
+                        "latency_compensation_frames" to compensationFrames,
                         "input_mode" to mode.name,
                     ),
                 )
@@ -588,9 +767,7 @@ object StudioSessionRuntime {
                 }
                 finalized
             }.onSuccess { finalized -> project = finalized }
-                .onFailure { error ->
-                    errorMessage = error.message ?: "Không thể hoàn tất Studio take"
-                }
+                .onFailure { error -> errorMessage = error.message ?: "Không thể hoàn tất Studio take" }
         }
         pendingTake = null
         pendingPunch = null
@@ -598,8 +775,8 @@ object StudioSessionRuntime {
 
         val refreshedProject = project ?: _state.value.project
         if (refreshedProject != null && errorMessage == null) {
-            runCatching { syncArrangement(refreshedProject) }
-                .onFailure { error -> errorMessage = error.message ?: "Không thể cập nhật monitor arrangement" }
+            runCatching { syncPlaybackPlan(refreshedProject) }
+                .onFailure { error -> errorMessage = error.message ?: "Không thể cập nhật Studio playback plan" }
         }
         val refreshedWaves = if (refreshedProject != null) loadWaveforms(refreshedProject, null) else _state.value.waveforms
         if (stopResult is StudioAudioOperationResult.Error && errorMessage == null) {
@@ -625,6 +802,7 @@ object StudioSessionRuntime {
             fields = mapOf(
                 "take_id" to pending?.takeId,
                 "native_stop" to stopResult.javaClass.simpleName,
+                "latency_compensation_frames" to pending?.latencyCompensationFrames,
                 "finalized" to (errorMessage == null),
             ),
         )
@@ -668,7 +846,7 @@ object StudioSessionRuntime {
         transform: (StudioProject) -> StudioEditEngine.EditResult,
     ) {
         val current = _state.value
-        if (current.status == StudioSessionStatus.RECORDING) return
+        if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return
         val repo = repository ?: return
         val project = current.project ?: return
         runCatching {
@@ -677,7 +855,7 @@ object StudioSessionRuntime {
             pushBounded(undoStack, project)
             redoStack.clear()
             val saved = repo.save(edit.project)
-            syncArrangement(saved)
+            syncPlaybackPlan(saved)
             edit.copy(project = saved)
         }.onSuccess { edit ->
             _state.value = _state.value.copy(
@@ -714,12 +892,270 @@ object StudioSessionRuntime {
         }
     }
 
-    private fun syncArrangement(project: StudioProject) {
+    private fun updateMixer(transform: (StudioProject) -> StudioProject) {
+        scope.launch {
+            val current = _state.value
+            if (current.status == StudioSessionStatus.CALIBRATING || current.status == StudioSessionStatus.RENDERING) return@launch
+            val project = current.project ?: return@launch
+            val repo = repository ?: return@launch
+            runCatching {
+                val changed = transform(project)
+                if (changed == project) return@runCatching project
+                val saved = repo.save(changed)
+                syncPlaybackPlan(saved)
+                saved
+            }.onSuccess { saved ->
+                _state.value = _state.value.copy(project = saved, errorMessage = null)
+            }.onFailure { error ->
+                _state.value = _state.value.copy(errorMessage = error.message ?: "Không thể cập nhật Mixer")
+            }
+        }
+    }
+
+    private suspend fun calibrateLatencyInternal(mode: StudioInputMode) {
+        val current = _state.value
+        val project = current.project ?: return
+        val native = engine ?: return
+        val context = appContext ?: return
+        val repo = repository ?: return
+        val waves = waveformStore ?: return
+        if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return
+
+        val frame = current.transportFrame
+        val wasPlaying = current.status == StudioSessionStatus.PLAYING
+        native.setPlaying(false)
+        native.closeStream()
+        _state.value = current.copy(
+            status = StudioSessionStatus.CALIBRATING,
+            inputMode = mode,
+            message = "Đang phát tín hiệu hiệu chỉnh và đo round-trip latency...",
+            errorMessage = null,
+        )
+
+        var measurement: StudioLatencyMeasurement? = null
+        var measurementError: Throwable? = null
+        try {
+            StudioLatencyNative.measure(
+                preferredInputDeviceId = current.selectedInputDeviceId,
+                preferredOutputDeviceId = current.selectedOutputDeviceId,
+                inputMode = mode,
+            ).onSuccess { measurement = it }
+                .onFailure { measurementError = it }
+
+            val prepared = StudioBeatPreparer(context, repo, waves).prepare(project.id)
+            val restoredProject = prepared.project
+            requireSuccess(native.openOutput(current.selectedOutputDeviceId), "Không thể mở lại output sau hiệu chỉnh")
+            requireSuccess(
+                native.loadBeat(prepared.pcmFile, restoredProject.timelineSampleRate, 2),
+                "Không thể nạp lại beat sau hiệu chỉnh",
+            )
+            requireSuccess(
+                native.setPlaybackPlan(StudioPlaybackPlanner.build(restoredProject, repo), restoredProject.timelineSampleRate),
+                "Không thể nạp lại playback plan sau hiệu chỉnh",
+            )
+            requireSuccess(native.start(), "Không thể khởi động lại Studio sau hiệu chỉnh")
+            native.seek(frame)
+            native.setPlaying(wasPlaying)
+
+            val diagnostics = native.diagnostics()
+            val measured = measurement
+            val profile = if (measured != null) {
+                val route = latencyRoute(
+                    inputDeviceId = measured.inputDeviceId ?: current.selectedInputDeviceId,
+                    outputDeviceId = measured.outputDeviceId ?: current.selectedOutputDeviceId,
+                    mode = mode,
+                    sampleRate = measured.sampleRate,
+                )
+                latencyStore?.saveAutomatic(route, measured.latencyFrames, measured.confidence)
+            } else {
+                null
+            }
+            _state.value = _state.value.copy(
+                project = restoredProject,
+                status = if (wasPlaying) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
+                inputMode = mode,
+                transportFrame = frame,
+                durationFrames = projectDurationFrames(restoredProject),
+                diagnostics = diagnostics,
+                latencyProfile = profile ?: profileForCurrentRoute(mode),
+                message = measured?.let {
+                    "Latency ${formatLatency(it.milliseconds)} ms • độ tin cậy ${(it.confidence * 100f).toInt()}%"
+                },
+                errorMessage = measurementError?.message,
+            )
+            DiagnosticLogger.info(
+                component = TAG,
+                event = "studio_latency_calibrated",
+                sessionId = project.id,
+                fields = mapOf(
+                    "latency_frames" to measured?.latencyFrames,
+                    "latency_ms" to measured?.milliseconds,
+                    "confidence" to measured?.confidence,
+                    "input_device_id" to measured?.inputDeviceId,
+                    "output_device_id" to measured?.outputDeviceId,
+                    "sample_rate" to measured?.sampleRate,
+                ),
+            )
+        } catch (error: Throwable) {
+            _state.value = _state.value.copy(
+                status = StudioSessionStatus.ERROR,
+                message = null,
+                errorMessage = error.message ?: "Không thể khôi phục Studio sau hiệu chỉnh latency",
+            )
+        }
+    }
+
+    private fun switchOutputRouteInternal(deviceId: Int?) {
+        val native = engine ?: return
+        val current = _state.value
+        val project = current.project ?: return
+        val repo = repository ?: return
+        val frame = current.transportFrame
+        val wasPlaying = current.status == StudioSessionStatus.PLAYING
+        native.setPlaying(false)
+
+        runCatching {
+            requireSuccess(native.openOutput(deviceId), "Không thể mở output route đã chọn")
+            requireSuccess(
+                native.setPlaybackPlan(StudioPlaybackPlanner.build(project, repo), project.timelineSampleRate),
+                "Không thể đồng bộ Mixer sau khi đổi output",
+            )
+            requireSuccess(native.start(), "Không thể khởi động output route đã chọn")
+            native.seek(frame)
+            native.setPlaying(wasPlaying)
+            native.diagnostics()
+        }.onSuccess { diagnostics ->
+            _state.value = current.copy(
+                selectedOutputDeviceId = deviceId,
+                diagnostics = diagnostics,
+                status = if (wasPlaying) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
+                latencyProfile = profileForCurrentRoute(current.inputMode, outputIdOverride = deviceId),
+                message = diagnostics?.outputDeviceId?.let { actual ->
+                    if (deviceId != null && actual != deviceId) "Android đã route output sang device $actual thay vì device $deviceId" else null
+                },
+                errorMessage = null,
+            )
+        }.onFailure { error ->
+            runCatching {
+                requireSuccess(native.openOutput(), "Không thể fallback output mặc định")
+                requireSuccess(native.setPlaybackPlan(StudioPlaybackPlanner.build(project, repo), project.timelineSampleRate), "Không thể restore playback plan")
+                requireSuccess(native.start(), "Không thể khởi động output mặc định")
+                native.seek(frame)
+                native.setPlaying(wasPlaying)
+            }
+            _state.value = current.copy(
+                selectedOutputDeviceId = null,
+                status = if (wasPlaying) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
+                diagnostics = native.diagnostics(),
+                errorMessage = error.message ?: "Không thể đổi output route",
+            )
+        }
+    }
+
+    private suspend fun exportInternal(format: StudioExportFormat, stems: Boolean) {
+        val current = _state.value
+        val project = current.project ?: return
+        val renderer = renderEngine ?: return
+        if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return
+        val wasPlaying = current.status == StudioSessionStatus.PLAYING
+        engine?.setPlaying(false)
+        _state.value = current.copy(
+            status = StudioSessionStatus.RENDERING,
+            message = if (stems) "Đang render stems..." else "Đang render ${format.name}...",
+            errorMessage = null,
+            exportResultPath = null,
+            exportResultLabel = null,
+        )
+        runCatching {
+            if (stems) renderer.renderStems(project) else renderer.renderMix(project, format)
+        }.onSuccess { file ->
+            _state.value = _state.value.copy(
+                status = StudioSessionStatus.READY,
+                message = "Đã xuất ${file.name}",
+                exportResultPath = file.absolutePath,
+                exportResultLabel = if (stems) "Stems ZIP" else "Studio ${format.name}",
+                errorMessage = null,
+            )
+        }.onFailure { error ->
+            _state.value = _state.value.copy(
+                status = StudioSessionStatus.READY,
+                message = null,
+                errorMessage = error.message ?: "Không thể xuất Studio audio",
+            )
+        }
+        if (wasPlaying) {
+            // Export intentionally returns paused so the user can inspect/share the result without playback restarting unexpectedly.
+            engine?.setPlaying(false)
+        }
+    }
+
+    private fun syncPlaybackPlan(project: StudioProject) {
         val native = engine ?: return
         val repo = repository ?: return
         requireSuccess(
-            native.setArrangement(StudioPlaybackPlanner.build(project, repo), project.timelineSampleRate),
-            "Không thể cập nhật vocal arrangement",
+            native.setPlaybackPlan(StudioPlaybackPlanner.build(project, repo), project.timelineSampleRate),
+            "Không thể cập nhật Studio playback plan",
+        )
+    }
+
+    private fun handleDeviceSnapshot(snapshot: StudioAudioDeviceSnapshot) {
+        val current = _state.value
+        var selectedInput = current.selectedInputDeviceId
+        var selectedOutput = current.selectedOutputDeviceId
+        var message = current.message
+        if (selectedInput != null && snapshot.inputs.none { it.id == selectedInput }) {
+            selectedInput = null
+            message = "Microphone đã chọn vừa bị ngắt kết nối; Studio sẽ dùng route mặc định ở lần thu tiếp theo."
+        }
+        if (selectedOutput != null && snapshot.outputs.none { it.id == selectedOutput }) {
+            selectedOutput = null
+            message = "Output đã chọn vừa bị ngắt kết nối."
+        }
+        _state.value = current.copy(
+            audioDevices = snapshot,
+            selectedInputDeviceId = selectedInput,
+            selectedOutputDeviceId = selectedOutput,
+            latencyProfile = profileForCurrentRoute(
+                current.inputMode,
+                inputIdOverride = selectedInput,
+                outputIdOverride = selectedOutput,
+            ),
+            message = message,
+        )
+    }
+
+    private fun profileForCurrentRoute(
+        mode: StudioInputMode,
+        inputIdOverride: Int? = _state.value.selectedInputDeviceId,
+        outputIdOverride: Int? = _state.value.selectedOutputDeviceId,
+    ): StudioLatencyProfile? {
+        val diagnostics = _state.value.diagnostics
+        val rate = diagnostics?.sampleRate ?: return null
+        val route = latencyRoute(
+            inputDeviceId = inputIdOverride ?: diagnostics.inputDeviceId,
+            outputDeviceId = outputIdOverride ?: diagnostics.outputDeviceId.takeIf { it >= 0 },
+            mode = mode,
+            sampleRate = rate,
+        )
+        return latencyStore?.find(route)
+    }
+
+    private fun latencyRoute(
+        inputDeviceId: Int?,
+        outputDeviceId: Int?,
+        mode: StudioInputMode,
+        sampleRate: Int,
+    ): StudioLatencyRoute {
+        val devices = _state.value.audioDevices
+        val inputFingerprint = devices.inputs.firstOrNull { it.id == inputDeviceId }?.fingerprint
+            ?: if (inputDeviceId == null) "default-input" else "input-device-$inputDeviceId"
+        val outputFingerprint = devices.outputs.firstOrNull { it.id == outputDeviceId }?.fingerprint
+            ?: if (outputDeviceId == null) "default-output" else "output-device-$outputDeviceId"
+        return StudioLatencyRoute(
+            inputFingerprint = inputFingerprint,
+            outputFingerprint = outputFingerprint,
+            inputMode = mode,
+            sampleRate = sampleRate.coerceAtLeast(1),
         )
     }
 
@@ -792,6 +1228,8 @@ object StudioSessionRuntime {
         stack.addLast(project)
         while (stack.size > MAX_EDIT_HISTORY) stack.removeFirst()
     }
+
+    private fun formatLatency(milliseconds: Double): String = String.format(java.util.Locale.US, "%.1f", milliseconds)
 
     private fun StudioProject.hasClip(clipId: String): Boolean = tracks.any { track -> track.clips.any { it.id == clipId } }
 }

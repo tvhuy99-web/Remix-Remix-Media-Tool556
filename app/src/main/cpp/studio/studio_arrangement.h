@@ -134,6 +134,7 @@ struct PlaybackClipDefinition {
     int64_t sourceStartFrame = 0;
     int64_t sourceEndFrame = 0;
     float gainDb = 0.0f;
+    float pan = 0.0f;
     int64_t fadeInFrames = 0;
     int64_t fadeOutFrames = 0;
 };
@@ -149,6 +150,7 @@ public:
         sourceStartFrame_(std::max<int64_t>(0, definition.sourceStartFrame)),
         sourceEndFrame_(std::min<int64_t>(audio_->frameCount(), definition.sourceEndFrame)),
         gainLinear_(std::pow(10.0f, std::max(-60.0f, std::min(18.0f, definition.gainDb)) / 20.0f)),
+        pan_(std::max(-1.0f, std::min(1.0f, definition.pan))),
         fadeInFrames_(std::max<int64_t>(0, definition.fadeInFrames)),
         fadeOutFrames_(std::max<int64_t>(0, definition.fadeOutFrames)),
         projectSampleRate_(std::max(1, projectSampleRate)) {
@@ -159,6 +161,8 @@ public:
         ));
         fadeInFrames_ = std::min(fadeInFrames_, sourceLength);
         fadeOutFrames_ = std::min(fadeOutFrames_, std::max<int64_t>(0, sourceLength - fadeInFrames_));
+        leftPanScale_ = pan_ > 0.0f ? 1.0f - pan_ : 1.0f;
+        rightPanScale_ = pan_ < 0.0f ? 1.0f + pan_ : 1.0f;
     }
 
     bool valid() const {
@@ -189,8 +193,8 @@ public:
         if (fadeOutFrames_ > 0 && toEnd < static_cast<double>(fadeOutFrames_)) {
             envelope *= static_cast<float>(std::max(0.0, toEnd / static_cast<double>(fadeOutFrames_)));
         }
-        left += sampleLeft * envelope;
-        right += sampleRight * envelope;
+        left += sampleLeft * envelope * leftPanScale_;
+        right += sampleRight * envelope * rightPanScale_;
     }
 
 private:
@@ -199,6 +203,9 @@ private:
     int64_t sourceStartFrame_ = 0;
     int64_t sourceEndFrame_ = 0;
     float gainLinear_ = 1.0f;
+    float pan_ = 0.0f;
+    float leftPanScale_ = 1.0f;
+    float rightPanScale_ = 1.0f;
     int64_t fadeInFrames_ = 0;
     int64_t fadeOutFrames_ = 0;
     int32_t projectSampleRate_ = 48'000;

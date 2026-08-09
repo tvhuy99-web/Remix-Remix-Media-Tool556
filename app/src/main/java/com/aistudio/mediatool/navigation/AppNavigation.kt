@@ -9,9 +9,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
-import com.aistudio.mediatool.feature.studio.ui.StudioLabScreen
-import com.aistudio.mediatool.feature.studio.ui.StudioProjectScreen
 import com.aistudio.mediatool.feature.studio.ui.StudioProjectsScreen
+import com.aistudio.mediatool.feature.studio.ui.StudioToolsScreen
+import com.aistudio.mediatool.feature.studio.ui.StudioWorkspaceScreen
 import com.aistudio.mediatool.ui.screens.*
 
 @Composable
@@ -61,14 +61,14 @@ fun AppNavigation() {
                     StudioSessionRuntime.closeProject()
                 }
             }
-            StudioProjectScreen(
+            StudioWorkspaceScreen(
                 projectId = projectId,
                 onNavigateBack = { navController.popBackStack() },
             )
         }
         composable(Route.StudioLab.path) { backStackEntry ->
             val projectId = backStackEntry.arguments?.getString("projectId").orEmpty()
-            StudioLabScreen(
+            StudioToolsScreen(
                 projectId = projectId,
                 onNavigateBack = { navController.popBackStack() },
             )

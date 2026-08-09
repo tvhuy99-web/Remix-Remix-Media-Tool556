@@ -9,13 +9,10 @@ import com.aistudio.mediatool.feature.studio.data.StudioWaveformStore
 import com.aistudio.mediatool.feature.studio.data.selectActiveTake
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
-import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -166,7 +163,7 @@ object StudioSessionRuntime {
         )
 
         val initialTakeCount = repo.load(projectId)?.tracks?.sumOf { it.takes.size } ?: 0
-        runCatching {
+        try {
             var project = requireNotNull(repo.recoverInterruptedTakes(projectId)) {
                 "Không tìm thấy dự án Studio"
             }
@@ -181,16 +178,21 @@ object StudioSessionRuntime {
             project = prepared.project
             val waveformMap = loadWaveforms(project, prepared.waveform)
             val native = StudioNativeAudio(context)
-            requireSuccess(native.openOutput(), "Không thể mở output Studio")
-            requireSuccess(
-                native.loadBeat(
-                    file = prepared.pcmFile,
-                    sampleRate = project.timelineSampleRate,
-                    channelCount = 2,
-                ),
-                "Không thể nạp beat vào Studio Audio Core",
-            )
-            requireSuccess(native.start(), "Không thể khởi động Studio Audio Core")
+            try {
+                requireSuccess(native.openOutput(), "Không thể mở output Studio")
+                requireSuccess(
+                    native.loadBeat(
+                        file = prepared.pcmFile,
+                        sampleRate = project.timelineSampleRate,
+                        channelCount = 2,
+                    ),
+                    "Không thể nạp beat vào Studio Audio Core",
+                )
+                requireSuccess(native.start(), "Không thể khởi động Studio Audio Core")
+            } catch (error: Throwable) {
+                native.close()
+                throw error
+            }
             engine = native
             val diagnostics = native.diagnostics()
             _state.value = StudioSessionState(
@@ -216,7 +218,7 @@ object StudioSessionRuntime {
                     "audio_api" to diagnostics?.audioApiLabel,
                 ),
             )
-        }.onFailure { error ->
+        } catch (error: Throwable) {
             closeEngineInternal()
             _state.value = StudioSessionState(
                 projectId = projectId,
@@ -233,7 +235,7 @@ object StudioSessionRuntime {
         }
     }
 
-    private suspend fun startRecordingInternal(
+    private fun startRecordingInternal(
         mode: StudioInputMode,
         preferredInputDeviceId: Int?,
     ) {
@@ -250,8 +252,13 @@ object StudioSessionRuntime {
             return
         }
         val inputDiagnostics = native.diagnostics()
-        val inputSampleRate = inputDiagnostics?.inputSampleRate ?: inputDiagnostics?.sampleRate
-        if (inputSampleRate == null || inputSampleRate <= 0) {
+        if (inputDiagnostics == null) {
+            native.stopRecording()
+            _state.value = current.copy(errorMessage = "Studio không đọc được cấu hình microphone")
+            return
+        }
+        val inputSampleRate = inputDiagnostics.inputSampleRate ?: inputDiagnostics.sampleRate
+        if (inputSampleRate <= 0) {
             native.stopRecording()
             _state.value = current.copy(errorMessage = "Studio không xác định được sample rate microphone")
             return
@@ -269,9 +276,7 @@ object StudioSessionRuntime {
             return
         }
         val target = repo.pendingTakeFile(pending)
-        val serviceStarted = runCatching {
-            StudioSessionService.start(context, project.name)
-        }.isSuccess
+        val serviceStarted = runCatching { StudioSessionService.start(context, project.name) }.isSuccess
         if (!serviceStarted) {
             native.stopRecording()
             repo.cancelTake(pending)
@@ -310,7 +315,7 @@ object StudioSessionRuntime {
         }
     }
 
-    private suspend fun stopRecordingInternal() {
+    private fun stopRecordingInternal() {
         val native = engine ?: return
         val repo = repository ?: return
         val context = appContext
@@ -330,7 +335,7 @@ object StudioSessionRuntime {
                 }
         }
         pendingTake = null
-        context?.let(StudioSessionService::stop)
+        context?.let { StudioSessionService.stop(it) }
 
         val refreshedProject = project ?: _state.value.project
         val refreshedWaves = if (refreshedProject != null) {
@@ -374,9 +379,12 @@ object StudioSessionRuntime {
                     stopRecordingInternal()
                     continue
                 }
-                val status = when {
-                    current.status == StudioSessionStatus.PLAYING && !diagnostics.isPlaying -> StudioSessionStatus.READY
-                    else -> current.status
+                val status = if (
+                    current.status == StudioSessionStatus.PLAYING && !diagnostics.isPlaying
+                ) {
+                    StudioSessionStatus.READY
+                } else {
+                    current.status
                 }
                 _state.value = current.copy(
                     status = status,
@@ -408,14 +416,8 @@ object StudioSessionRuntime {
         return result
     }
 
-    private suspend fun closeEngineInternal() {
-        pollJob?.let { job ->
-            if (job != kotlinx.coroutines.currentCoroutineContext()[Job]) {
-                job.cancelAndJoin()
-            } else {
-                job.cancel()
-            }
-        }
+    private fun closeEngineInternal() {
+        pollJob?.cancel()
         pollJob = null
         engine?.close()
         engine = null
@@ -424,16 +426,20 @@ object StudioSessionRuntime {
 
     private fun projectDurationFrames(project: StudioProject): Long {
         var duration = project.beatAsset()?.let { asset ->
-            sourceFramesToTimeline(asset.durationFrames ?: 0L, asset.sampleRate ?: project.timelineSampleRate, project.timelineSampleRate)
+            sourceFramesToTimeline(
+                asset.durationFrames ?: 0L,
+                asset.sampleRate ?: project.timelineSampleRate,
+                project.timelineSampleRate,
+            )
         } ?: 0L
-        project.tracks.forEach { track ->
-            track.takes.forEach { take ->
+        for (track in project.tracks) {
+            for (take in track.takes) {
                 val start = (take.recordedTimelineFrame - take.latencyCompensationFrames).coerceAtLeast(0L)
                 val length = sourceFramesToTimeline(take.recordedFrames, take.inputSampleRate, project.timelineSampleRate)
                 duration = max(duration, start + length)
             }
-            track.clips.forEach { clip ->
-                val asset = project.asset(clip.sourceAssetId) ?: return@forEach
+            for (clip in track.clips) {
+                val asset = project.asset(clip.sourceAssetId) ?: continue
                 val rate = asset.sampleRate ?: project.timelineSampleRate
                 val length = sourceFramesToTimeline(
                     (clip.sourceEndFrame - clip.sourceStartFrame).coerceAtLeast(0L),

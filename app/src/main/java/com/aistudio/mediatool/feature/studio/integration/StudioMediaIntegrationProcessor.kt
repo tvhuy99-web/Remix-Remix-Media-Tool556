@@ -42,18 +42,19 @@ data class StudioMediaIntegrationResult(
     val asset: StudioAsset,
 )
 
-/**
- * Reuses MediaTool processing engines while preserving Studio's source-of-truth rule:
- * processors always render a new canonical WAV under project/derived and never overwrite a Take.
- */
+/** Reuses MediaTool processors while preserving immutable Studio source assets. */
 class StudioMediaIntegrationProcessor(context: Context) {
     private val appContext = context.applicationContext
     private val repository = StudioProjectRepository(appContext)
     private val mediaEngine = MediaEngine(appContext)
+    @Volatile private var voiceCleanupModelReadyCache: Boolean? = null
 
-    fun isVoiceCleanupModelReady(): Boolean {
+    fun isVoiceCleanupModelReady(forceRefresh: Boolean = false): Boolean {
+        if (!forceRefresh) voiceCleanupModelReadyCache?.let { return it }
         val descriptor = VoiceCleanupModelRegistry.mossFormer2
-        return ModelDownloader(appContext).isModelDownloaded(descriptor.modelSpec)
+        return ModelDownloader(appContext).isModelDownloaded(descriptor.modelSpec).also {
+            voiceCleanupModelReadyCache = it
+        }
     }
 
     suspend fun process(
@@ -74,39 +75,19 @@ class StudioMediaIntegrationProcessor(context: Context) {
             onProgress(0.02f, "Đang chuẩn bị ${kind.label}")
             when (kind) {
                 StudioMediaProcessorKind.VOICE_CLEANUP -> renderVoiceCleanup(
-                    sourceFile = sourceFile,
-                    rawTarget = File(workDir, "processed.s16"),
-                    finalTarget = target,
-                    sampleRate = sourceRate,
-                    channels = targetChannels,
-                    onProgress = onProgress,
+                    sourceFile, File(workDir, "processed.s16"), target, sourceRate, targetChannels, onProgress,
                 )
                 StudioMediaProcessorKind.VOCAL_POLISH -> renderFilterChain(
-                    sourceFile = sourceFile,
-                    rawTarget = File(workDir, "processed.s16"),
-                    finalTarget = target,
-                    sampleRate = sourceRate,
-                    channels = targetChannels,
-                    filter = StudioProFilterBuilder.build(StudioProFilterBuilder.polishPreset()),
-                    onProgress = onProgress,
+                    sourceFile, File(workDir, "processed.s16"), target, sourceRate, targetChannels,
+                    StudioProFilterBuilder.build(StudioProFilterBuilder.polishPreset()), onProgress,
                 )
                 StudioMediaProcessorKind.SPATIAL_8D -> renderSpatial(
-                    sourceFile = sourceFile,
-                    sourceAsset = sourceAsset,
-                    rawTarget = File(workDir, "processed.s16"),
-                    encodedTarget = File(workDir, "spatial.wav"),
-                    finalTarget = target,
-                    sampleRate = sourceRate,
-                    onProgress = onProgress,
+                    sourceFile, sourceAsset, File(workDir, "processed.s16"), File(workDir, "spatial.wav"),
+                    target, sourceRate, onProgress,
                 )
                 StudioMediaProcessorKind.PRO_VOCAL_CHAIN -> renderFilterChain(
-                    sourceFile = sourceFile,
-                    rawTarget = File(workDir, "processed.s16"),
-                    finalTarget = target,
-                    sampleRate = sourceRate,
-                    channels = targetChannels,
-                    filter = StudioProFilterBuilder.build(project.proSettings.vocalFx),
-                    onProgress = onProgress,
+                    sourceFile, File(workDir, "processed.s16"), target, sourceRate, targetChannels,
+                    StudioProFilterBuilder.build(project.proSettings.vocalFx), onProgress,
                 )
             }
             val info = requireNotNull(StudioWavFile.inspectCanonicalPcm16(target)) {
@@ -115,7 +96,6 @@ class StudioMediaIntegrationProcessor(context: Context) {
             require(info.dataFrames > 0L) { "Bản xử lý bị rỗng" }
             onProgress(0.96f, "Đang ghi derived asset")
             val displayBase = sourceAsset.displayName.substringBeforeLast('.').ifBlank { "Audio" }
-            val configJson = processorConfig(project, kind)
             val (saved, derived) = repository.commitDerivedAsset(
                 projectId = project.id,
                 sourceAssetId = sourceAsset.id,
@@ -123,7 +103,7 @@ class StudioMediaIntegrationProcessor(context: Context) {
                 displayName = "$displayBase • ${kind.suffix}",
                 processorId = kind.id,
                 processorLabel = kind.label,
-                processorConfig = configJson,
+                processorConfig = processorConfig(project, kind),
             )
             onProgress(1f, "Đã tạo ${derived.displayName}")
             StudioMediaIntegrationResult(saved, derived)
@@ -147,13 +127,11 @@ class StudioMediaIntegrationProcessor(context: Context) {
         val downloader = ModelDownloader(appContext)
         val modelFile = downloader.modelFile(descriptor.modelSpec)
         require(downloader.isModelFileValid(modelFile, descriptor.modelSpec)) {
+            voiceCleanupModelReadyCache = false
             "Chưa có model Voice Cleanup. Hãy tải model trong công cụ Làm sạch giọng trước."
         }
-        val sourceUri: Uri = FileProvider.getUriForFile(
-            appContext,
-            "${appContext.packageName}.provider",
-            sourceFile,
-        )
+        voiceCleanupModelReadyCache = true
+        val sourceUri: Uri = FileProvider.getUriForFile(appContext, "${appContext.packageName}.provider", sourceFile)
         val config = VoiceCleanupConfig(
             windowMode = VoiceCleanupWindowMode.BALANCED_10S,
             cleanupStrengthPercent = 68,
@@ -172,23 +150,13 @@ class StudioMediaIntegrationProcessor(context: Context) {
         var success: VoiceCleanupState.Success? = null
         processor.cleanup(sourceUri).collect { state ->
             when (state) {
-                is VoiceCleanupState.Progress -> {
-                    onProgress(0.05f + state.value.coerceIn(0f, 1f) * 0.72f, state.phase)
-                }
+                is VoiceCleanupState.Progress -> onProgress(0.05f + state.value.coerceIn(0f, 1f) * 0.72f, state.phase)
                 is VoiceCleanupState.Success -> success = state
             }
         }
         val terminal = requireNotNull(success) { "Voice Cleanup không trả kết quả" }
         try {
-            canonicalize(
-                source = terminal.outputFile,
-                rawTarget = rawTarget,
-                finalTarget = finalTarget,
-                sampleRate = sampleRate,
-                channels = channels,
-                filter = null,
-                phase = "studio_voice_cleanup_canonicalize",
-            )
+            canonicalize(terminal.outputFile, rawTarget, finalTarget, sampleRate, channels, null, "studio_voice_cleanup_canonicalize")
         } finally {
             terminal.outputFile.delete()
         }
@@ -204,15 +172,7 @@ class StudioMediaIntegrationProcessor(context: Context) {
         onProgress: suspend (Float, String) -> Unit,
     ) {
         onProgress(0.12f, "Đang render chuỗi hiệu ứng")
-        canonicalize(
-            source = sourceFile,
-            rawTarget = rawTarget,
-            finalTarget = finalTarget,
-            sampleRate = sampleRate,
-            channels = channels,
-            filter = filter,
-            phase = "studio_media_integration_filter",
-        )
+        canonicalize(sourceFile, rawTarget, finalTarget, sampleRate, channels, filter, "studio_media_integration_filter")
         onProgress(0.90f, "Đã render hiệu ứng")
     }
 
@@ -228,12 +188,7 @@ class StudioMediaIntegrationProcessor(context: Context) {
         val rate = (sourceAsset.sampleRate ?: sampleRate).coerceAtLeast(1)
         val durationMs = ((sourceAsset.durationFrames ?: 0L) * 1_000L / rate).coerceAtLeast(1L)
         val spatial = SpatialAudioEngine(appContext, mediaEngine)
-        val config = SpatialAudioConfig(
-            cycleSeconds = 8f,
-            spatialBlend = 0.88f,
-            reverbWet = 0.07f,
-            outputGainDb = -1f,
-        )
+        val config = SpatialAudioConfig(cycleSeconds = 8f, spatialBlend = 0.88f, reverbWet = 0.07f, outputGainDb = -1f)
         var success = false
         var failure: String? = null
         spatial.process(
@@ -248,26 +203,17 @@ class StudioMediaIntegrationProcessor(context: Context) {
             preview = false,
         ).collect { state ->
             when (state) {
-                is SpatialAudioEngine.State.Progress -> {
-                    onProgress(0.05f + state.percent.coerceIn(0f, 100f) / 100f * 0.78f, state.message)
-                }
+                is SpatialAudioEngine.State.Progress -> onProgress(
+                    0.05f + state.percent.coerceIn(0f, 100f) / 100f * 0.78f,
+                    state.message,
+                )
                 is SpatialAudioEngine.State.Success -> success = true
                 is SpatialAudioEngine.State.Error -> failure = state.message
             }
         }
         failure?.let(::error)
-        require(success && encodedTarget.isFile && encodedTarget.length() > 0L) {
-            "Spatial Audio không tạo kết quả"
-        }
-        canonicalize(
-            source = encodedTarget,
-            rawTarget = rawTarget,
-            finalTarget = finalTarget,
-            sampleRate = sampleRate,
-            channels = 2,
-            filter = null,
-            phase = "studio_spatial_canonicalize",
-        )
+        require(success && encodedTarget.isFile && encodedTarget.length() > 0L) { "Spatial Audio không tạo kết quả" }
+        canonicalize(encodedTarget, rawTarget, finalTarget, sampleRate, 2, null, "studio_spatial_canonicalize")
     }
 
     private suspend fun canonicalize(
@@ -281,12 +227,8 @@ class StudioMediaIntegrationProcessor(context: Context) {
     ) {
         rawTarget.delete()
         val command = buildString {
-            append("-y -hide_banner -loglevel error -i ")
-            append(quote(source.absolutePath))
-            append(" -map 0:a:0 -vn ")
-            if (!filter.isNullOrBlank() && filter != "anull") {
-                append("-af ").append(quote(filter)).append(' ')
-            }
+            append("-y -hide_banner -loglevel error -i ").append(quote(source.absolutePath)).append(" -map 0:a:0 -vn ")
+            if (!filter.isNullOrBlank() && filter != "anull") append("-af ").append(quote(filter)).append(' ')
             append("-ac ").append(channels.coerceIn(1, 2)).append(' ')
             append("-ar ").append(sampleRate.coerceAtLeast(8_000)).append(' ')
             append("-f s16le ").append(quote(rawTarget.absolutePath))
@@ -299,12 +241,7 @@ class StudioMediaIntegrationProcessor(context: Context) {
         }
         require(rawTarget.isFile && rawTarget.length() > 0L) { "Processor không tạo PCM" }
         requireNotNull(
-            StudioWavFile.writeFromRawPcm16(
-                raw = rawTarget,
-                target = finalTarget,
-                sampleRate = sampleRate,
-                channelCount = channels.coerceIn(1, 2),
-            ),
+            StudioWavFile.writeFromRawPcm16(rawTarget, finalTarget, sampleRate, channels.coerceIn(1, 2)),
         ) { "Không thể đóng gói derived WAV" }
     }
 

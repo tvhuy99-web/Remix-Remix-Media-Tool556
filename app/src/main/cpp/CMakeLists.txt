@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(mediatool_spatial LANGUAGES C CXX)
+project(mediatool_native LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,6 +37,29 @@ target_compile_options(
 target_link_libraries(
     mediatool_spatial
     phonon
+    android
+    log
+)
+
+find_package(oboe REQUIRED CONFIG)
+
+add_library(
+    mediatool_studio
+    SHARED
+    studio/studio_audio_engine.cpp
+)
+
+target_compile_options(
+    mediatool_studio
+    PRIVATE
+    -Wall
+    -Wextra
+    -Werror=return-type
+)
+
+target_link_libraries(
+    mediatool_studio
+    oboe::oboe
     android
     log
 )

@@ -47,6 +47,7 @@ class StudioAssetStore(
             throw error
         }
 
+        val metadata = StudioAudioMetadataProbe.probe(target)
         return StudioAsset(
             id = assetId,
             kind = StudioAssetKind.BEAT,
@@ -54,6 +55,9 @@ class StudioAssetStore(
             displayName = displayName,
             mimeType = context.contentResolver.getType(source),
             bytes = target.length(),
+            sampleRate = metadata?.sampleRate,
+            channelCount = metadata?.channelCount,
+            durationFrames = metadata?.durationFrames,
         )
     }
 

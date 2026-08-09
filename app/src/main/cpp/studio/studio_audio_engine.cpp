@@ -144,6 +144,21 @@ StudioAudioEngine* fromHandle(jlong handle) {
 
 }  // namespace
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeConfigureDefaults(
+    JNIEnv*,
+    jobject,
+    jint sampleRate,
+    jint framesPerBurst
+) {
+    if (sampleRate > 0) {
+        oboe::DefaultStreamValues::SampleRate = sampleRate;
+    }
+    if (framesPerBurst > 0) {
+        oboe::DefaultStreamValues::FramesPerBurst = framesPerBurst;
+    }
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeCreate(
     JNIEnv*,

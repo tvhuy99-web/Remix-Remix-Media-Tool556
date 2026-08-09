@@ -22,20 +22,23 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.feature.studio.data.StudioWaveform
+import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
-import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 @Composable
 fun StudioTimeline(
@@ -44,7 +47,11 @@ fun StudioTimeline(
     transportFrame: Long,
     durationFrames: Long,
     pixelsPerSecond: Float,
+    selectedClipId: String?,
+    punchStartFrame: Long?,
+    punchEndFrame: Long?,
     onSeek: (Long) -> Unit,
+    onClipSelected: (String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scrollState = rememberScrollState()
@@ -85,19 +92,23 @@ fun StudioTimeline(
                 sampleRate = project.timelineSampleRate,
                 pixelsPerSecond = pixelsPerSecond,
                 transportFrame = transportFrame,
+                punchStartFrame = punchStartFrame,
+                punchEndFrame = punchEndFrame,
                 onSeek = onSeek,
             )
             project.tracks.forEach { track ->
-                val active = activeTrackSource(track)
                 TimelineTrackLane(
+                    project = project,
                     track = track,
-                    waveform = active?.assetId?.let(waveforms::get),
-                    sourceTake = active?.take,
-                    projectSampleRate = project.timelineSampleRate,
+                    waveforms = waveforms,
                     durationFrames = timelineFrames,
                     transportFrame = transportFrame,
+                    selectedClipId = selectedClipId,
+                    punchStartFrame = punchStartFrame,
+                    punchEndFrame = punchEndFrame,
                     width = timelineWidthDp,
                     onSeek = onSeek,
+                    onClipSelected = onClipSelected,
                 )
             }
         }
@@ -128,15 +139,18 @@ fun StudioTakeSelector(
                             onClick = { onSelectTake(track.id, take.id) },
                             label = {
                                 Text(
-                                    if (track.activeTakeId == take.id) {
-                                        "Take ${index + 1} ✓"
-                                    } else {
-                                        "Take ${index + 1}"
-                                    },
+                                    if (track.activeTakeId == take.id) "Take ${index + 1} ✓" else "Take ${index + 1}",
                                 )
                             },
                         )
                     }
+                }
+                if (track.clips.isNotEmpty()) {
+                    Text(
+                        "Arrangement đang dùng ${track.clips.size} clip; đổi Active Take không phá arrangement.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
     }
@@ -144,16 +158,19 @@ fun StudioTakeSelector(
 
 @Composable
 private fun TimelineRuler(
-    width: androidx.compose.ui.unit.Dp,
+    width: Dp,
     durationFrames: Long,
     sampleRate: Int,
     pixelsPerSecond: Float,
     transportFrame: Long,
+    punchStartFrame: Long?,
+    punchEndFrame: Long?,
     onSeek: (Long) -> Unit,
 ) {
     val lineColor = MaterialTheme.colorScheme.outline
     val textColor = MaterialTheme.colorScheme.onSurfaceVariant
     val playheadColor = MaterialTheme.colorScheme.primary
+    val punchColor = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
     val background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
     val labelPaint = remember(textColor) {
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -175,6 +192,7 @@ private fun TimelineRuler(
                 }
             },
     ) {
+        drawPunchRange(durationFrames, punchStartFrame, punchEndFrame, punchColor)
         val seconds = durationFrames.toDouble() / sampleRate.toDouble()
         val majorInterval = when {
             pixelsPerSecond >= 110f -> 1
@@ -193,22 +211,23 @@ private fun TimelineRuler(
                 labelPaint,
             )
         }
-        val playheadX = (transportFrame.toDouble() / durationFrames.toDouble() * size.width).toFloat()
-            .coerceIn(0f, size.width)
-        drawLine(playheadColor, Offset(playheadX, 0f), Offset(playheadX, size.height), strokeWidth = 2f)
+        drawPlayhead(transportFrame, durationFrames, playheadColor)
     }
 }
 
 @Composable
 private fun TimelineTrackLane(
+    project: StudioProject,
     track: StudioTrack,
-    waveform: StudioWaveform?,
-    sourceTake: StudioTake?,
-    projectSampleRate: Int,
+    waveforms: Map<String, StudioWaveform>,
     durationFrames: Long,
     transportFrame: Long,
-    width: androidx.compose.ui.unit.Dp,
+    selectedClipId: String?,
+    punchStartFrame: Long?,
+    punchEndFrame: Long?,
+    width: Dp,
     onSeek: (Long) -> Unit,
+    onClipSelected: (String?) -> Unit,
 ) {
     val waveColor = when (track.type) {
         StudioTrackType.BEAT -> MaterialTheme.colorScheme.primary
@@ -217,20 +236,22 @@ private fun TimelineTrackLane(
     }
     val baselineColor = MaterialTheme.colorScheme.outlineVariant
     val playheadColor = MaterialTheme.colorScheme.primary
+    val selectionColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+    val punchColor = MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
     val background = MaterialTheme.colorScheme.surface
-    Column(
-        modifier = Modifier
-            .width(width)
-            .padding(top = 4.dp),
-    ) {
-        val takeLabel = if (track.takes.isNotEmpty()) {
-            val activeIndex = track.takes.indexOfFirst { it.id == track.activeTakeId }
-            if (activeIndex >= 0) " • Take ${activeIndex + 1}/${track.takes.size}" else " • ${track.takes.size} take"
-        } else {
-            ""
+    val regions = remember(project, track, waveforms) { buildRegions(project, track, waveforms) }
+
+    Column(modifier = Modifier.width(width).padding(top = 4.dp)) {
+        val label = when {
+            track.clips.isNotEmpty() -> "${track.name} • ${track.clips.size} clip"
+            track.takes.isNotEmpty() -> {
+                val activeIndex = track.takes.indexOfFirst { it.id == track.activeTakeId }
+                if (activeIndex >= 0) "${track.name} • Take ${activeIndex + 1}/${track.takes.size}" else "${track.name} • ${track.takes.size} take"
+            }
+            else -> track.name
         }
         Text(
-            text = track.name + takeLabel,
+            text = label,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
@@ -238,74 +259,184 @@ private fun TimelineTrackLane(
         Canvas(
             modifier = Modifier
                 .width(width)
-                .height(82.dp)
+                .height(86.dp)
                 .background(background)
-                .pointerInput(durationFrames) {
+                .pointerInput(durationFrames, regions) {
                     detectTapGestures { offset ->
-                        if (size.width > 0) {
-                            val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
-                            onSeek((durationFrames * fraction).toLong())
+                        if (size.width <= 0) return@detectTapGestures
+                        val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        val frame = (durationFrames * fraction).toLong()
+                        onSeek(frame)
+                        val hit = regions.lastOrNull { region ->
+                            region.clipId != null && frame >= region.timelineStart && frame < region.timelineEnd
                         }
+                        onClipSelected(hit?.clipId)
                     }
                 },
         ) {
             val centerY = size.height / 2f
             drawLine(baselineColor, Offset(0f, centerY), Offset(size.width, centerY), strokeWidth = 1f)
-            if (waveform != null && waveform.pointCount > 0) {
-                val sourceStartTimeline = sourceTake
-                    ?.let { (it.recordedTimelineFrame - it.latencyCompensationFrames).coerceAtLeast(0L) }
-                    ?: 0L
-                val sourceDurationTimeline = framesToTimeline(
-                    waveform.totalFrames,
-                    waveform.sampleRate,
-                    projectSampleRate,
-                )
-                val startX = (sourceStartTimeline.toDouble() / durationFrames.toDouble() * size.width).toFloat()
-                val assetWidth = (sourceDurationTimeline.toDouble() / durationFrames.toDouble() * size.width)
-                    .toFloat()
-                    .coerceAtLeast(1f)
-                val targetLines = assetWidth.toInt().coerceIn(1, 12_000)
-                val stride = max(1, waveform.pointCount / targetLines)
-                val halfHeight = size.height * 0.42f
-                var point = 0
-                while (point < waveform.pointCount) {
-                    val x = startX + (point.toFloat() / waveform.pointCount.toFloat()) * assetWidth
-                    if (x >= 0f && x <= size.width) {
-                        val minimum = waveform.minima[point].toFloat() / 32768f
-                        val maximum = waveform.maxima[point].toFloat() / 32768f
-                        val top = centerY - maximum * halfHeight
-                        val bottom = centerY - minimum * halfHeight
-                        drawLine(waveColor, Offset(x, top), Offset(x, bottom), strokeWidth = 1f)
-                    }
-                    point += stride
+            drawPunchRange(durationFrames, punchStartFrame, punchEndFrame, punchColor)
+            regions.forEach { region ->
+                val startX = frameToX(region.timelineStart, durationFrames, size.width)
+                val endX = frameToX(region.timelineEnd, durationFrames, size.width)
+                if (region.clipId != null && region.clipId == selectedClipId) {
+                    drawRect(
+                        selectionColor,
+                        topLeft = Offset(startX, 0f),
+                        size = Size((endX - startX).coerceAtLeast(1f), size.height),
+                    )
                 }
+                drawWaveRegion(
+                    region = region,
+                    startX = startX,
+                    endX = endX,
+                    centerY = centerY,
+                    color = waveColor,
+                )
             }
-            val playheadX = (transportFrame.toDouble() / durationFrames.toDouble() * size.width).toFloat()
-                .coerceIn(0f, size.width)
-            drawLine(playheadColor, Offset(playheadX, 0f), Offset(playheadX, size.height), strokeWidth = 2f)
+            drawPlayhead(transportFrame, durationFrames, playheadColor)
         }
     }
 }
 
-private data class ActiveTrackSource(
-    val assetId: String,
-    val take: StudioTake?,
+private data class WaveRegion(
+    val clipId: String?,
+    val waveform: StudioWaveform,
+    val sourceStartFrame: Long,
+    val sourceEndFrame: Long,
+    val timelineStart: Long,
+    val timelineEnd: Long,
 )
 
-private fun activeTrackSource(track: StudioTrack): ActiveTrackSource? {
+private fun buildRegions(
+    project: StudioProject,
+    track: StudioTrack,
+    waveforms: Map<String, StudioWaveform>,
+): List<WaveRegion> {
     if (track.type == StudioTrackType.BEAT) {
-        return track.primaryAssetId?.let { ActiveTrackSource(it, null) }
+        val assetId = track.primaryAssetId ?: project.beatAssetId ?: return emptyList()
+        val waveform = waveforms[assetId] ?: return emptyList()
+        return listOf(
+            WaveRegion(
+                clipId = null,
+                waveform = waveform,
+                sourceStartFrame = 0L,
+                sourceEndFrame = waveform.totalFrames,
+                timelineStart = 0L,
+                timelineEnd = framesToTimeline(waveform.totalFrames, waveform.sampleRate, project.timelineSampleRate),
+            ),
+        )
     }
-    val take = track.activeTakeId?.let { activeId -> track.takes.firstOrNull { it.id == activeId } }
-        ?: track.takes.lastOrNull()
-    return take?.let { ActiveTrackSource(it.assetId, it) }
-        ?: track.primaryAssetId?.let { ActiveTrackSource(it, null) }
+    if (track.clips.isNotEmpty()) {
+        return track.clips.mapNotNull { clip -> clipRegion(project, clip, waveforms) }
+    }
+    val take = activeTake(track) ?: return emptyList()
+    val waveform = waveforms[take.assetId] ?: return emptyList()
+    val start = (take.recordedTimelineFrame - take.latencyCompensationFrames).coerceAtLeast(0L)
+    return listOf(
+        WaveRegion(
+            clipId = null,
+            waveform = waveform,
+            sourceStartFrame = 0L,
+            sourceEndFrame = take.recordedFrames.coerceAtMost(waveform.totalFrames),
+            timelineStart = start,
+            timelineEnd = start + framesToTimeline(take.recordedFrames, take.inputSampleRate, project.timelineSampleRate),
+        ),
+    )
 }
 
-private fun framesToTimeline(frames: Long, sourceRate: Int, timelineRate: Int): Long {
-    if (frames <= 0L || sourceRate <= 0 || timelineRate <= 0) return 0L
-    return (frames.toDouble() * timelineRate.toDouble() / sourceRate.toDouble()).toLong()
+private fun clipRegion(
+    project: StudioProject,
+    clip: StudioClip,
+    waveforms: Map<String, StudioWaveform>,
+): WaveRegion? {
+    val waveform = waveforms[clip.sourceAssetId] ?: return null
+    val asset = project.asset(clip.sourceAssetId)
+    val sourceRate = asset?.sampleRate ?: waveform.sampleRate
+    val sourceStart = clip.sourceStartFrame.coerceIn(0L, waveform.totalFrames)
+    val sourceEnd = clip.sourceEndFrame.coerceIn(sourceStart, waveform.totalFrames)
+    val timelineLength = framesToTimeline(sourceEnd - sourceStart, sourceRate, project.timelineSampleRate)
+    return WaveRegion(
+        clipId = clip.id,
+        waveform = waveform,
+        sourceStartFrame = sourceStart,
+        sourceEndFrame = sourceEnd,
+        timelineStart = clip.timelineStartFrame,
+        timelineEnd = clip.timelineStartFrame + timelineLength,
+    )
 }
 
-private fun formatRulerTime(totalSeconds: Long): String =
-    String.format(Locale.US, "%d:%02d", totalSeconds / 60L, totalSeconds % 60L)
+private fun activeTake(track: StudioTrack): StudioTake? =
+    track.activeTakeId?.let { id -> track.takes.firstOrNull { it.id == id } } ?: track.takes.lastOrNull()
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWaveRegion(
+    region: WaveRegion,
+    startX: Float,
+    endX: Float,
+    centerY: Float,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    val widthPx = (endX - startX).coerceAtLeast(1f)
+    val pixelCount = widthPx.roundToInt().coerceAtLeast(1)
+    val sourceLength = (region.sourceEndFrame - region.sourceStartFrame).coerceAtLeast(1L)
+    val stride = max(1, pixelCount / 2_500)
+    var pixel = 0
+    while (pixel <= pixelCount) {
+        val fraction = pixel.toDouble() / pixelCount.toDouble()
+        val sourceFrame = region.sourceStartFrame + (sourceLength * fraction).toLong()
+        val point = (sourceFrame / region.waveform.framesPerPoint.toLong())
+            .toInt()
+            .coerceIn(0, region.waveform.pointCount - 1)
+        val minValue = region.waveform.minima[point].toFloat() / 32768f
+        val maxValue = region.waveform.maxima[point].toFloat() / 32768f
+        val x = startX + pixel.toFloat()
+        drawLine(
+            color = color,
+            start = Offset(x, centerY - maxValue * centerY * 0.88f),
+            end = Offset(x, centerY - minValue * centerY * 0.88f),
+            strokeWidth = 1f,
+        )
+        pixel += stride
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPunchRange(
+    durationFrames: Long,
+    punchStartFrame: Long?,
+    punchEndFrame: Long?,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    val start = punchStartFrame ?: return
+    val end = punchEndFrame ?: return
+    if (end <= start || durationFrames <= 0L) return
+    val left = frameToX(start, durationFrames, size.width)
+    val right = frameToX(end, durationFrames, size.width)
+    drawRect(color, Offset(left, 0f), Size((right - left).coerceAtLeast(1f), size.height))
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlayhead(
+    transportFrame: Long,
+    durationFrames: Long,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    if (durationFrames <= 0L) return
+    val x = frameToX(transportFrame, durationFrames, size.width)
+    drawLine(color, Offset(x, 0f), Offset(x, size.height), strokeWidth = 2f)
+}
+
+private fun frameToX(frame: Long, durationFrames: Long, width: Float): Float =
+    (frame.coerceIn(0L, durationFrames).toDouble() / durationFrames.coerceAtLeast(1L).toDouble() * width)
+        .toFloat()
+        .coerceIn(0f, width)
+
+private fun framesToTimeline(sourceFrames: Long, sourceRate: Int, projectRate: Int): Long {
+    if (sourceFrames <= 0 || sourceRate <= 0 || projectRate <= 0) return 0L
+    return (sourceFrames.toDouble() * projectRate.toDouble() / sourceRate.toDouble()).toLong()
+}
+
+private fun formatRulerTime(seconds: Long): String {
+    val minutes = seconds / 60L
+    val remaining = seconds % 60L
+    return "%d:%02d".format(minutes, remaining)
+}

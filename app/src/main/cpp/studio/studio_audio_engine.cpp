@@ -35,6 +35,23 @@ constexpr int32_t kCustomErrorWriter = -10'005;
 constexpr int32_t kCustomErrorArrangement = -10'006;
 constexpr size_t kWavHeaderBytes = 44;
 
+float dbToLinear(float db) {
+    return std::pow(10.0f, std::max(-60.0f, std::min(18.0f, db)) / 20.0f);
+}
+
+void applyBalance(float pan, float& left, float& right) {
+    const float safePan = std::max(-1.0f, std::min(1.0f, pan));
+    if (safePan > 0.0f) left *= 1.0f - safePan;
+    else if (safePan < 0.0f) right *= 1.0f + safePan;
+}
+
+float softLimit(float value) {
+    const float absolute = std::abs(value);
+    if (absolute <= 0.95f) return value;
+    const float limited = 0.95f + 0.05f * (1.0f - std::exp(-(absolute - 0.95f) / 0.05f));
+    return std::copysign(std::min(1.0f, limited), value);
+}
+
 class SpscPcm16RingBuffer {
 public:
     void reset(size_t requestedCapacity) {
@@ -207,6 +224,14 @@ public:
         return 0;
     }
 
+    void setMixConfig(float beatGainDb, float beatPan, bool beatMuted, float masterGainDb, bool limiterEnabled) {
+        beatGainLinear_.store(dbToLinear(beatGainDb));
+        beatPan_.store(std::max(-1.0f, std::min(1.0f, beatPan)));
+        beatMuted_.store(beatMuted);
+        masterGainLinear_.store(dbToLinear(std::max(-24.0f, std::min(12.0f, masterGainDb))));
+        limiterEnabled_.store(limiterEnabled);
+    }
+
     void setPunchMuteWindow(int64_t startFrame, int64_t endFrame) {
         if (startFrame >= 0 && endFrame > startFrame) {
             punchMuteStart_.store(startFrame);
@@ -364,21 +389,38 @@ public:
         const int64_t punchStart = punchMuteStart_.load();
         const int64_t punchEnd = punchMuteEnd_.load();
         const int64_t duration = maxTimelineDuration(arrangement);
+        const float beatGain = beatGainLinear_.load();
+        const float beatPan = beatPan_.load();
+        const bool beatMuted = beatMuted_.load();
+        const float masterGain = masterGainLinear_.load();
+        const bool limiter = limiterEnabled_.load();
 
         for (int32_t frame = 0; frame < numFrames; ++frame) {
             float left = 0.0f;
             float right = 0.0f;
             const int64_t projectFrame = std::max<int64_t>(0, static_cast<int64_t>(std::llround(playheadFrame_)));
-            if (shouldAdvance && beatSamples_ != nullptr && beatFrameCount_ > 0 && playheadFrame_ < beatFrameCount_) {
-                sampleBeat(playheadFrame_, left, right);
+            if (shouldAdvance && !beatMuted && beatSamples_ != nullptr && beatFrameCount_ > 0 && playheadFrame_ < beatFrameCount_) {
+                float beatLeft = 0.0f;
+                float beatRight = 0.0f;
+                sampleBeat(playheadFrame_, beatLeft, beatRight);
+                applyBalance(beatPan, beatLeft, beatRight);
+                left += beatLeft * beatGain;
+                right += beatRight * beatGain;
             }
             const bool punchMuted = recording_.load() && punchStart >= 0 && punchEnd > punchStart &&
                 projectFrame >= punchStart && projectFrame < punchEnd;
             if (shouldAdvance && arrangement && !punchMuted) {
                 arrangement->mix(projectFrame, left, right);
             }
-            left = std::max(-1.0f, std::min(1.0f, left));
-            right = std::max(-1.0f, std::min(1.0f, right));
+            left *= masterGain;
+            right *= masterGain;
+            if (limiter) {
+                left = softLimit(left);
+                right = softLimit(right);
+            } else {
+                left = std::max(-1.0f, std::min(1.0f, left));
+                right = std::max(-1.0f, std::min(1.0f, right));
+            }
 
             const size_t base = static_cast<size_t>(frame) * static_cast<size_t>(outputChannels);
             if (outputChannels == 1) {
@@ -723,6 +765,11 @@ private:
     std::atomic<int32_t> lastInputSampleRate_{0};
     std::atomic<int32_t> lastInputDeviceId_{-1};
     std::atomic<int32_t> recordingSampleRate_{kDefaultProjectSampleRate};
+    std::atomic<float> beatGainLinear_{1.0f};
+    std::atomic<float> beatPan_{0.0f};
+    std::atomic<bool> beatMuted_{false};
+    std::atomic<float> masterGainLinear_{1.0f};
+    std::atomic<bool> limiterEnabled_{true};
 };
 
 StudioAudioEngine* fromHandle(jlong handle) {
@@ -806,6 +853,7 @@ Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeSetArra
     jlongArray sourceStarts,
     jlongArray sourceEnds,
     jfloatArray gainsDb,
+    jfloatArray pans,
     jlongArray fadeIns,
     jlongArray fadeOuts,
     jint projectSampleRate
@@ -815,7 +863,8 @@ Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeSetArra
     const jsize count = env->GetArrayLength(paths);
     if (!sameLength(env, count, timelineStarts) || !sameLength(env, count, sourceStarts) ||
         !sameLength(env, count, sourceEnds) || !sameLength(env, count, gainsDb) ||
-        !sameLength(env, count, fadeIns) || !sameLength(env, count, fadeOuts)) {
+        !sameLength(env, count, pans) || !sameLength(env, count, fadeIns) ||
+        !sameLength(env, count, fadeOuts)) {
         return kCustomErrorArrangement;
     }
 
@@ -823,6 +872,7 @@ Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeSetArra
     std::vector<jlong> sourceStart(static_cast<size_t>(count));
     std::vector<jlong> sourceEnd(static_cast<size_t>(count));
     std::vector<jfloat> gain(static_cast<size_t>(count));
+    std::vector<jfloat> pan(static_cast<size_t>(count));
     std::vector<jlong> fadeIn(static_cast<size_t>(count));
     std::vector<jlong> fadeOut(static_cast<size_t>(count));
     if (count > 0) {
@@ -830,6 +880,7 @@ Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeSetArra
         env->GetLongArrayRegion(sourceStarts, 0, count, sourceStart.data());
         env->GetLongArrayRegion(sourceEnds, 0, count, sourceEnd.data());
         env->GetFloatArrayRegion(gainsDb, 0, count, gain.data());
+        env->GetFloatArrayRegion(pans, 0, count, pan.data());
         env->GetLongArrayRegion(fadeIns, 0, count, fadeIn.data());
         env->GetLongArrayRegion(fadeOuts, 0, count, fadeOut.data());
         if (env->ExceptionCheck()) return kCustomErrorArrangement;
@@ -848,11 +899,28 @@ Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeSetArra
         definition.sourceStartFrame = sourceStart[static_cast<size_t>(index)];
         definition.sourceEndFrame = sourceEnd[static_cast<size_t>(index)];
         definition.gainDb = gain[static_cast<size_t>(index)];
+        definition.pan = pan[static_cast<size_t>(index)];
         definition.fadeInFrames = fadeIn[static_cast<size_t>(index)];
         definition.fadeOutFrames = fadeOut[static_cast<size_t>(index)];
         definitions.push_back(std::move(definition));
     }
     return engine->setArrangement(definitions, projectSampleRate);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_aistudio_mediatool_feature_studio_audio_StudioNativeAudio_nativeSetMixConfig(
+    JNIEnv*, jobject, jlong handle, jfloat beatGainDb, jfloat beatPan, jboolean beatMuted,
+    jfloat masterGainDb, jboolean limiterEnabled
+) {
+    if (auto* engine = fromHandle(handle)) {
+        engine->setMixConfig(
+            beatGainDb,
+            beatPan,
+            beatMuted == JNI_TRUE,
+            masterGainDb,
+            limiterEnabled == JNI_TRUE
+        );
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -47,6 +47,7 @@ add_library(
     mediatool_studio
     SHARED
     studio/studio_audio_engine.cpp
+    studio/studio_latency_calibrator.cpp
 )
 
 target_compile_options(

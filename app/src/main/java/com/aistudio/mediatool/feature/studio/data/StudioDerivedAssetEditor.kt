@@ -1,12 +1,13 @@
 package com.aistudio.mediatool.feature.studio.data
 
+import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import com.aistudio.mediatool.feature.studio.domain.latencyCompensatedPlacement
 
-/** Pure project transform that swaps a processed DERIVED asset into the arrangement without mutating source Takes. */
+/** Pure project transforms for non-destructive derived assets. Source files and Takes are never mutated. */
 object StudioDerivedAssetEditor {
     fun apply(project: StudioProject, sourceAssetId: String, derivedAssetId: String): StudioProject {
         require(sourceAssetId != derivedAssetId) { "Derived asset phải khác source" }
@@ -14,45 +15,68 @@ object StudioDerivedAssetEditor {
         val derived = requireNotNull(project.asset(derivedAssetId)) { "Không tìm thấy derived asset" }
         require(derived.kind == StudioAssetKind.DERIVED) { "Asset được chọn không phải bản xử lý" }
         require(isDescendantOf(project, derived, sourceAssetId)) { "Derived asset không thuộc source đã chọn" }
+        return replace(project, source, derived, allowMaterializeTake = true)
+    }
 
-        if (project.beatAssetId == sourceAssetId) {
+    fun restoreSource(project: StudioProject, derivedAssetId: String): StudioProject {
+        val derived = requireNotNull(project.asset(derivedAssetId)) { "Không tìm thấy derived asset" }
+        require(derived.kind == StudioAssetKind.DERIVED) { "Asset được chọn không phải bản xử lý" }
+        val sourceId = requireNotNull(derived.sourceAssetId) { "Derived asset không còn thông tin source" }
+        val source = requireNotNull(project.asset(sourceId)) { "Source asset không còn trong project" }
+        return replace(project, derived, source, allowMaterializeTake = false)
+    }
+
+    private fun replace(
+        project: StudioProject,
+        current: StudioAsset,
+        replacement: StudioAsset,
+        allowMaterializeTake: Boolean,
+    ): StudioProject {
+        if (project.beatAssetId == current.id) {
             val tracks = project.tracks.map { track ->
-                if (track.type == StudioTrackType.BEAT && track.primaryAssetId == sourceAssetId) {
-                    track.copy(primaryAssetId = derivedAssetId)
+                if (track.type == StudioTrackType.BEAT && track.primaryAssetId == current.id) {
+                    track.copy(primaryAssetId = replacement.id)
                 } else track
             }
-            return project.copy(beatAssetId = derivedAssetId, tracks = tracks)
+            return project.copy(beatAssetId = replacement.id, tracks = tracks)
         }
 
         var changed = false
         val tracks = project.tracks.map { track ->
+            var primaryAssetId = track.primaryAssetId
+            if (primaryAssetId == current.id) {
+                primaryAssetId = replacement.id
+                changed = true
+            }
             val replacedClips = track.clips.map { clip ->
-                if (clip.sourceAssetId == sourceAssetId) {
+                if (clip.sourceAssetId == current.id) {
                     changed = true
-                    remapClip(project, clip, sourceAssetId, derivedAssetId)
+                    remapClip(project, clip, current, replacement)
                 } else clip
             }
-            if (replacedClips != track.clips) return@map track.copy(clips = replacedClips)
+            if (replacedClips != track.clips || primaryAssetId != track.primaryAssetId) {
+                return@map track.copy(primaryAssetId = primaryAssetId, clips = replacedClips)
+            }
 
-            if (track.clips.isEmpty()) {
+            if (allowMaterializeTake && track.clips.isEmpty()) {
                 val take = track.activeTakeId
                     ?.let { id -> track.takes.firstOrNull { it.id == id } }
                     ?: track.takes.lastOrNull()
-                if (take?.assetId == sourceAssetId) {
+                if (take?.assetId == current.id) {
                     val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
-                    val sourceRate = source.sampleRate ?: take.inputSampleRate
-                    val derivedRate = derived.sampleRate ?: sourceRate
-                    val sourceStart = scaleFrames(placement.sourceStartFrame, sourceRate, derivedRate)
-                    val sourceEnd = scaleFrames(placement.sourceEndFrame, sourceRate, derivedRate)
-                        .coerceAtMost(derived.durationFrames ?: Long.MAX_VALUE)
+                    val currentRate = current.sampleRate ?: take.inputSampleRate
+                    val replacementRate = replacement.sampleRate ?: currentRate
+                    val sourceStart = scaleFrames(placement.sourceStartFrame, currentRate, replacementRate)
+                    val sourceEnd = scaleFrames(placement.sourceEndFrame, currentRate, replacementRate)
+                        .coerceAtMost(replacement.durationFrames ?: Long.MAX_VALUE)
                     require(sourceEnd > sourceStart) { "Derived asset quá ngắn để thay Active Take" }
                     changed = true
                     return@map track.copy(
-                        primaryAssetId = derivedAssetId,
+                        primaryAssetId = replacement.id,
                         clips = listOf(
                             StudioClip(
-                                id = "derived-${derivedAssetId.take(8)}-${take.id.take(8)}",
-                                sourceAssetId = derivedAssetId,
+                                id = "derived-${replacement.id.take(8)}-${take.id.take(8)}",
+                                sourceAssetId = replacement.id,
                                 sourceTakeId = take.id,
                                 timelineStartFrame = placement.timelineStartFrame,
                                 sourceStartFrame = sourceStart,
@@ -64,34 +88,32 @@ object StudioDerivedAssetEditor {
             }
             track
         }
-        require(changed) { "Source asset chưa được dùng trong arrangement hiện tại" }
+        require(changed) { "Asset chưa được dùng trong arrangement hiện tại" }
         return project.copy(tracks = tracks)
     }
 
     private fun remapClip(
         project: StudioProject,
         clip: StudioClip,
-        sourceAssetId: String,
-        derivedAssetId: String,
+        current: StudioAsset,
+        replacement: StudioAsset,
     ): StudioClip {
-        val source = requireNotNull(project.asset(sourceAssetId))
-        val derived = requireNotNull(project.asset(derivedAssetId))
-        val sourceRate = source.sampleRate ?: project.timelineSampleRate
-        val derivedRate = derived.sampleRate ?: sourceRate
-        val mappedStart = scaleFrames(clip.sourceStartFrame, sourceRate, derivedRate)
-        val mappedEnd = scaleFrames(clip.sourceEndFrame, sourceRate, derivedRate)
-            .coerceAtMost(derived.durationFrames ?: Long.MAX_VALUE)
-        require(mappedEnd > mappedStart) { "Derived asset không đủ dữ liệu cho clip" }
+        val currentRate = current.sampleRate ?: project.timelineSampleRate
+        val replacementRate = replacement.sampleRate ?: currentRate
+        val mappedStart = scaleFrames(clip.sourceStartFrame, currentRate, replacementRate)
+        val mappedEnd = scaleFrames(clip.sourceEndFrame, currentRate, replacementRate)
+            .coerceAtMost(replacement.durationFrames ?: Long.MAX_VALUE)
+        require(mappedEnd > mappedStart) { "Replacement asset không đủ dữ liệu cho clip" }
         return clip.copy(
-            sourceAssetId = derivedAssetId,
+            sourceAssetId = replacement.id,
             sourceStartFrame = mappedStart,
             sourceEndFrame = mappedEnd,
-            fadeInFrames = scaleFrames(clip.fadeInFrames, sourceRate, derivedRate),
-            fadeOutFrames = scaleFrames(clip.fadeOutFrames, sourceRate, derivedRate),
+            fadeInFrames = scaleFrames(clip.fadeInFrames, currentRate, replacementRate),
+            fadeOutFrames = scaleFrames(clip.fadeOutFrames, currentRate, replacementRate),
         )
     }
 
-    private fun isDescendantOf(project: StudioProject, asset: com.aistudio.mediatool.feature.studio.domain.StudioAsset, sourceId: String): Boolean {
+    private fun isDescendantOf(project: StudioProject, asset: StudioAsset, sourceId: String): Boolean {
         var current = asset.sourceAssetId
         val seen = mutableSetOf<String>()
         while (current != null && seen.add(current)) {

@@ -165,10 +165,12 @@ public:
         return audio_ != nullptr && sourceEndFrame_ > sourceStartFrame_ && timelineLengthFrames_ > 0;
     }
 
+    int64_t timelineEndFrame() const {
+        return timelineStartFrame_ + timelineLengthFrames_;
+    }
+
     void mix(int64_t projectFrame, float& left, float& right) const {
-        if (!valid() || projectFrame < timelineStartFrame_ || projectFrame >= timelineStartFrame_ + timelineLengthFrames_) {
-            return;
-        }
+        if (!valid() || projectFrame < timelineStartFrame_ || projectFrame >= timelineEndFrame()) return;
         const int64_t timelineDelta = projectFrame - timelineStartFrame_;
         const double sourceOffset = static_cast<double>(timelineDelta) *
             static_cast<double>(audio_->sampleRate()) / static_cast<double>(projectSampleRate_);
@@ -223,6 +225,7 @@ public:
             if (audio == nullptr) return nullptr;
             PlaybackClip clip(audio, definition, projectSampleRate);
             if (!clip.valid()) return nullptr;
+            arrangement->durationFrames_ = std::max(arrangement->durationFrames_, clip.timelineEndFrame());
             arrangement->clips_.push_back(std::move(clip));
         }
         return arrangement;
@@ -233,9 +236,11 @@ public:
     }
 
     size_t clipCount() const { return clips_.size(); }
+    int64_t durationFrames() const { return durationFrames_; }
 
 private:
     std::vector<PlaybackClip> clips_;
+    int64_t durationFrames_ = 0;
 };
 
 }  // namespace mediatool::studio

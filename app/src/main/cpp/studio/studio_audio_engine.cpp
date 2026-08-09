@@ -198,14 +198,12 @@ public:
 
     int32_t setArrangement(const std::vector<PlaybackClipDefinition>& definitions, int32_t projectSampleRate) {
         if (projectSampleRate <= 0) return kCustomErrorArrangement;
-        if (definitions.empty()) {
-            std::shared_ptr<const StudioArrangement> empty;
-            std::atomic_store_explicit(&arrangement_, empty, std::memory_order_release);
-            return 0;
+        std::shared_ptr<const StudioArrangement> prepared;
+        if (!definitions.empty()) {
+            prepared = StudioArrangement::build(definitions, projectSampleRate);
+            if (!prepared) return kCustomErrorArrangement;
         }
-        auto prepared = StudioArrangement::build(definitions, projectSampleRate);
-        if (!prepared) return kCustomErrorArrangement;
-        std::atomic_store_explicit(&arrangement_, prepared, std::memory_order_release);
+        publishArrangement(std::move(prepared));
         return 0;
     }
 
@@ -333,8 +331,7 @@ public:
         closeOutputOnly();
         unloadBeat();
         setPunchMuteWindow(kNoPunch, kNoPunch);
-        std::shared_ptr<const StudioArrangement> empty;
-        std::atomic_store_explicit(&arrangement_, empty, std::memory_order_release);
+        clearArrangementAfterOutputStopped();
     }
 
     oboe::DataCallbackResult onAudioReady(
@@ -582,6 +579,35 @@ private:
         return std::max<int64_t>(beatFrameCount_, arrangement ? arrangement->durationFrames() : 0L);
     }
 
+    void publishArrangement(std::shared_ptr<const StudioArrangement> next) {
+        reclaimRetiredArrangements();
+        {
+            auto previous = std::atomic_load_explicit(&arrangement_, std::memory_order_acquire);
+            if (previous) retiredArrangements_.push_back(previous);
+            std::atomic_store_explicit(&arrangement_, std::move(next), std::memory_order_release);
+        }
+        reclaimRetiredArrangements();
+    }
+
+    void reclaimRetiredArrangements() {
+        auto iterator = retiredArrangements_.begin();
+        while (iterator != retiredArrangements_.end()) {
+            if (iterator->use_count() == 1) {
+                iterator = retiredArrangements_.erase(iterator);
+            } else {
+                ++iterator;
+            }
+        }
+    }
+
+    void clearArrangementAfterOutputStopped() {
+        std::shared_ptr<const StudioArrangement> empty;
+        auto current = std::atomic_load_explicit(&arrangement_, std::memory_order_acquire);
+        std::atomic_store_explicit(&arrangement_, empty, std::memory_order_release);
+        current.reset();
+        retiredArrangements_.clear();
+    }
+
     void writerLoop() {
         std::vector<int16_t> localBuffer(8'192);
         int64_t framesSinceSync = 0;
@@ -662,6 +688,7 @@ private:
     std::shared_ptr<oboe::AudioStream> outputStream_;
     std::shared_ptr<oboe::AudioStream> inputStream_;
     std::shared_ptr<const StudioArrangement> arrangement_;
+    std::vector<std::shared_ptr<const StudioArrangement>> retiredArrangements_;
 
     void* beatMapping_ = nullptr;
     size_t beatMappingBytes_ = 0;

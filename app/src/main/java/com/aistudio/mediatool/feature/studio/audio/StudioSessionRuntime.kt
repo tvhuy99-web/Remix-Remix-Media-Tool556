@@ -154,20 +154,8 @@ object StudioSessionRuntime {
                     message = if (current.status == StudioSessionStatus.PLAYING) "Playback đã dừng khi Studio đi nền" else current.message,
                 )
             } else if (outputSuspendedForBackground && current.project != null && current.status != StudioSessionStatus.CLOSED) {
-                when (val result = native.start()) {
-                    StudioAudioOperationResult.Success -> {
-                        outputSuspendedForBackground = false
-                        _state.value = current.copy(
-                            status = if (current.status == StudioSessionStatus.ERROR) current.status else StudioSessionStatus.READY,
-                            diagnostics = native.diagnostics(),
-                        )
-                    }
-                    else -> {
-                        _state.value = current.copy(
-                            status = StudioSessionStatus.ERROR,
-                            errorMessage = operationError("Không thể khởi động lại Studio audio", result),
-                        )
-                    }
+                if (!resumeOutputIfNeeded(native)) {
+                    _state.value = _state.value.copy(errorMessage = "Studio phải mở lại audio route sau khi trở về foreground")
                 }
             }
         }
@@ -831,7 +819,7 @@ object StudioSessionRuntime {
         }
     }
 
-    private fun stopRecordingInternal() {
+    private fun stopRecordingInternal(forceRecovered: Boolean = false) {
         val native = engine ?: return
         val repo = repository ?: return
         val context = appContext
@@ -842,7 +830,7 @@ object StudioSessionRuntime {
         native.setPlaying(false)
         val stopResult = native.stopRecording()
         audioFocusManager?.abandon()
-        val recoveredByNativeStop = stopResult !is StudioAudioOperationResult.Success
+        val recoveredByNativeStop = forceRecovered || stopResult !is StudioAudioOperationResult.Success
         native.setPunchMuteWindow(null, null)
         var project = _state.value.project
         var selectedClipId = _state.value.selectedClipId
@@ -887,8 +875,8 @@ object StudioSessionRuntime {
         if (recoveredByNativeStop && errorMessage == null) {
             errorMessage = when (stopResult) {
                 StudioAudioOperationResult.Released -> "Audio engine đã đóng; phần audio hợp lệ được lưu dưới dạng recovered take"
-                is StudioAudioOperationResult.Error -> "Audio writer báo lỗi ${stopResult.nativeCode}; phần audio hợp lệ được lưu dưới dạng recovered take"
-                StudioAudioOperationResult.Success -> null
+                is StudioAudioOperationResult.Error -> "Audio writer/route bị gián đoạn; phần audio hợp lệ được lưu dưới dạng recovered take"
+                StudioAudioOperationResult.Success -> "Audio route bị gián đoạn; phần audio hợp lệ được lưu dưới dạng recovered take"
             }
         }
         if (!uiVisible && !outputSuspendedForBackground) {
@@ -931,6 +919,11 @@ object StudioSessionRuntime {
                 val current = _state.value
                 val punch = pendingPunch
                 val disconnected = diagnostics.disconnectCount > (current.diagnostics?.disconnectCount ?: 0L)
+                if (current.status == StudioSessionStatus.RECORDING && disconnected) {
+                    stopRecordingInternal(forceRecovered = true)
+                    if (uiVisible) reopenPreferredOutputAfterDisconnect()
+                    continue
+                }
                 if (current.status == StudioSessionStatus.RECORDING && punch != null &&
                     diagnostics.transportFrame >= punch.endFrame
                 ) {
@@ -940,8 +933,7 @@ object StudioSessionRuntime {
                 if (current.status == StudioSessionStatus.RECORDING &&
                     (!diagnostics.isRecording || diagnostics.writerErrorCode != 0)
                 ) {
-                    stopRecordingInternal()
-                    if (disconnected) reopenPreferredOutputAfterDisconnect()
+                    stopRecordingInternal(forceRecovered = true)
                     continue
                 }
                 if (disconnected && !current.isBusy && uiVisible) {
@@ -1085,6 +1077,7 @@ object StudioSessionRuntime {
                 "Không thể nạp lại playback plan sau hiệu chỉnh",
             )
             requireSuccess(native.start(), "Không thể khởi động lại Studio sau hiệu chỉnh")
+            outputSuspendedForBackground = false
             native.seek(frame)
             val resumePlayback = wasPlaying && uiVisible && audioFocusManager?.requestPlayback() == true
             native.setPlaying(resumePlayback)
@@ -1162,6 +1155,7 @@ object StudioSessionRuntime {
                 "Không thể đồng bộ Mixer sau khi đổi output",
             )
             requireSuccess(native.start(), "Không thể khởi động output route đã chọn")
+            outputSuspendedForBackground = false
             native.seek(frame)
             native.setPlaying(wasPlaying)
             native.diagnostics()
@@ -1184,6 +1178,7 @@ object StudioSessionRuntime {
                     "Không thể restore playback plan",
                 )
                 requireSuccess(native.start(), "Không thể khởi động output mặc định")
+                outputSuspendedForBackground = false
                 native.seek(frame)
                 native.setPlaying(wasPlaying)
                 native.diagnostics()
@@ -1392,17 +1387,20 @@ object StudioSessionRuntime {
 
     private fun resumeOutputIfNeeded(native: StudioNativeAudio): Boolean {
         if (!outputSuspendedForBackground) return true
-        return when (val result = native.start()) {
+        return when (native.start()) {
             StudioAudioOperationResult.Success -> {
                 outputSuspendedForBackground = false
+                _state.value = _state.value.copy(
+                    status = if (_state.value.status == StudioSessionStatus.ERROR) StudioSessionStatus.ERROR else StudioSessionStatus.READY,
+                    diagnostics = native.diagnostics(),
+                )
                 true
             }
             else -> {
-                _state.value = _state.value.copy(
-                    status = StudioSessionStatus.ERROR,
-                    errorMessage = operationError("Không thể khởi động lại Studio audio", result),
-                )
-                false
+                val current = _state.value
+                val preferred = current.selectedOutputDeviceId?.takeIf { id -> current.audioDevices.outputs.any { it.id == id } }
+                switchOutputRouteInternal(preferred)
+                !outputSuspendedForBackground && _state.value.status != StudioSessionStatus.ERROR
             }
         }
     }

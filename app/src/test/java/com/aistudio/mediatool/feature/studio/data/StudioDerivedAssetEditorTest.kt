@@ -106,6 +106,54 @@ class StudioDerivedAssetEditorTest {
     }
 
     @Test
+    fun restoreSource_reversesDerivedRateMapping_andKeepsDerivedAsset() {
+        val source = StudioAsset(
+            id = "source",
+            kind = StudioAssetKind.TAKE,
+            relativePath = "takes/source.wav",
+            displayName = "Take",
+            sampleRate = 44_100,
+            channelCount = 1,
+            durationFrames = 44_100,
+        )
+        val derived = StudioAsset(
+            id = "derived",
+            kind = StudioAssetKind.DERIVED,
+            relativePath = "derived/pro.wav",
+            displayName = "Pro",
+            sourceAssetId = source.id,
+            processorId = "pro_vocal_chain",
+            sampleRate = 48_000,
+            channelCount = 1,
+            durationFrames = 48_000,
+        )
+        val take = StudioTake("take", source.id, 0, 44_100, inputSampleRate = 44_100, status = StudioTakeStatus.COMPLETE)
+        val original = StudioClip(
+            id = "clip",
+            sourceAssetId = source.id,
+            sourceTakeId = take.id,
+            timelineStartFrame = 9_600,
+            sourceStartFrame = 4_410,
+            sourceEndFrame = 22_050,
+            fadeInFrames = 441,
+            fadeOutFrames = 882,
+        )
+        val project = project(source, derived, take, clips = listOf(original))
+        val applied = StudioDerivedAssetEditor.apply(project, source.id, derived.id)
+
+        val restored = StudioDerivedAssetEditor.restoreSource(applied, derived.id)
+        val clip = restored.tracks.single().clips.single()
+
+        assertEquals(source.id, clip.sourceAssetId)
+        assertEquals(original.timelineStartFrame, clip.timelineStartFrame)
+        assertEquals(original.sourceStartFrame, clip.sourceStartFrame)
+        assertEquals(original.sourceEndFrame, clip.sourceEndFrame)
+        assertEquals(original.fadeInFrames, clip.fadeInFrames)
+        assertEquals(original.fadeOutFrames, clip.fadeOutFrames)
+        assertTrue(restored.assets.any { it.id == derived.id })
+    }
+
+    @Test
     fun unrelatedDerivedAsset_isRejected() {
         val source = StudioAsset("source", StudioAssetKind.TAKE, "takes/a.wav", "A", sampleRate = 48_000)
         val other = StudioAsset("other", StudioAssetKind.TAKE, "takes/b.wav", "B", sampleRate = 48_000)

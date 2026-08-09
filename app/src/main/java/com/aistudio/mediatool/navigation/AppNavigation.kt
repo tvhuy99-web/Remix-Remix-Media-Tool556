@@ -2,6 +2,9 @@ package com.aistudio.mediatool.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -40,8 +43,23 @@ fun AppNavigation() {
         }
         composable(Route.StudioProject.path) { backStackEntry ->
             val projectId = backStackEntry.arguments?.getString("projectId").orEmpty()
-            DisposableEffect(projectId) {
-                onDispose { StudioSessionRuntime.closeProject() }
+            val lifecycleOwner = LocalLifecycleOwner.current
+            DisposableEffect(projectId, lifecycleOwner) {
+                val observer = LifecycleEventObserver { _, event ->
+                    when (event) {
+                        Lifecycle.Event.ON_START, Lifecycle.Event.ON_RESUME -> StudioSessionRuntime.setUiVisible(true)
+                        Lifecycle.Event.ON_STOP -> StudioSessionRuntime.setUiVisible(false)
+                        else -> Unit
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                StudioSessionRuntime.setUiVisible(
+                    lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+                )
+                onDispose {
+                    lifecycleOwner.lifecycle.removeObserver(observer)
+                    StudioSessionRuntime.closeProject()
+                }
             }
             StudioProjectScreen(
                 projectId = projectId,

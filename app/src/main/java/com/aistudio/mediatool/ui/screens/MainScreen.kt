@@ -59,11 +59,11 @@ fun MainScreen(
     onNavigateToSettings: () -> Unit,
 ) {
     val tools = listOf(
-        ToolEntry("Studio", Icons.Default.MusicNote, onNavigateToStudio),
+        ToolEntry("Phòng thu", Icons.Default.MusicNote, onNavigateToStudio),
         ToolEntry("Ghi âm", Icons.Default.Mic, onNavigateToRecord),
         ToolEntry("Cắt", Icons.Default.ContentCut, onNavigateToTrim),
-        ToolEntry("Nối audio", Icons.Default.Add, onNavigateToJoin),
-        ToolEntry("Trộn audio", Icons.Default.MusicNote, onNavigateToMix),
+        ToolEntry("Nối âm thanh", Icons.Default.Add, onNavigateToJoin),
+        ToolEntry("Trộn âm thanh", Icons.Default.MusicNote, onNavigateToMix),
         ToolEntry("Công cụ khác", Icons.Default.Tune, onNavigateToOther),
         ToolEntry("Tạo video", Icons.Default.Image, onNavigateToImg2Vid),
         ToolEntry("Phụ đề", Icons.Default.Subtitles, onNavigateToSub),

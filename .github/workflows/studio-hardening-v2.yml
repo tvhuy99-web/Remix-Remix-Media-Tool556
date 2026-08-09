@@ -1,0 +1,98 @@
+name: Studio hardening patch v2
+
+on:
+  push:
+    branches:
+      - agent/studio-foundation-native-audio-core
+
+permissions:
+  contents: write
+
+jobs:
+  harden-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Studio branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/studio-foundation-native-audio-core
+          fetch-depth: 2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+
+      - name: Apply Studio hardening fixes
+        run: |
+          python3 scripts/studio_hardening_patch_runner.py
+          git diff --check
+          git status --short
+
+      - name: Commit fixes to Studio branch
+        run: |
+          git config user.name "studio-hardening-bot"
+          git config user.email "studio-hardening-bot@users.noreply.github.com"
+          git add \
+            app/src/main/cpp/studio/studio_arrangement.h \
+            app/src/main/cpp/studio/studio_audio_engine.cpp \
+            app/src/main/cpp/studio/studio_latency_calibrator.cpp \
+            app/src/main/java/com/aistudio/mediatool/feature/studio/audio/StudioLatencyNative.kt \
+            app/src/main/java/com/aistudio/mediatool/feature/studio/audio/StudioNativeAudio.kt \
+            app/src/main/java/com/aistudio/mediatool/feature/studio/audio/StudioSessionRuntime.kt \
+            app/src/main/java/com/aistudio/mediatool/feature/studio/data/StudioWavFile.kt \
+            app/src/main/java/com/aistudio/mediatool/feature/studio/render/StudioRenderEngine.kt \
+            app/src/test/java/com/aistudio/mediatool/feature/studio/audio/StudioProjectDurationTest.kt
+          git commit -m "Harden Studio realtime audio and recovery"
+          git push origin HEAD:agent/studio-foundation-native-audio-core
+
+      - name: Restore stable CI signing key
+        run: |
+          base64 --decode .ci/mediatool-ci-debug.keystore.b64 > .ci/mediatool-ci-debug.keystore
+          keytool -list -keystore .ci/mediatool-ci-debug.keystore -storepass android -alias androiddebugkey >/dev/null
+
+      - name: Verify project
+        run: python3 scripts/verify_project.py
+
+      - name: Build APK, lint and unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug lintDebug testDebugUnitTest --stacktrace --build-cache
+
+      - name: Inspect APK native packaging
+        run: |
+          python3 scripts/inspect_apks.py app/build/outputs/apk/debug/app-debug.apk
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/libmediatool_studio.so'
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload hardened APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-hardened-app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-hardening-reports
+          path: |
+            app/build/reports/lint-results-*.html
+            app/build/reports/tests/**
+          if-no-files-found: ignore
+          retention-days: 3

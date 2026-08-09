@@ -109,12 +109,15 @@ object StudioSessionRuntime {
     private var latencyStore: StudioLatencyStore? = null
     private var renderEngine: StudioRenderEngine? = null
     private var deviceManager: StudioAudioDeviceManager? = null
+    private var audioFocusManager: StudioAudioFocusManager? = null
     private var engine: StudioNativeAudio? = null
     private var openJob: Job? = null
     private var pollJob: Job? = null
     private var operationJob: Job? = null
     private var pendingTake: PendingStudioTake? = null
     private var pendingPunch: PendingPunch? = null
+    private var uiVisible = true
+    private var outputSuspendedForBackground = false
     private val undoStack = ArrayDeque<StudioProject>()
     private val redoStack = ArrayDeque<StudioProject>()
 
@@ -129,13 +132,63 @@ object StudioSessionRuntime {
         openJob = scope.launch { openInternal(applicationContext, projectId) }
     }
 
+    fun setUiVisible(visible: Boolean) {
+        scope.launch {
+            uiVisible = visible
+            val native = engine ?: return@launch
+            val current = _state.value
+            if (!visible) {
+                if (current.status == StudioSessionStatus.RECORDING) return@launch
+                if (current.status == StudioSessionStatus.CALIBRATING || current.status == StudioSessionStatus.RENDERING) {
+                    operationJob?.cancel()
+                    operationJob = null
+                }
+                native.setPlaying(false)
+                audioFocusManager?.abandon()
+                if (!outputSuspendedForBackground) {
+                    native.stop()
+                    outputSuspendedForBackground = true
+                }
+                _state.value = current.copy(
+                    status = if (current.status == StudioSessionStatus.PLAYING) StudioSessionStatus.READY else current.status,
+                    message = if (current.status == StudioSessionStatus.PLAYING) "Playback đã dừng khi Studio đi nền" else current.message,
+                )
+            } else if (outputSuspendedForBackground && current.project != null && current.status != StudioSessionStatus.CLOSED) {
+                when (val result = native.start()) {
+                    StudioAudioOperationResult.Success -> {
+                        outputSuspendedForBackground = false
+                        _state.value = current.copy(
+                            status = if (current.status == StudioSessionStatus.ERROR) current.status else StudioSessionStatus.READY,
+                            diagnostics = native.diagnostics(),
+                        )
+                    }
+                    else -> {
+                        _state.value = current.copy(
+                            status = StudioSessionStatus.ERROR,
+                            errorMessage = operationError("Không thể khởi động lại Studio audio", result),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     fun play() {
         scope.launch {
             val native = engine ?: return@launch
             val current = _state.value
             if (!current.isPrepared || current.status == StudioSessionStatus.RECORDING) return@launch
+            if (!uiVisible) {
+                _state.value = current.copy(errorMessage = "Mở Studio ở foreground để phát audio")
+                return@launch
+            }
+            if (!resumeOutputIfNeeded(native)) return@launch
+            if (audioFocusManager?.requestPlayback() != true) {
+                _state.value = _state.value.copy(errorMessage = "Ứng dụng khác đang giữ audio focus")
+                return@launch
+            }
             native.setPlaying(true)
-            _state.value = current.copy(status = StudioSessionStatus.PLAYING, errorMessage = null)
+            _state.value = _state.value.copy(status = StudioSessionStatus.PLAYING, errorMessage = null)
         }
     }
 
@@ -145,6 +198,7 @@ object StudioSessionRuntime {
             val current = _state.value
             if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return@launch
             native.setPlaying(false)
+            audioFocusManager?.abandon()
             _state.value = current.copy(status = StudioSessionStatus.READY)
         }
     }
@@ -188,7 +242,7 @@ object StudioSessionRuntime {
     }
 
     fun calibrateLatency(mode: StudioInputMode = _state.value.inputMode) {
-        if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy) return
+        if (_state.value.status == StudioSessionStatus.RECORDING || _state.value.isBusy || !uiVisible) return
         operationJob?.cancel()
         operationJob = scope.launch { calibrateLatencyInternal(mode) }
     }
@@ -513,6 +567,8 @@ object StudioSessionRuntime {
             closeEngineInternal()
             deviceManager?.close()
             deviceManager = null
+            audioFocusManager?.abandon()
+            audioFocusManager = null
             latencyStore = null
             renderEngine = null
             repository = null
@@ -527,6 +583,7 @@ object StudioSessionRuntime {
         if (_state.value.status == StudioSessionStatus.RECORDING) stopRecordingInternal()
         closeEngineInternal()
         deviceManager?.close()
+        audioFocusManager?.abandon()
         undoStack.clear()
         redoStack.clear()
         pendingPunch = null
@@ -535,6 +592,9 @@ object StudioSessionRuntime {
         waveformStore = StudioWaveformStore(context)
         latencyStore = StudioLatencyStore(context)
         renderEngine = StudioRenderEngine(context)
+        audioFocusManager = StudioAudioFocusManager(context) {
+            scope.launch { handleAudioFocusLost() }
+        }
         deviceManager = StudioAudioDeviceManager(context) { snapshot ->
             scope.launch { handleDeviceSnapshot(snapshot) }
         }
@@ -579,6 +639,10 @@ object StudioSessionRuntime {
                     "Không thể nạp Studio playback plan",
                 )
                 requireSuccess(native.start(), "Không thể khởi động Studio Audio Core")
+                if (!uiVisible) {
+                    requireSuccess(native.stop(), "Không thể dừng Studio audio khi ứng dụng đang ở nền")
+                    outputSuspendedForBackground = true
+                }
             } catch (error: Throwable) {
                 native.close()
                 throw error
@@ -596,7 +660,7 @@ object StudioSessionRuntime {
                 diagnostics = diagnostics,
                 recoveredTakeCount = recoveredTakeCount,
                 audioDevices = devices,
-                latencyProfile = diagnostics?.let { profileForCurrentRoute(StudioInputMode.AUTO, outputIdOverride = it.outputDeviceId.takeIf { id -> id >= 0 }) },
+                latencyProfile = diagnostics?.let { profileForDiagnostics(StudioInputMode.AUTO, it) },
             )
             startPolling(native)
             DiagnosticLogger.info(
@@ -643,6 +707,18 @@ object StudioSessionRuntime {
         val current = _state.value
         val project = current.project ?: return
         if (!current.isPrepared || current.status == StudioSessionStatus.RECORDING) return
+        if (!uiVisible) {
+            _state.value = current.copy(errorMessage = "Mở Studio ở foreground để bắt đầu thu")
+            return
+        }
+        if (audioFocusManager?.requestRecording() != true) {
+            _state.value = current.copy(errorMessage = "Không thể giành audio focus để thu âm")
+            return
+        }
+        if (!resumeOutputIfNeeded(native)) {
+            audioFocusManager?.abandon()
+            return
+        }
 
         val wasPlaying = current.status == StudioSessionStatus.PLAYING
         native.setPlaying(false)
@@ -659,9 +735,11 @@ object StudioSessionRuntime {
 
         fun failRecordingSetup(message: String) {
             native.setPunchMuteWindow(null, null)
-            if (wasPlaying && punch == null) native.setPlaying(true)
+            audioFocusManager?.abandon()
+            val resumePlayback = wasPlaying && punch == null && uiVisible && audioFocusManager?.requestPlayback() == true
+            native.setPlaying(resumePlayback)
             _state.value = current.copy(
-                status = if (wasPlaying && punch == null) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
+                status = if (resumePlayback) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
                 inputMode = mode,
                 message = null,
                 errorMessage = message,
@@ -763,6 +841,7 @@ object StudioSessionRuntime {
 
         native.setPlaying(false)
         val stopResult = native.stopRecording()
+        audioFocusManager?.abandon()
         val recoveredByNativeStop = stopResult !is StudioAudioOperationResult.Success
         native.setPunchMuteWindow(null, null)
         var project = _state.value.project
@@ -811,6 +890,10 @@ object StudioSessionRuntime {
                 is StudioAudioOperationResult.Error -> "Audio writer báo lỗi ${stopResult.nativeCode}; phần audio hợp lệ được lưu dưới dạng recovered take"
                 StudioAudioOperationResult.Success -> null
             }
+        }
+        if (!uiVisible && !outputSuspendedForBackground) {
+            native.stop()
+            outputSuspendedForBackground = true
         }
         _state.value = _state.value.copy(
             project = refreshedProject,
@@ -861,7 +944,7 @@ object StudioSessionRuntime {
                     if (disconnected) reopenPreferredOutputAfterDisconnect()
                     continue
                 }
-                if (disconnected && !current.isBusy) {
+                if (disconnected && !current.isBusy && uiVisible) {
                     reopenPreferredOutputAfterDisconnect()
                     continue
                 }
@@ -880,7 +963,7 @@ object StudioSessionRuntime {
 
     private fun reopenPreferredOutputAfterDisconnect() {
         val current = _state.value
-        if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return
+        if (current.status == StudioSessionStatus.RECORDING || current.isBusy || !uiVisible) return
         val preferred = current.selectedOutputDeviceId?.takeIf { id -> current.audioDevices.outputs.any { it.id == id } }
         switchOutputRouteInternal(preferred)
     }
@@ -963,7 +1046,11 @@ object StudioSessionRuntime {
         val context = appContext ?: return
         val repo = repository ?: return
         val waves = waveformStore ?: return
-        if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return
+        if (current.status == StudioSessionStatus.RECORDING || current.isBusy || !uiVisible) return
+        if (audioFocusManager?.requestRecording() != true) {
+            _state.value = current.copy(errorMessage = "Không thể giành audio focus để hiệu chỉnh latency")
+            return
+        }
 
         val frame = current.transportFrame
         val wasPlaying = current.status == StudioSessionStatus.PLAYING
@@ -999,7 +1086,9 @@ object StudioSessionRuntime {
             )
             requireSuccess(native.start(), "Không thể khởi động lại Studio sau hiệu chỉnh")
             native.seek(frame)
-            native.setPlaying(wasPlaying)
+            val resumePlayback = wasPlaying && uiVisible && audioFocusManager?.requestPlayback() == true
+            native.setPlaying(resumePlayback)
+            if (!resumePlayback) audioFocusManager?.abandon()
 
             val diagnostics = native.diagnostics()
             val measured = measurement
@@ -1014,14 +1103,18 @@ object StudioSessionRuntime {
             } else {
                 null
             }
+            if (!uiVisible) {
+                native.stop()
+                outputSuspendedForBackground = true
+            }
             _state.value = _state.value.copy(
                 project = restoredProject,
-                status = if (wasPlaying) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
+                status = if (resumePlayback) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
                 inputMode = mode,
                 transportFrame = frame,
                 durationFrames = projectDurationFrames(restoredProject),
                 diagnostics = diagnostics,
-                latencyProfile = profile ?: profileForCurrentRoute(mode),
+                latencyProfile = profile ?: diagnostics?.let { profileForDiagnostics(mode, it) },
                 message = measured?.let {
                     "Latency ${formatLatency(it.milliseconds)} ms • độ tin cậy ${(it.confidence * 100f).toInt()}%"
                 },
@@ -1041,8 +1134,10 @@ object StudioSessionRuntime {
                 ),
             )
         } catch (cancelled: CancellationException) {
+            audioFocusManager?.abandon()
             throw cancelled
         } catch (error: Throwable) {
+            audioFocusManager?.abandon()
             _state.value = _state.value.copy(
                 status = StudioSessionStatus.ERROR,
                 message = null,
@@ -1075,7 +1170,7 @@ object StudioSessionRuntime {
                 selectedOutputDeviceId = deviceId,
                 diagnostics = diagnostics,
                 status = if (wasPlaying) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
-                latencyProfile = profileForCurrentRoute(current.inputMode, outputIdOverride = deviceId),
+                latencyProfile = diagnostics?.let { profileForDiagnostics(current.inputMode, it) },
                 message = diagnostics?.outputDeviceId?.let { actual ->
                     if (deviceId != null && actual != deviceId) "Android đã route output sang device $actual thay vì device $deviceId" else null
                 },
@@ -1097,7 +1192,7 @@ object StudioSessionRuntime {
                     selectedOutputDeviceId = null,
                     status = if (wasPlaying) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
                     diagnostics = diagnostics,
-                    latencyProfile = profileForCurrentRoute(current.inputMode, outputIdOverride = null),
+                    latencyProfile = diagnostics?.let { profileForDiagnostics(current.inputMode, it) },
                     message = "Route đã chọn không còn dùng được; Studio đã chuyển về output mặc định.",
                     errorMessage = requestedRouteError.message,
                 )
@@ -1120,6 +1215,7 @@ object StudioSessionRuntime {
         if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return
         val wasPlaying = current.status == StudioSessionStatus.PLAYING
         engine?.setPlaying(false)
+        audioFocusManager?.abandon()
         _state.value = current.copy(
             status = StudioSessionStatus.RENDERING,
             message = if (stems) "Đang render stems..." else "Đang render ${format.name}...",
@@ -1191,8 +1287,32 @@ object StudioSessionRuntime {
             ),
             message = message,
         )
-        if ((selectedOutputRemoved || actualOutputRemoved) && current.status != StudioSessionStatus.RECORDING && !current.isBusy) {
+        if ((selectedOutputRemoved || actualOutputRemoved) && current.status != StudioSessionStatus.RECORDING && !current.isBusy && uiVisible) {
             switchOutputRouteInternal(null)
+        }
+    }
+
+    private fun handleAudioFocusLost() {
+        val current = _state.value
+        when (current.status) {
+            StudioSessionStatus.RECORDING -> {
+                stopRecordingInternal()
+                _state.value = _state.value.copy(message = "Bản thu đã dừng vì audio focus bị gián đoạn")
+            }
+            StudioSessionStatus.PLAYING -> {
+                engine?.setPlaying(false)
+                audioFocusManager?.abandon()
+                _state.value = current.copy(
+                    status = StudioSessionStatus.READY,
+                    message = "Playback đã tạm dừng vì ứng dụng khác cần audio",
+                )
+            }
+            StudioSessionStatus.CALIBRATING -> {
+                operationJob?.cancel()
+                operationJob = null
+                audioFocusManager?.abandon()
+            }
+            else -> audioFocusManager?.abandon()
         }
     }
 
@@ -1201,13 +1321,21 @@ object StudioSessionRuntime {
         inputIdOverride: Int? = _state.value.selectedInputDeviceId,
         outputIdOverride: Int? = _state.value.selectedOutputDeviceId,
     ): StudioLatencyProfile? {
-        val diagnostics = _state.value.diagnostics
-        val rate = diagnostics?.sampleRate ?: return null
+        val diagnostics = _state.value.diagnostics ?: return null
+        return profileForDiagnostics(mode, diagnostics, inputIdOverride, outputIdOverride)
+    }
+
+    private fun profileForDiagnostics(
+        mode: StudioInputMode,
+        diagnostics: StudioAudioDiagnostics,
+        inputIdOverride: Int? = _state.value.selectedInputDeviceId,
+        outputIdOverride: Int? = diagnostics.outputDeviceId.takeIf { it >= 0 },
+    ): StudioLatencyProfile? {
         val route = latencyRoute(
             inputDeviceId = inputIdOverride ?: diagnostics.inputDeviceId,
             outputDeviceId = outputIdOverride ?: diagnostics.outputDeviceId.takeIf { it >= 0 },
             mode = mode,
-            sampleRate = rate,
+            sampleRate = diagnostics.sampleRate,
         )
         return latencyStore?.find(route)
     }
@@ -1254,10 +1382,29 @@ object StudioSessionRuntime {
     private fun closeEngineInternal() {
         pollJob?.cancel()
         pollJob = null
+        audioFocusManager?.abandon()
         engine?.close()
         engine = null
         pendingTake = null
         pendingPunch = null
+        outputSuspendedForBackground = false
+    }
+
+    private fun resumeOutputIfNeeded(native: StudioNativeAudio): Boolean {
+        if (!outputSuspendedForBackground) return true
+        return when (val result = native.start()) {
+            StudioAudioOperationResult.Success -> {
+                outputSuspendedForBackground = false
+                true
+            }
+            else -> {
+                _state.value = _state.value.copy(
+                    status = StudioSessionStatus.ERROR,
+                    errorMessage = operationError("Không thể khởi động lại Studio audio", result),
+                )
+                false
+            }
+        }
     }
 
     private fun projectDurationFrames(project: StudioProject): Long {

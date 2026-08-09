@@ -181,13 +181,14 @@ object StudioEditEngine {
             }
         }.toMutableList()
 
+        val compensatedTakeStart = recordedTakeStart - take.latencyCompensationFrames
         val sourceStart = timelineDeltaToSource(
-            (punchStart - recordedTakeStart).coerceAtLeast(0L),
+            (punchStart - compensatedTakeStart).coerceAtLeast(0L),
             sourceRate,
             materialized.timelineSampleRate,
         ).coerceIn(0L, take.recordedFrames)
         val requestedSourceEnd = timelineDeltaToSource(
-            (punchEnd - recordedTakeStart).coerceAtLeast(0L),
+            (punchEnd - compensatedTakeStart).coerceAtLeast(0L),
             sourceRate,
             materialized.timelineSampleRate,
         )

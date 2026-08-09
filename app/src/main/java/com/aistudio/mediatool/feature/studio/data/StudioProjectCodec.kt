@@ -81,6 +81,7 @@ object StudioProjectCodec {
         put("type", track.type.name)
         put("name", track.name)
         putNullable("primaryAssetId", track.primaryAssetId)
+        putNullable("activeTakeId", track.activeTakeId)
         put("volumeDb", track.volumeDb.toDouble())
         put("pan", track.pan.toDouble())
         put("muted", track.muted)
@@ -95,6 +96,7 @@ object StudioProjectCodec {
         type = enumOrDefault(json.optString("type"), StudioTrackType.OTHER),
         name = json.optString("name").ifBlank { "Track" },
         primaryAssetId = json.nullableString("primaryAssetId"),
+        activeTakeId = json.nullableString("activeTakeId"),
         volumeDb = json.optDouble("volumeDb", 0.0).toFloat(),
         pan = json.optDouble("pan", 0.0).toFloat().coerceIn(-1f, 1f),
         muted = json.optBoolean("muted", false),

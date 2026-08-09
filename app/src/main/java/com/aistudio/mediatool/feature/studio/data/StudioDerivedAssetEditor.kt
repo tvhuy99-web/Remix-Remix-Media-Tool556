@@ -43,22 +43,22 @@ object StudioDerivedAssetEditor {
 
         var changed = false
         val tracks = project.tracks.map { track ->
-            var primaryAssetId = track.primaryAssetId
-            if (primaryAssetId == current.id) {
-                primaryAssetId = replacement.id
-                changed = true
-            }
-            val replacedClips = track.clips.map { clip ->
-                if (clip.sourceAssetId == current.id) {
-                    changed = true
-                    remapClip(project, clip, current, replacement)
-                } else clip
-            }
-            if (replacedClips != track.clips || primaryAssetId != track.primaryAssetId) {
-                return@map track.copy(primaryAssetId = primaryAssetId, clips = replacedClips)
+            if (track.clips.isNotEmpty()) {
+                val replacedClips = track.clips.map { clip ->
+                    if (clip.sourceAssetId == current.id) {
+                        changed = true
+                        remapClip(project, clip, current, replacement)
+                    } else clip
+                }
+                val primary = if (track.primaryAssetId == current.id) replacement.id else track.primaryAssetId
+                if (primary != track.primaryAssetId) changed = true
+                if (replacedClips != track.clips || primary != track.primaryAssetId) {
+                    return@map track.copy(primaryAssetId = primary, clips = replacedClips)
+                }
+                return@map track
             }
 
-            if (allowMaterializeTake && track.clips.isEmpty()) {
+            if (allowMaterializeTake) {
                 val take = track.activeTakeId
                     ?.let { id -> track.takes.firstOrNull { it.id == id } }
                     ?: track.takes.lastOrNull()
@@ -86,7 +86,13 @@ object StudioDerivedAssetEditor {
                     )
                 }
             }
-            track
+
+            if (track.primaryAssetId == current.id) {
+                changed = true
+                track.copy(primaryAssetId = replacement.id)
+            } else {
+                track
+            }
         }
         require(changed) { "Asset chưa được dùng trong arrangement hiện tại" }
         return project.copy(tracks = tracks)

@@ -3,12 +3,15 @@ package com.aistudio.mediatool.feature.studio.audio
 import android.content.Context
 import android.media.AudioManager
 import java.io.Closeable
+import java.io.File
 
-/**
- * Thin owner for the native Oboe engine. Step 2 only establishes the output
- * clock and diagnostics. Beat rendering and microphone capture are added on top
- * of this engine in the Studio Recording step.
- */
+enum class StudioInputMode(val nativeValue: Int) {
+    AUTO(0),
+    STUDIO_RAW(1),
+    LIVE_LOW_LATENCY(2),
+}
+
+/** Thread-safe Kotlin owner for the realtime Oboe Studio engine. */
 class StudioNativeAudio(context: Context) : Closeable {
     private val nativeLock = Any()
     private var nativeHandle: Long = nativeCreate()
@@ -30,21 +33,47 @@ class StudioNativeAudio(context: Context) : Closeable {
         get() = synchronized(nativeLock) { nativeHandle == 0L }
 
     fun openOutput(preferredDeviceId: Int? = null): StudioAudioOperationResult = synchronized(nativeLock) {
-        val handle = nativeHandle
-        if (handle == 0L) return@synchronized StudioAudioOperationResult.Released
-        resultOf(nativeOpenOutput(handle, preferredDeviceId ?: -1))
+        withHandle { resultOf(nativeOpenOutput(it, preferredDeviceId ?: -1)) }
     }
 
     fun start(): StudioAudioOperationResult = synchronized(nativeLock) {
-        val handle = nativeHandle
-        if (handle == 0L) return@synchronized StudioAudioOperationResult.Released
-        resultOf(nativeStart(handle))
+        withHandle { resultOf(nativeStart(it)) }
     }
 
     fun stop(): StudioAudioOperationResult = synchronized(nativeLock) {
+        withHandle { resultOf(nativeStop(it)) }
+    }
+
+    fun loadBeat(file: File, sampleRate: Int, channelCount: Int): StudioAudioOperationResult = synchronized(nativeLock) {
+        if (!file.isFile || file.length() <= 0L) return@synchronized StudioAudioOperationResult.Error(-10_001)
+        withHandle { resultOf(nativeLoadBeat(it, file.absolutePath, sampleRate, channelCount)) }
+    }
+
+    fun setPlaying(playing: Boolean) = synchronized(nativeLock) {
         val handle = nativeHandle
-        if (handle == 0L) return@synchronized StudioAudioOperationResult.Released
-        resultOf(nativeStop(handle))
+        if (handle != 0L) nativeSetPlaying(handle, playing)
+    }
+
+    fun seek(projectFrame: Long) = synchronized(nativeLock) {
+        val handle = nativeHandle
+        if (handle != 0L) nativeSeek(handle, projectFrame.coerceAtLeast(0L))
+    }
+
+    fun prepareInput(
+        preferredDeviceId: Int? = null,
+        mode: StudioInputMode = StudioInputMode.AUTO,
+    ): StudioAudioOperationResult = synchronized(nativeLock) {
+        withHandle { resultOf(nativePrepareInput(it, preferredDeviceId ?: -1, mode.nativeValue)) }
+    }
+
+    fun startRecording(target: File): StudioAudioOperationResult = synchronized(nativeLock) {
+        target.parentFile?.mkdirs()
+        target.delete()
+        withHandle { resultOf(nativeStartRecording(it, target.absolutePath)) }
+    }
+
+    fun stopRecording(): StudioAudioOperationResult = synchronized(nativeLock) {
+        withHandle { resultOf(nativeStopRecording(it)) }
     }
 
     fun closeStream() = synchronized(nativeLock) {
@@ -63,12 +92,21 @@ class StudioNativeAudio(context: Context) : Closeable {
             framesPerBurst = values[2].toInt(),
             bufferSizeFrames = values[3].toInt(),
             bufferCapacityFrames = values[4].toInt(),
-            deviceId = values[5].toInt(),
+            outputDeviceId = values[5].toInt(),
             audioApi = values[6].toInt(),
             sharingMode = values[7].toInt(),
             performanceMode = values[8].toInt(),
             callbackFrames = values[9],
             disconnectCount = values[10],
+            transportFrame = values[11],
+            beatDurationFrames = values[12],
+            inputSampleRate = values[13].toInt().takeIf { it > 0 },
+            inputDeviceId = values[14].toInt().takeIf { it >= 0 },
+            recordedFrames = values[15],
+            ringOverrunFrames = values[16],
+            isPlaying = values[17] != 0L,
+            isRecording = values[18] != 0L,
+            writerErrorCode = values[19].toInt(),
         )
     }
 
@@ -79,6 +117,12 @@ class StudioNativeAudio(context: Context) : Closeable {
         nativeRelease(handle)
     }
 
+    private inline fun <T> withHandle(block: (Long) -> T): T {
+        val handle = nativeHandle
+        @Suppress("UNCHECKED_CAST")
+        return if (handle == 0L) StudioAudioOperationResult.Released as T else block(handle)
+    }
+
     private fun resultOf(code: Int): StudioAudioOperationResult =
         if (code == 0) StudioAudioOperationResult.Success else StudioAudioOperationResult.Error(code)
 
@@ -87,12 +131,18 @@ class StudioNativeAudio(context: Context) : Closeable {
     private external fun nativeOpenOutput(handle: Long, preferredDeviceId: Int): Int
     private external fun nativeStart(handle: Long): Int
     private external fun nativeStop(handle: Long): Int
+    private external fun nativeLoadBeat(handle: Long, path: String, sampleRate: Int, channelCount: Int): Int
+    private external fun nativeSetPlaying(handle: Long, playing: Boolean)
+    private external fun nativeSeek(handle: Long, projectFrame: Long)
+    private external fun nativePrepareInput(handle: Long, preferredDeviceId: Int, inputMode: Int): Int
+    private external fun nativeStartRecording(handle: Long, path: String): Int
+    private external fun nativeStopRecording(handle: Long): Int
     private external fun nativeClose(handle: Long)
     private external fun nativeDiagnostics(handle: Long): LongArray
     private external fun nativeRelease(handle: Long)
 
     companion object {
-        private const val DIAGNOSTIC_FIELD_COUNT = 11
+        private const val DIAGNOSTIC_FIELD_COUNT = 20
 
         init {
             System.loadLibrary("mediatool_studio")
@@ -112,12 +162,21 @@ data class StudioAudioDiagnostics(
     val framesPerBurst: Int,
     val bufferSizeFrames: Int,
     val bufferCapacityFrames: Int,
-    val deviceId: Int,
+    val outputDeviceId: Int,
     val audioApi: Int,
     val sharingMode: Int,
     val performanceMode: Int,
     val callbackFrames: Long,
     val disconnectCount: Long,
+    val transportFrame: Long,
+    val beatDurationFrames: Long,
+    val inputSampleRate: Int?,
+    val inputDeviceId: Int?,
+    val recordedFrames: Long,
+    val ringOverrunFrames: Long,
+    val isPlaying: Boolean,
+    val isRecording: Boolean,
+    val writerErrorCode: Int,
 ) {
     val approximateBufferMs: Double
         get() = if (sampleRate > 0) bufferSizeFrames * 1000.0 / sampleRate else 0.0

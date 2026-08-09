@@ -54,7 +54,9 @@ class StudioProjectStore(context: Context) {
             temporary.delete()
         }
         check(target.isFile && target.length() > 0L) { "Không thể lưu dự án Studio" }
-        backup.delete()
+        // Keep the previous valid project snapshot. loadFromDirectory() can then
+        // recover from a later torn/corrupted primary file instead of having a
+        // fallback that only exists during the save operation itself.
     }
 
     fun delete(projectId: String): Boolean {

@@ -1,6 +1,6 @@
 package com.aistudio.mediatool.feature.studio.domain
 
-const val STUDIO_PROJECT_SCHEMA_VERSION = 1
+const val STUDIO_PROJECT_SCHEMA_VERSION = 2
 const val STUDIO_TIMELINE_SAMPLE_RATE = 48_000
 
 enum class StudioAssetKind {
@@ -76,6 +76,11 @@ data class StudioTrack(
     val clips: List<StudioClip> = emptyList(),
 )
 
+data class StudioMasterMix(
+    val gainDb: Float = 0f,
+    val limiterEnabled: Boolean = true,
+)
+
 data class StudioProject(
     val schemaVersion: Int = STUDIO_PROJECT_SCHEMA_VERSION,
     val id: String,
@@ -86,6 +91,7 @@ data class StudioProject(
     val beatAssetId: String? = null,
     val assets: List<StudioAsset> = emptyList(),
     val tracks: List<StudioTrack> = emptyList(),
+    val masterMix: StudioMasterMix = StudioMasterMix(),
 ) {
     fun asset(assetId: String?): StudioAsset? =
         assetId?.let { id -> assets.firstOrNull { it.id == id } }

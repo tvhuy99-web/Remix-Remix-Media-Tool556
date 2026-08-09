@@ -7,6 +7,7 @@ import com.aistudio.mediatool.feature.studio.domain.STUDIO_PROJECT_SCHEMA_VERSIO
 import com.aistudio.mediatool.feature.studio.domain.STUDIO_TIMELINE_SAMPLE_RATE
 import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
+import com.aistudio.mediatool.feature.studio.domain.StudioProSettings
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
@@ -66,6 +67,62 @@ class StudioProjectRepository(context: Context) {
         )
         projectStore.save(updated)
         return updated
+    }
+
+    fun updateProSettings(projectId: String, settings: StudioProSettings): StudioProject {
+        val project = requireNotNull(load(projectId)) { "Không tìm thấy dự án Studio" }
+        return save(project.copy(proSettings = settings))
+    }
+
+    fun derivedOutputFile(projectId: String, processorId: String): Pair<String, File> {
+        val safeProcessor = DocumentUtils.sanitizeFileName(processorId)
+            .replace(' ', '_')
+            .ifBlank { "processor" }
+            .take(40)
+        val relativePath = "derived/${safeProcessor}_${UUID.randomUUID().toString().take(8)}.wav"
+        val file = resolveProjectFile(projectId, relativePath)
+        file.parentFile?.mkdirs()
+        file.delete()
+        return relativePath to file
+    }
+
+    fun commitDerivedAsset(
+        projectId: String,
+        sourceAssetId: String,
+        relativePath: String,
+        displayName: String,
+        processorId: String,
+        processorLabel: String,
+        processorConfig: String? = null,
+    ): Pair<StudioProject, StudioAsset> {
+        val project = requireNotNull(load(projectId)) { "Không tìm thấy dự án Studio" }
+        requireNotNull(project.asset(sourceAssetId)) { "Không tìm thấy source asset" }
+        val file = resolveProjectFile(projectId, relativePath)
+        val info = requireNotNull(StudioWavFile.inspectCanonicalPcm16(file)) {
+            "Derived audio phải là WAV PCM16 canonical"
+        }
+        val asset = StudioAsset(
+            id = UUID.randomUUID().toString(),
+            kind = StudioAssetKind.DERIVED,
+            relativePath = relativePath,
+            displayName = displayName.take(120),
+            mimeType = "audio/wav",
+            bytes = file.length(),
+            sourceAssetId = sourceAssetId,
+            processorId = processorId,
+            processorLabel = processorLabel,
+            processorConfig = processorConfig,
+            sampleRate = info.sampleRate,
+            channelCount = info.channelCount,
+            durationFrames = info.dataFrames,
+        )
+        val saved = save(project.copy(assets = project.assets.filterNot { it.id == asset.id } + asset))
+        return saved to asset
+    }
+
+    fun applyDerivedAsset(projectId: String, sourceAssetId: String, derivedAssetId: String): StudioProject {
+        val project = requireNotNull(load(projectId)) { "Không tìm thấy dự án Studio" }
+        return save(StudioDerivedAssetEditor.apply(project, sourceAssetId, derivedAssetId))
     }
 
     fun updatePreparedBeat(

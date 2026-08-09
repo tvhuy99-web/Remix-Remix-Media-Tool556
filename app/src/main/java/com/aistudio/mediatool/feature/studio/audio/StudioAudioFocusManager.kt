@@ -33,7 +33,7 @@ class StudioAudioFocusManager(
     private var activeRequest: AudioFocusRequest? = null
     private var legacyActive = false
 
-    fun requestPlayback(): Boolean = request(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+    fun requestPlayback(): Boolean = request(AudioManager.AUDIOFOCUS_GAIN)
 
     fun requestRecording(): Boolean = request(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
 

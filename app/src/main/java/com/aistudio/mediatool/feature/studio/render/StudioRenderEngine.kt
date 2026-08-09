@@ -10,6 +10,7 @@ import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
+import com.aistudio.mediatool.feature.studio.domain.latencyCompensatedPlacement
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -95,7 +96,7 @@ class StudioRenderEngine(context: Context) {
         val clips = if (track.clips.isNotEmpty()) {
             track.clips
         } else {
-            activeTake(track)?.let { listOf(fullTakeClip(it)) }.orEmpty()
+            activeTake(track)?.let { listOf(fullTakeClip(project, it)) }.orEmpty()
         }
         return clips.map { clip ->
             val asset = requireNotNull(project.asset(clip.sourceAssetId)) { "Clip ${clip.id} thiếu asset" }
@@ -180,14 +181,17 @@ class StudioRenderEngine(context: Context) {
         track.activeTakeId?.let { id -> track.takes.firstOrNull { it.id == id } }
             ?: track.takes.lastOrNull()
 
-    private fun fullTakeClip(take: StudioTake): StudioClip = StudioClip(
-        id = "render-${take.id}",
-        sourceAssetId = take.assetId,
-        sourceTakeId = take.id,
-        timelineStartFrame = (take.recordedTimelineFrame - take.latencyCompensationFrames).coerceAtLeast(0L),
-        sourceStartFrame = 0L,
-        sourceEndFrame = take.recordedFrames,
-    )
+    private fun fullTakeClip(project: StudioProject, take: StudioTake): StudioClip {
+        val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
+        return StudioClip(
+            id = "render-${take.id}",
+            sourceAssetId = take.assetId,
+            sourceTakeId = take.id,
+            timelineStartFrame = placement.timelineStartFrame,
+            sourceStartFrame = placement.sourceStartFrame,
+            sourceEndFrame = placement.sourceEndFrame,
+        )
+    }
 
     private fun seconds(frames: Long, rate: Int): String =
         String.format(Locale.US, "%.9f", frames.toDouble() / rate.coerceAtLeast(1).toDouble())

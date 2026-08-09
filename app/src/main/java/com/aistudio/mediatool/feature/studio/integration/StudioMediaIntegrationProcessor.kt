@@ -21,6 +21,7 @@ import com.aistudio.mediatool.feature.studio.render.StudioProFilterBuilder
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -168,15 +169,16 @@ class StudioMediaIntegrationProcessor(context: Context) {
             taskId = "studio-${UUID.randomUUID()}",
             config = config,
         )
-        val terminal = processor.cleanup(sourceUri).first { state ->
+        var success: VoiceCleanupState.Success? = null
+        processor.cleanup(sourceUri).collect { state ->
             when (state) {
                 is VoiceCleanupState.Progress -> {
                     onProgress(0.05f + state.value.coerceIn(0f, 1f) * 0.72f, state.phase)
-                    false
                 }
-                is VoiceCleanupState.Success -> true
+                is VoiceCleanupState.Success -> success = state
             }
-        } as VoiceCleanupState.Success
+        }
+        val terminal = requireNotNull(success) { "Voice Cleanup không trả kết quả" }
         try {
             canonicalize(
                 source = terminal.outputFile,
@@ -232,7 +234,9 @@ class StudioMediaIntegrationProcessor(context: Context) {
             reverbWet = 0.07f,
             outputGainDb = -1f,
         )
-        val terminal = spatial.process(
+        var success = false
+        var failure: String? = null
+        spatial.process(
             inputSaf = sourceFile.absolutePath,
             output = encodedTarget,
             sourceDurationMs = durationMs,
@@ -242,17 +246,19 @@ class StudioMediaIntegrationProcessor(context: Context) {
             modeIndex = 0,
             extension = "wav",
             preview = false,
-        ).first { state ->
+        ).collect { state ->
             when (state) {
                 is SpatialAudioEngine.State.Progress -> {
                     onProgress(0.05f + state.percent.coerceIn(0f, 100f) / 100f * 0.78f, state.message)
-                    false
                 }
-                is SpatialAudioEngine.State.Success,
-                is SpatialAudioEngine.State.Error -> true
+                is SpatialAudioEngine.State.Success -> success = true
+                is SpatialAudioEngine.State.Error -> failure = state.message
             }
         }
-        if (terminal is SpatialAudioEngine.State.Error) error(terminal.message)
+        failure?.let(::error)
+        require(success && encodedTarget.isFile && encodedTarget.length() > 0L) {
+            "Spatial Audio không tạo kết quả"
+        }
         canonicalize(
             source = encodedTarget,
             rawTarget = rawTarget,

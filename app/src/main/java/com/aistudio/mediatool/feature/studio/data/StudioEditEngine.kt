@@ -4,6 +4,7 @@ import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
+import com.aistudio.mediatool.feature.studio.domain.latencyCompensatedPlacement
 import java.util.UUID
 import kotlin.math.roundToLong
 
@@ -27,7 +28,7 @@ object StudioEditEngine {
         require(trackIndex >= 0) { "Không tìm thấy track Studio" }
         val track = project.tracks[trackIndex]
         val take = requireNotNull(activeTake(track)) { "Track chưa có Active Take" }
-        val clip = fullTakeClip(take)
+        val clip = fullTakeClip(project, take)
         return EditResult(project.replaceTrack(trackIndex, track.copy(clips = listOf(clip))), clip.id)
     }
 
@@ -255,15 +256,15 @@ object StudioEditEngine {
         )
     }
 
-    private fun fullTakeClip(take: StudioTake): StudioClip {
-        val start = (take.recordedTimelineFrame - take.latencyCompensationFrames).coerceAtLeast(0L)
+    private fun fullTakeClip(project: StudioProject, take: StudioTake): StudioClip {
+        val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
         return StudioClip(
             id = UUID.randomUUID().toString(),
             sourceAssetId = take.assetId,
             sourceTakeId = take.id,
-            timelineStartFrame = start,
-            sourceStartFrame = 0L,
-            sourceEndFrame = take.recordedFrames,
+            timelineStartFrame = placement.timelineStartFrame,
+            sourceStartFrame = placement.sourceStartFrame,
+            sourceEndFrame = placement.sourceEndFrame,
         )
     }
 

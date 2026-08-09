@@ -148,7 +148,7 @@ object StudioSessionRuntime {
         }
     }
 
-    private suspend fun openInternal(context: Context, projectId: String) {
+    private fun openInternal(context: Context, projectId: String) {
         if (_state.value.status == StudioSessionStatus.RECORDING) stopRecordingInternal()
         closeEngineInternal()
         appContext = context
@@ -246,21 +246,39 @@ object StudioSessionRuntime {
         val project = current.project ?: return
         if (!current.isPrepared || current.status == StudioSessionStatus.RECORDING) return
 
+        val wasPlaying = current.status == StudioSessionStatus.PLAYING
+        native.setPlaying(false)
+        _state.value = current.copy(
+            status = StudioSessionStatus.READY,
+            message = "Đang chuẩn bị microphone...",
+            errorMessage = null,
+        )
+
+        fun failRecordingSetup(message: String) {
+            if (wasPlaying) native.setPlaying(true)
+            _state.value = current.copy(
+                status = if (wasPlaying) StudioSessionStatus.PLAYING else StudioSessionStatus.READY,
+                message = null,
+                errorMessage = message,
+                diagnostics = native.diagnostics(),
+            )
+        }
+
         val inputResult = native.prepareInput(preferredInputDeviceId, mode)
         if (inputResult !is StudioAudioOperationResult.Success) {
-            _state.value = current.copy(errorMessage = operationError("Không thể mở microphone Studio", inputResult))
+            failRecordingSetup(operationError("Không thể mở microphone Studio", inputResult))
             return
         }
         val inputDiagnostics = native.diagnostics()
         if (inputDiagnostics == null) {
             native.stopRecording()
-            _state.value = current.copy(errorMessage = "Studio không đọc được cấu hình microphone")
+            failRecordingSetup("Studio không đọc được cấu hình microphone")
             return
         }
         val inputSampleRate = inputDiagnostics.inputSampleRate ?: inputDiagnostics.sampleRate
         if (inputSampleRate <= 0) {
             native.stopRecording()
-            _state.value = current.copy(errorMessage = "Studio không xác định được sample rate microphone")
+            failRecordingSetup("Studio không xác định được sample rate microphone")
             return
         }
         val pending = runCatching {
@@ -272,7 +290,7 @@ object StudioSessionRuntime {
             )
         }.getOrElse { error ->
             native.stopRecording()
-            _state.value = current.copy(errorMessage = error.message ?: "Không thể chuẩn bị Studio take")
+            failRecordingSetup(error.message ?: "Không thể chuẩn bị Studio take")
             return
         }
         val target = repo.pendingTakeFile(pending)
@@ -280,17 +298,18 @@ object StudioSessionRuntime {
         if (!serviceStarted) {
             native.stopRecording()
             repo.cancelTake(pending)
-            _state.value = current.copy(errorMessage = "Không thể khởi động dịch vụ thu âm Studio")
+            failRecordingSetup("Không thể khởi động dịch vụ thu âm Studio")
             return
         }
 
         when (val result = native.startRecording(target)) {
             StudioAudioOperationResult.Success -> {
                 pendingTake = pending
-                native.setPlaying(true)
-                _state.value = current.copy(
+                _state.value = _state.value.copy(
                     status = StudioSessionStatus.RECORDING,
+                    message = null,
                     errorMessage = null,
+                    transportFrame = pending.recordedTimelineFrame,
                     diagnostics = native.diagnostics(),
                 )
                 DiagnosticLogger.info(
@@ -310,7 +329,7 @@ object StudioSessionRuntime {
                 native.stopRecording()
                 repo.cancelTake(pending)
                 StudioSessionService.stop(context)
-                _state.value = current.copy(errorMessage = operationError("Không thể bắt đầu Studio take", result))
+                failRecordingSetup(operationError("Không thể bắt đầu Studio take", result))
             }
         }
     }
@@ -349,6 +368,7 @@ object StudioSessionRuntime {
         _state.value = _state.value.copy(
             project = refreshedProject,
             status = StudioSessionStatus.READY,
+            message = null,
             durationFrames = refreshedProject?.let(::projectDurationFrames) ?: _state.value.durationFrames,
             waveforms = refreshedWaves,
             diagnostics = native.diagnostics(),

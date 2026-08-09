@@ -24,7 +24,9 @@ object StudioPlaybackPlanner {
                         activeTake(track)?.let { listOf(fullTakeClip(it)) }.orEmpty()
                     }
                     clips.forEach { clip ->
-                        val file = repository.assetFile(project.id, clip.sourceAssetId) ?: return@forEach
+                        val file = requireNotNull(repository.assetFile(project.id, clip.sourceAssetId)) {
+                            "Không tìm thấy audio asset cho clip ${clip.id}"
+                        }
                         add(
                             StudioPlaybackClip(
                                 file = file,

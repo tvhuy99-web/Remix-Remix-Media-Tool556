@@ -24,7 +24,6 @@ constexpr int32_t kRecordingChannelCount = 1;
 constexpr int64_t kNoSeek = -1;
 constexpr int32_t kCustomErrorFile = -10'001;
 constexpr int32_t kCustomErrorBeatFormat = -10'002;
-constexpr int32_t kCustomErrorInputUnavailable = -10'003;
 constexpr int32_t kCustomErrorRecordingState = -10'004;
 constexpr int32_t kCustomErrorWriter = -10'005;
 constexpr size_t kWavHeaderBytes = 44;
@@ -206,7 +205,7 @@ public:
 
         const int32_t desiredSampleRate = outputStream_->getSampleRate();
         const std::vector<oboe::InputPreset> presets = presetsForMode(inputMode);
-        oboe::Result lastResult = oboe::Result::ErrorUnavailable;
+        oboe::Result lastResult = oboe::Result::ErrorInternal;
         for (const auto preset : presets) {
             lastResult = openInputWithPreset(
                 preferredDeviceId,
@@ -235,6 +234,8 @@ public:
         inputScratch_.assign(static_cast<size_t>(capacity), 0.0f);
         pcm16Scratch_.assign(static_cast<size_t>(capacity), 0);
         const int32_t inputRate = std::max(1, inputStream_->getSampleRate());
+        lastInputSampleRate_.store(inputRate);
+        lastInputDeviceId_.store(inputStream_->getDeviceId());
         ringBuffer_.reset(static_cast<size_t>(inputRate) * 8U);
         ringOverrunFrames_.store(0);
         inputReadFrames_.store(0);
@@ -252,9 +253,11 @@ public:
         if (path == nullptr || inputStream_ == nullptr || recording_.load() || writerThread_.joinable()) {
             return kCustomErrorRecordingState;
         }
+        const int32_t sampleRate = std::max(1, inputStream_->getSampleRate());
+        recordingSampleRate_.store(sampleRate);
         FILE* file = std::fopen(path, "wb+");
         if (file == nullptr) return kCustomErrorFile;
-        if (!writeCanonicalWavHeader(file, inputStream_->getSampleRate(), kRecordingChannelCount, 0U)) {
+        if (!writeCanonicalWavHeader(file, sampleRate, kRecordingChannelCount, 0U)) {
             std::fclose(file);
             return kCustomErrorWriter;
         }
@@ -267,8 +270,8 @@ public:
         ringOverrunFrames_.store(0);
         inputReadFrames_.store(0);
         writerRunning_.store(true);
-        recording_.store(true);
         writerThread_ = std::thread([this]() { writerLoop(); });
+        recording_.store(true);
         playing_.store(true);
         return 0;
     }
@@ -359,7 +362,8 @@ public:
         constexpr jsize kFieldCount = 20;
         jlong values[kFieldCount] = {};
         values[5] = -1;
-        values[13] = -1;
+        values[13] = lastInputSampleRate_.load();
+        values[14] = lastInputDeviceId_.load();
 
         auto output = outputStream_;
         if (output) {
@@ -382,8 +386,6 @@ public:
         if (input) {
             values[13] = input->getSampleRate();
             values[14] = input->getDeviceId();
-        } else {
-            values[14] = -1;
         }
         values[15] = recordedFrames_.load();
         values[16] = ringOverrunFrames_.load();
@@ -450,7 +452,11 @@ private:
             case 1:
                 return {oboe::InputPreset::Unprocessed, oboe::InputPreset::Generic};
             case 2:
-                return {oboe::InputPreset::VoicePerformance, oboe::InputPreset::VoiceRecognition, oboe::InputPreset::Generic};
+                return {
+                    oboe::InputPreset::VoicePerformance,
+                    oboe::InputPreset::VoiceRecognition,
+                    oboe::InputPreset::Generic,
+                };
             default:
                 return {
                     oboe::InputPreset::Unprocessed,
@@ -463,10 +469,7 @@ private:
 
     void captureInput(int32_t requestedFrames) {
         if (!recording_.load() || !inputStream_ || inputScratch_.empty() || pcm16Scratch_.empty()) return;
-        const int32_t framesToRead = std::min<int32_t>(
-            requestedFrames,
-            static_cast<int32_t>(inputScratch_.size())
-        );
+        const int32_t framesToRead = std::min<int32_t>(requestedFrames, static_cast<int32_t>(inputScratch_.size()));
         if (framesToRead <= 0) return;
         inputReadActive_.store(true, std::memory_order_release);
         auto result = inputStream_->read(inputScratch_.data(), framesToRead, 0);
@@ -475,15 +478,12 @@ private:
             for (int32_t frame = 0; frame < framesRead; ++frame) {
                 pcm16Scratch_[static_cast<size_t>(frame)] = floatToPcm16(inputScratch_[static_cast<size_t>(frame)]);
             }
-            const size_t accepted = ringBuffer_.push(
-                pcm16Scratch_.data(),
-                static_cast<size_t>(framesRead)
-            );
+            const size_t accepted = ringBuffer_.push(pcm16Scratch_.data(), static_cast<size_t>(framesRead));
             if (accepted < static_cast<size_t>(framesRead)) {
                 ringOverrunFrames_.fetch_add(static_cast<int64_t>(framesRead) - static_cast<int64_t>(accepted));
             }
             inputReadFrames_.fetch_add(framesRead);
-        } else if (result.error() == oboe::Result::ErrorDisconnected) {
+        } else if (result == oboe::Result::ErrorDisconnected) {
             recording_.store(false);
             disconnectCount_.fetch_add(1);
         }
@@ -511,7 +511,7 @@ private:
     void writerLoop() {
         std::vector<int16_t> localBuffer(8'192);
         int64_t framesSinceSync = 0;
-        const int32_t syncEveryFrames = inputStream_ ? std::max(1, inputStream_->getSampleRate()) : kDefaultProjectSampleRate;
+        const int32_t sampleRate = std::max(1, recordingSampleRate_.load());
         while (recording_.load() || ringBuffer_.available() > 0) {
             const size_t count = ringBuffer_.pop(localBuffer.data(), localBuffer.size());
             if (count == 0) {
@@ -531,7 +531,7 @@ private:
                 recording_.store(false);
                 break;
             }
-            if (framesSinceSync >= syncEveryFrames) {
+            if (framesSinceSync >= sampleRate) {
                 std::fflush(file);
                 ::fsync(::fileno(file));
                 framesSinceSync = 0;
@@ -542,8 +542,7 @@ private:
         if (file != nullptr) {
             const int64_t frameCount = recordedFrames_.load();
             const uint32_t dataBytes = static_cast<uint32_t>(std::max<int64_t>(0, frameCount) * sizeof(int16_t));
-            const int32_t sampleRate = inputStream_ ? inputStream_->getSampleRate() : lastInputSampleRate_.load();
-            if (!writeCanonicalWavHeader(file, std::max(1, sampleRate), kRecordingChannelCount, dataBytes)) {
+            if (!writeCanonicalWavHeader(file, sampleRate, kRecordingChannelCount, dataBytes)) {
                 writerError_.store(kCustomErrorWriter);
             }
             std::fflush(file);
@@ -617,8 +616,9 @@ private:
     std::atomic<int64_t> ringOverrunFrames_{0};
     std::atomic<int64_t> inputReadFrames_{0};
     std::atomic<int32_t> writerError_{0};
-    std::atomic<int32_t> lastInputSampleRate_{kDefaultProjectSampleRate};
+    std::atomic<int32_t> lastInputSampleRate_{0};
     std::atomic<int32_t> lastInputDeviceId_{-1};
+    std::atomic<int32_t> recordingSampleRate_{kDefaultProjectSampleRate};
 };
 
 StudioAudioEngine* fromHandle(jlong handle) {

@@ -1,9 +1,11 @@
 package com.aistudio.mediatool.navigation
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.compose.runtime.Composable
+import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
 import com.aistudio.mediatool.feature.studio.ui.StudioLabScreen
 import com.aistudio.mediatool.feature.studio.ui.StudioProjectScreen
 import com.aistudio.mediatool.feature.studio.ui.StudioProjectsScreen
@@ -38,6 +40,9 @@ fun AppNavigation() {
         }
         composable(Route.StudioProject.path) { backStackEntry ->
             val projectId = backStackEntry.arguments?.getString("projectId").orEmpty()
+            DisposableEffect(projectId) {
+                onDispose { StudioSessionRuntime.closeProject() }
+            }
             StudioProjectScreen(
                 projectId = projectId,
                 onNavigateBack = { navController.popBackStack() },

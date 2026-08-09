@@ -1,9 +1,11 @@
 package com.aistudio.mediatool.navigation
 
-import androidx.compose.runtime.Composable
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.runtime.Composable
+import com.aistudio.mediatool.feature.studio.ui.StudioProjectScreen
+import com.aistudio.mediatool.feature.studio.ui.StudioProjectsScreen
 import com.aistudio.mediatool.ui.screens.*
 
 @Composable
@@ -13,6 +15,7 @@ fun AppNavigation() {
     NavHost(navController = navController, startDestination = Route.Main.path) {
         composable(Route.Main.path) {
             MainScreen(
+                onNavigateToStudio = { navController.navigate(Route.StudioProjects.path) },
                 onNavigateToRecord = { navController.navigate(Route.Record.path) },
                 onNavigateToTrim = { navController.navigate(Route.Trim.path) },
                 onNavigateToJoin = { navController.navigate(Route.Join.path) },
@@ -23,6 +26,19 @@ fun AppNavigation() {
                 onNavigateToVoiceCleanup = { navController.navigate(Route.VoiceCleanup.path) },
                 onNavigateToOther = { navController.navigate(Route.Other.path) },
                 onNavigateToSettings = { navController.navigate(Route.Settings.path) },
+            )
+        }
+        composable(Route.StudioProjects.path) {
+            StudioProjectsScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onOpenProject = { projectId -> navController.navigate(Route.StudioProject.create(projectId)) },
+            )
+        }
+        composable(Route.StudioProject.path) { backStackEntry ->
+            val projectId = backStackEntry.arguments?.getString("projectId").orEmpty()
+            StudioProjectScreen(
+                projectId = projectId,
+                onNavigateBack = { navController.popBackStack() },
             )
         }
         composable(Route.Record.path) { RecordScreen(navController = navController) }

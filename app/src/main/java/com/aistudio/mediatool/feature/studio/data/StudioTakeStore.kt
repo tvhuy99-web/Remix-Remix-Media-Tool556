@@ -13,6 +13,7 @@ data class PendingStudioTake(
     val recordedTimelineFrame: Long,
     val inputSampleRate: Int,
     val inputDeviceId: Int?,
+    val latencyCompensationFrames: Long,
     val channelCount: Int,
     val partialRelativePath: String,
     val finalRelativePath: String,
@@ -33,6 +34,7 @@ class StudioTakeStore(private val projectStore: StudioProjectStore) {
         recordedTimelineFrame: Long,
         inputSampleRate: Int,
         inputDeviceId: Int?,
+        latencyCompensationFrames: Long = 0L,
         channelCount: Int = 1,
     ): PendingStudioTake {
         require(inputSampleRate > 0) { "Sample rate đầu vào không hợp lệ" }
@@ -47,6 +49,7 @@ class StudioTakeStore(private val projectStore: StudioProjectStore) {
             recordedTimelineFrame = recordedTimelineFrame.coerceAtLeast(0L),
             inputSampleRate = inputSampleRate,
             inputDeviceId = inputDeviceId,
+            latencyCompensationFrames = latencyCompensationFrames.coerceAtLeast(0L),
             channelCount = channelCount,
             partialRelativePath = "recovery/$takeId.partial.wav",
             finalRelativePath = "takes/take_${takeId.take(8)}.wav",
@@ -129,6 +132,7 @@ class StudioTakeStore(private val projectStore: StudioProjectStore) {
             put("recordedTimelineFrame", pending.recordedTimelineFrame)
             put("inputSampleRate", pending.inputSampleRate)
             put("inputDeviceId", pending.inputDeviceId ?: JSONObject.NULL)
+            put("latencyCompensationFrames", pending.latencyCompensationFrames)
             put("channelCount", pending.channelCount)
             put("partialRelativePath", pending.partialRelativePath)
             put("finalRelativePath", pending.finalRelativePath)
@@ -159,6 +163,7 @@ class StudioTakeStore(private val projectStore: StudioProjectStore) {
             recordedTimelineFrame = json.optLong("recordedTimelineFrame", 0L),
             inputSampleRate = json.getInt("inputSampleRate"),
             inputDeviceId = if (json.isNull("inputDeviceId")) null else json.optInt("inputDeviceId"),
+            latencyCompensationFrames = json.optLong("latencyCompensationFrames", 0L).coerceAtLeast(0L),
             channelCount = json.optInt("channelCount", 1).coerceIn(1, 2),
             partialRelativePath = json.getString("partialRelativePath"),
             finalRelativePath = json.getString("finalRelativePath"),

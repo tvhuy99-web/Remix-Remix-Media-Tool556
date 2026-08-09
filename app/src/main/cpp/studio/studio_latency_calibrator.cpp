@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -100,7 +101,12 @@ public:
     }
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream* stream, void* audioData, int32_t numFrames) override {
-        if (audioData == nullptr || numFrames <= 0 || completed_.load()) {
+        if (audioData == nullptr || numFrames <= 0) return oboe::DataCallbackResult::Continue;
+        const int32_t bytesPerFrame = std::max(0, stream->getBytesPerFrame());
+        if (completed_.load() || disconnected_.load()) {
+            if (bytesPerFrame > 0) {
+                std::memset(audioData, 0, static_cast<size_t>(numFrames) * static_cast<size_t>(bytesPerFrame));
+            }
             return oboe::DataCallbackResult::Continue;
         }
         auto* output = static_cast<float*>(audioData);
@@ -236,11 +242,10 @@ private:
 
     std::pair<int64_t, int32_t> estimateLatency() const {
         if (sampleRate_ <= 0 || capture_.empty()) return {-1, 0};
-        const int64_t minLag = sampleRate_ / 200;       // 5 ms
-        const int64_t maxLag = std::min<int64_t>(sampleRate_, totalFrames_ / 2); // 1 s
+        const int64_t minLag = sampleRate_ / 200;
+        const int64_t maxLag = std::min<int64_t>(sampleRate_, totalFrames_ / 2);
         constexpr int32_t pulseLength = 96;
         static constexpr double pulseSeconds[] = {0.250, 0.301, 0.389, 0.527, 0.733};
-        static constexpr float signs[] = {1.0f, -0.85f, 0.72f, -0.92f, 0.78f};
 
         double referenceEnergy = 0.0;
         for (size_t pulse = 0; pulse < 5; ++pulse) {

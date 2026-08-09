@@ -1,5 +1,7 @@
 package com.aistudio.mediatool.feature.studio.audio
 
+import android.content.Context
+import android.media.AudioManager
 import java.io.Closeable
 
 /**
@@ -7,9 +9,22 @@ import java.io.Closeable
  * clock and diagnostics. Beat rendering and microphone capture are added on top
  * of this engine in the Studio Recording step.
  */
-class StudioNativeAudio : Closeable {
+class StudioNativeAudio(context: Context) : Closeable {
     private val nativeLock = Any()
     private var nativeHandle: Long = nativeCreate()
+
+    init {
+        val audioManager = context.applicationContext.getSystemService(AudioManager::class.java)
+        val sampleRate = audioManager
+            ?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
+            ?.toIntOrNull()
+            ?: 0
+        val framesPerBurst = audioManager
+            ?.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)
+            ?.toIntOrNull()
+            ?: 0
+        nativeConfigureDefaults(sampleRate, framesPerBurst)
+    }
 
     val isReleased: Boolean
         get() = synchronized(nativeLock) { nativeHandle == 0L }
@@ -67,6 +82,7 @@ class StudioNativeAudio : Closeable {
     private fun resultOf(code: Int): StudioAudioOperationResult =
         if (code == 0) StudioAudioOperationResult.Success else StudioAudioOperationResult.Error(code)
 
+    private external fun nativeConfigureDefaults(sampleRate: Int, framesPerBurst: Int)
     private external fun nativeCreate(): Long
     private external fun nativeOpenOutput(handle: Long, preferredDeviceId: Int): Int
     private external fun nativeStart(handle: Long): Int

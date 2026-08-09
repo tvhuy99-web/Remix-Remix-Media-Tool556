@@ -19,13 +19,21 @@ object StudioEditEngine {
         require(trackIndex >= 0) { "Không tìm thấy track Studio" }
         val track = project.tracks[trackIndex]
         if (track.clips.isNotEmpty()) return EditResult(project, track.clips.firstOrNull()?.id)
-        val take = activeTake(track) ?: return EditResult(project)
-        val clip = fullTakeClip(project, take)
+        return useActiveTakeAsArrangement(project, trackId)
+    }
+
+    fun useActiveTakeAsArrangement(project: StudioProject, trackId: String): EditResult {
+        val trackIndex = project.tracks.indexOfFirst { it.id == trackId }
+        require(trackIndex >= 0) { "Không tìm thấy track Studio" }
+        val track = project.tracks[trackIndex]
+        val take = requireNotNull(activeTake(track)) { "Track chưa có Active Take" }
+        val clip = fullTakeClip(take)
         return EditResult(project.replaceTrack(trackIndex, track.copy(clips = listOf(clip))), clip.id)
     }
 
     fun split(project: StudioProject, clipId: String, timelineFrame: Long): EditResult {
         val location = requireClip(project, clipId)
+        requireTimelineInside(project, location.clip, timelineFrame, strictStart = true, strictEnd = true)
         val clip = location.clip
         val sourceAt = sourceFrameAtTimeline(project, clip, timelineFrame)
         require(sourceAt > clip.sourceStartFrame && sourceAt < clip.sourceEndFrame) {
@@ -55,6 +63,7 @@ object StudioEditEngine {
 
     fun trimStart(project: StudioProject, clipId: String, timelineFrame: Long): EditResult {
         val location = requireClip(project, clipId)
+        requireTimelineInside(project, location.clip, timelineFrame, strictStart = false, strictEnd = true)
         val sourceAt = sourceFrameAtTimeline(project, location.clip, timelineFrame)
         require(sourceAt >= location.clip.sourceStartFrame && sourceAt < location.clip.sourceEndFrame) {
             "Playhead không nằm trong clip"
@@ -69,6 +78,7 @@ object StudioEditEngine {
 
     fun trimEnd(project: StudioProject, clipId: String, timelineFrame: Long): EditResult {
         val location = requireClip(project, clipId)
+        requireTimelineInside(project, location.clip, timelineFrame, strictStart = true, strictEnd = false)
         val sourceAt = sourceFrameAtTimeline(project, location.clip, timelineFrame)
         require(sourceAt > location.clip.sourceStartFrame && sourceAt <= location.clip.sourceEndFrame) {
             "Playhead không nằm trong clip"
@@ -183,7 +193,7 @@ object StudioEditEngine {
         )
         val sourceEnd = requestedSourceEnd.coerceIn(sourceStart, take.recordedFrames)
         require(sourceEnd > sourceStart) { "Punch take quá ngắn cho vùng đã chọn" }
-        val safetyFade = (sourceRate / 100L).coerceAtMost((sourceEnd - sourceStart) / 2L) // 10 ms
+        val safetyFade = (sourceRate / 100L).coerceAtMost((sourceEnd - sourceStart) / 2L)
         val punchClip = StudioClip(
             id = UUID.randomUUID().toString(),
             sourceAssetId = take.assetId,
@@ -222,6 +232,20 @@ object StudioEditEngine {
         error("Không tìm thấy clip Studio")
     }
 
+    private fun requireTimelineInside(
+        project: StudioProject,
+        clip: StudioClip,
+        timelineFrame: Long,
+        strictStart: Boolean,
+        strictEnd: Boolean,
+    ) {
+        val start = clip.timelineStartFrame
+        val end = timelineEnd(project, clip)
+        val afterStart = if (strictStart) timelineFrame > start else timelineFrame >= start
+        val beforeEnd = if (strictEnd) timelineFrame < end else timelineFrame <= end
+        require(afterStart && beforeEnd) { "Playhead không nằm trong clip" }
+    }
+
     private fun replaceClip(project: StudioProject, location: ClipLocation, updated: StudioClip): EditResult {
         val clips = location.track.clips.toMutableList().apply { this[location.clipIndex] = updated }
         return EditResult(
@@ -230,7 +254,7 @@ object StudioEditEngine {
         )
     }
 
-    private fun fullTakeClip(project: StudioProject, take: StudioTake): StudioClip {
+    private fun fullTakeClip(take: StudioTake): StudioClip {
         val start = (take.recordedTimelineFrame - take.latencyCompensationFrames).coerceAtLeast(0L)
         return StudioClip(
             id = UUID.randomUUID().toString(),

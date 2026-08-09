@@ -117,6 +117,7 @@ class StudioProjectRepository(context: Context) {
     fun finalizeTake(
         pending: PendingStudioTake,
         status: StudioTakeStatus = StudioTakeStatus.COMPLETE,
+        activateTake: Boolean = true,
     ): StudioProject {
         val finalized = requireNotNull(takeStore.finalizeAudioFile(pending)) {
             "Bản thu Studio không chứa dữ liệu hợp lệ"
@@ -162,8 +163,8 @@ class StudioProjectRepository(context: Context) {
             status = status,
         )
         val updatedTrack = baseTrack.copy(
-            primaryAssetId = asset.id,
-            activeTakeId = take.id,
+            primaryAssetId = if (activateTake) asset.id else baseTrack.primaryAssetId,
+            activeTakeId = if (activateTake) take.id else baseTrack.activeTakeId,
             takes = baseTrack.takes + take,
         )
         val updatedTracks = if (trackIndex >= 0) {

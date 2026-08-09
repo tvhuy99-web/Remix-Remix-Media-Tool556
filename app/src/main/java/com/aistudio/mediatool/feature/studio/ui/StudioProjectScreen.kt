@@ -35,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 private enum class AudioCoreState { CLOSED, OPEN, RUNNING, ERROR }
 
@@ -49,14 +50,16 @@ fun StudioProjectScreen(
     var project by remember(projectId) { mutableStateOf<StudioProject?>(null) }
     var projectError by remember(projectId) { mutableStateOf<String?>(null) }
 
-    val engineResult = remember { runCatching { StudioNativeAudio() } }
+    val engineResult = remember { runCatching { StudioNativeAudio(context) } }
     val audioEngine = engineResult.getOrNull()
     var audioState by remember { mutableStateOf(AudioCoreState.CLOSED) }
     var audioError by remember { mutableStateOf(engineResult.exceptionOrNull()?.message) }
     var diagnostics by remember { mutableStateOf<StudioAudioDiagnostics?>(null) }
 
     LaunchedEffect(projectId) {
-        project = withContext(Dispatchers.IO) { repository.load(projectId) }
+        project = withContext(Dispatchers.IO) {
+            runCatching { repository.load(projectId) }.getOrNull()
+        }
         if (project == null) projectError = "Không tìm thấy dự án Studio"
     }
 
@@ -220,7 +223,9 @@ private fun AudioDiagnosticsView(diagnostics: StudioAudioDiagnostics) {
         Text("Performance: ${diagnostics.performanceModeLabel}")
         Text("Sharing: ${diagnostics.sharingModeLabel}")
         Text("Frames/burst: ${diagnostics.framesPerBurst}")
-        Text("Buffer: ${diagnostics.bufferSizeFrames} frames (${String.format("%.1f", diagnostics.approximateBufferMs)} ms)")
+        Text(
+            "Buffer: ${diagnostics.bufferSizeFrames} frames (${String.format(Locale.US, "%.1f", diagnostics.approximateBufferMs)} ms)",
+        )
         Text("Device id: ${diagnostics.deviceId}")
         Text("Clock frames: ${diagnostics.callbackFrames}")
         if (diagnostics.disconnectCount > 0) {

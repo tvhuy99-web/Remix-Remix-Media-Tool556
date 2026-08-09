@@ -13,9 +13,11 @@ import com.aistudio.mediatool.core.ml.VoiceCleanupState
 import com.aistudio.mediatool.core.ml.VoiceCleanupWindowMode
 import com.aistudio.mediatool.core.spatial.SpatialAudioConfig
 import com.aistudio.mediatool.core.spatial.SpatialAudioEngine
+import com.aistudio.mediatool.feature.studio.data.StudioAudioMetadataProbe
 import com.aistudio.mediatool.feature.studio.data.StudioProjectRepository
 import com.aistudio.mediatool.feature.studio.data.StudioWavFile
 import com.aistudio.mediatool.feature.studio.domain.StudioAsset
+import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.render.StudioProFilterBuilder
 import java.io.File
@@ -66,8 +68,18 @@ class StudioMediaIntegrationProcessor(context: Context) {
         val project = requireNotNull(repository.load(projectId)) { "Không tìm thấy dự án Studio" }
         val sourceAsset = requireNotNull(project.asset(sourceAssetId)) { "Không tìm thấy audio source" }
         val sourceFile = requireNotNull(repository.assetFile(project.id, sourceAsset.id)) { "Audio source không còn tồn tại" }
-        val sourceRate = sourceAsset.sampleRate ?: project.timelineSampleRate
-        val sourceChannels = sourceAsset.channelCount ?: 1
+        val probed = if (
+            sourceAsset.sampleRate == null || sourceAsset.channelCount == null || sourceAsset.durationFrames == null
+        ) {
+            StudioAudioMetadataProbe.probe(sourceFile)
+        } else {
+            null
+        }
+        val sourceRate = sourceAsset.sampleRate ?: probed?.sampleRate ?: project.timelineSampleRate
+        val sourceChannels = sourceAsset.channelCount
+            ?: probed?.channelCount
+            ?: if (sourceAsset.kind == StudioAssetKind.BEAT) 2 else 1
+        val sourceDurationFrames = sourceAsset.durationFrames ?: probed?.durationFrames
         val targetChannels = if (kind == StudioMediaProcessorKind.SPATIAL_8D) 2 else sourceChannels.coerceIn(1, 2)
         val (relativePath, target) = repository.derivedOutputFile(project.id, kind.id)
         val workDir = File(appContext.cacheDir, "studio_processor_${UUID.randomUUID().toString().take(8)}").apply { mkdirs() }
@@ -82,8 +94,13 @@ class StudioMediaIntegrationProcessor(context: Context) {
                     StudioProFilterBuilder.build(StudioProFilterBuilder.polishPreset()), onProgress,
                 )
                 StudioMediaProcessorKind.SPATIAL_8D -> renderSpatial(
-                    sourceFile, sourceAsset, File(workDir, "processed.s16"), File(workDir, "spatial.wav"),
-                    target, sourceRate, onProgress,
+                    sourceFile = sourceFile,
+                    rawTarget = File(workDir, "processed.s16"),
+                    encodedTarget = File(workDir, "spatial.wav"),
+                    finalTarget = target,
+                    sampleRate = sourceRate,
+                    durationFrames = sourceDurationFrames,
+                    onProgress = onProgress,
                 )
                 StudioMediaProcessorKind.PRO_VOCAL_CHAIN -> renderFilterChain(
                     sourceFile, File(workDir, "processed.s16"), target, sourceRate, targetChannels,
@@ -178,15 +195,18 @@ class StudioMediaIntegrationProcessor(context: Context) {
 
     private suspend fun renderSpatial(
         sourceFile: File,
-        sourceAsset: StudioAsset,
         rawTarget: File,
         encodedTarget: File,
         finalTarget: File,
         sampleRate: Int,
+        durationFrames: Long?,
         onProgress: suspend (Float, String) -> Unit,
     ) {
-        val rate = (sourceAsset.sampleRate ?: sampleRate).coerceAtLeast(1)
-        val durationMs = ((sourceAsset.durationFrames ?: 0L) * 1_000L / rate).coerceAtLeast(1L)
+        val safeRate = sampleRate.coerceAtLeast(1)
+        val durationMs = durationFrames
+            ?.takeIf { it > 0L }
+            ?.let { frames -> (frames * 1_000L / safeRate).coerceAtLeast(1L) }
+            ?: 0L
         val spatial = SpatialAudioEngine(appContext, mediaEngine)
         val config = SpatialAudioConfig(cycleSeconds = 8f, spatialBlend = 0.88f, reverbWet = 0.07f, outputGainDb = -1f)
         var success = false
@@ -213,7 +233,7 @@ class StudioMediaIntegrationProcessor(context: Context) {
         }
         failure?.let(::error)
         require(success && encodedTarget.isFile && encodedTarget.length() > 0L) { "Spatial Audio không tạo kết quả" }
-        canonicalize(encodedTarget, rawTarget, finalTarget, sampleRate, 2, null, "studio_spatial_canonicalize")
+        canonicalize(encodedTarget, rawTarget, finalTarget, safeRate, 2, null, "studio_spatial_canonicalize")
     }
 
     private suspend fun canonicalize(

@@ -6,11 +6,14 @@ import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioMasterMix
+import com.aistudio.mediatool.feature.studio.domain.StudioProSettings
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
+import com.aistudio.mediatool.feature.studio.domain.StudioTempoSettings
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
+import com.aistudio.mediatool.feature.studio.domain.StudioVocalFxSettings
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,6 +29,7 @@ object StudioProjectCodec {
         put("assets", JSONArray().apply { project.assets.forEach { put(assetToJson(it)) } })
         put("tracks", JSONArray().apply { project.tracks.forEach { put(trackToJson(it)) } })
         put("masterMix", masterMixToJson(project.masterMix))
+        put("proSettings", proSettingsToJson(project.proSettings))
     }.toString(2)
 
     fun decode(raw: String): StudioProject {
@@ -50,6 +54,7 @@ object StudioProjectCodec {
             assets = json.optJSONArray("assets").mapObjects(::assetFromJson),
             tracks = json.optJSONArray("tracks").mapObjects(::trackFromJson),
             masterMix = json.optJSONObject("masterMix")?.let(::masterMixFromJson) ?: StudioMasterMix(),
+            proSettings = json.optJSONObject("proSettings")?.let(::proSettingsFromJson) ?: StudioProSettings(),
         )
     }
 
@@ -61,6 +66,9 @@ object StudioProjectCodec {
         putNullable("mimeType", asset.mimeType)
         put("bytes", asset.bytes)
         putNullable("sourceAssetId", asset.sourceAssetId)
+        putNullable("processorId", asset.processorId)
+        putNullable("processorLabel", asset.processorLabel)
+        putNullable("processorConfig", asset.processorConfig)
         putNullable("sampleRate", asset.sampleRate)
         putNullable("channelCount", asset.channelCount)
         putNullable("durationFrames", asset.durationFrames)
@@ -74,6 +82,9 @@ object StudioProjectCodec {
         mimeType = json.nullableString("mimeType"),
         bytes = json.optLong("bytes", 0L),
         sourceAssetId = json.nullableString("sourceAssetId"),
+        processorId = json.nullableString("processorId"),
+        processorLabel = json.nullableString("processorLabel"),
+        processorConfig = json.nullableString("processorConfig"),
         sampleRate = json.nullableInt("sampleRate"),
         channelCount = json.nullableInt("channelCount"),
         durationFrames = json.nullableLong("durationFrames"),
@@ -164,6 +175,61 @@ object StudioProjectCodec {
         gainDb = json.optDouble("gainDb", 0.0).toFloat().coerceIn(-24f, 12f),
         limiterEnabled = json.optBoolean("limiterEnabled", true),
     )
+
+    private fun proSettingsToJson(settings: StudioProSettings) = JSONObject().apply {
+        put("tempo", JSONObject().apply {
+            put("bpm", settings.tempo.bpm.toDouble())
+            put("beatsPerBar", settings.tempo.beatsPerBar)
+            put("metronomeEnabled", settings.tempo.metronomeEnabled)
+            put("metronomeGainDb", settings.tempo.metronomeGainDb.toDouble())
+        })
+        put("vocalFx", JSONObject().apply {
+            val fx = settings.vocalFx
+            put("enabled", fx.enabled)
+            put("highPassHz", fx.highPassHz.toDouble())
+            put("lowGainDb", fx.lowGainDb.toDouble())
+            put("midGainDb", fx.midGainDb.toDouble())
+            put("highGainDb", fx.highGainDb.toDouble())
+            put("compressorEnabled", fx.compressorEnabled)
+            put("compressorThresholdDb", fx.compressorThresholdDb.toDouble())
+            put("compressorRatio", fx.compressorRatio.toDouble())
+            put("compressorAttackMs", fx.compressorAttackMs.toDouble())
+            put("compressorReleaseMs", fx.compressorReleaseMs.toDouble())
+            put("compressorMakeupDb", fx.compressorMakeupDb.toDouble())
+            put("reverbWet", fx.reverbWet.toDouble())
+            put("reverbDelayMs", fx.reverbDelayMs.toDouble())
+            put("reverbDecay", fx.reverbDecay.toDouble())
+        })
+    }
+
+    private fun proSettingsFromJson(json: JSONObject): StudioProSettings {
+        val tempoJson = json.optJSONObject("tempo")
+        val fxJson = json.optJSONObject("vocalFx")
+        return StudioProSettings(
+            tempo = StudioTempoSettings(
+                bpm = tempoJson?.optDouble("bpm", 120.0)?.toFloat()?.coerceIn(40f, 260f) ?: 120f,
+                beatsPerBar = tempoJson?.optInt("beatsPerBar", 4)?.coerceIn(2, 12) ?: 4,
+                metronomeEnabled = tempoJson?.optBoolean("metronomeEnabled", false) ?: false,
+                metronomeGainDb = tempoJson?.optDouble("metronomeGainDb", -12.0)?.toFloat()?.coerceIn(-36f, 0f) ?: -12f,
+            ),
+            vocalFx = StudioVocalFxSettings(
+                enabled = fxJson?.optBoolean("enabled", true) ?: true,
+                highPassHz = fxJson?.optDouble("highPassHz", 80.0)?.toFloat()?.coerceIn(20f, 300f) ?: 80f,
+                lowGainDb = fxJson?.optDouble("lowGainDb", 0.0)?.toFloat()?.coerceIn(-12f, 12f) ?: 0f,
+                midGainDb = fxJson?.optDouble("midGainDb", 1.5)?.toFloat()?.coerceIn(-12f, 12f) ?: 1.5f,
+                highGainDb = fxJson?.optDouble("highGainDb", 0.5)?.toFloat()?.coerceIn(-12f, 12f) ?: 0.5f,
+                compressorEnabled = fxJson?.optBoolean("compressorEnabled", true) ?: true,
+                compressorThresholdDb = fxJson?.optDouble("compressorThresholdDb", -18.0)?.toFloat()?.coerceIn(-48f, -2f) ?: -18f,
+                compressorRatio = fxJson?.optDouble("compressorRatio", 3.0)?.toFloat()?.coerceIn(1f, 20f) ?: 3f,
+                compressorAttackMs = fxJson?.optDouble("compressorAttackMs", 10.0)?.toFloat()?.coerceIn(1f, 200f) ?: 10f,
+                compressorReleaseMs = fxJson?.optDouble("compressorReleaseMs", 120.0)?.toFloat()?.coerceIn(20f, 2_000f) ?: 120f,
+                compressorMakeupDb = fxJson?.optDouble("compressorMakeupDb", 1.0)?.toFloat()?.coerceIn(-12f, 18f) ?: 1f,
+                reverbWet = fxJson?.optDouble("reverbWet", 0.10)?.toFloat()?.coerceIn(0f, 0.65f) ?: 0.10f,
+                reverbDelayMs = fxJson?.optDouble("reverbDelayMs", 55.0)?.toFloat()?.coerceIn(20f, 250f) ?: 55f,
+                reverbDecay = fxJson?.optDouble("reverbDecay", 0.22)?.toFloat()?.coerceIn(0f, 0.9f) ?: 0.22f,
+            ),
+        )
+    }
 
     private inline fun <reified T : Enum<T>> enumOrDefault(value: String, fallback: T): T =
         runCatching { enumValueOf<T>(value) }.getOrDefault(fallback)

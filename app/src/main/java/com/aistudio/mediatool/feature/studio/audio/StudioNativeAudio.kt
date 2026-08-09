@@ -11,6 +11,16 @@ enum class StudioInputMode(val nativeValue: Int) {
     LIVE_LOW_LATENCY(2),
 }
 
+data class StudioPlaybackClip(
+    val file: File,
+    val timelineStartFrame: Long,
+    val sourceStartFrame: Long,
+    val sourceEndFrame: Long,
+    val gainDb: Float = 0f,
+    val fadeInFrames: Long = 0L,
+    val fadeOutFrames: Long = 0L,
+)
+
 /** Thread-safe Kotlin owner for the realtime Oboe Studio engine. */
 class StudioNativeAudio(context: Context) : Closeable {
     private val nativeLock = Any()
@@ -47,6 +57,41 @@ class StudioNativeAudio(context: Context) : Closeable {
     fun loadBeat(file: File, sampleRate: Int, channelCount: Int): StudioAudioOperationResult = synchronized(nativeLock) {
         if (!file.isFile || file.length() <= 0L) return@synchronized StudioAudioOperationResult.Error(-10_001)
         withHandle { resultOf(nativeLoadBeat(it, file.absolutePath, sampleRate, channelCount)) }
+    }
+
+    fun setArrangement(
+        clips: List<StudioPlaybackClip>,
+        projectSampleRate: Int,
+    ): StudioAudioOperationResult = synchronized(nativeLock) {
+        if (projectSampleRate <= 0 || clips.any { !it.file.isFile || it.sourceEndFrame <= it.sourceStartFrame }) {
+            return@synchronized StudioAudioOperationResult.Error(-10_006)
+        }
+        withHandle { handle ->
+            resultOf(
+                nativeSetArrangement(
+                    handle = handle,
+                    paths = clips.map { it.file.absolutePath }.toTypedArray(),
+                    timelineStarts = LongArray(clips.size) { clips[it].timelineStartFrame },
+                    sourceStarts = LongArray(clips.size) { clips[it].sourceStartFrame },
+                    sourceEnds = LongArray(clips.size) { clips[it].sourceEndFrame },
+                    gainsDb = FloatArray(clips.size) { clips[it].gainDb },
+                    fadeIns = LongArray(clips.size) { clips[it].fadeInFrames },
+                    fadeOuts = LongArray(clips.size) { clips[it].fadeOutFrames },
+                    projectSampleRate = projectSampleRate,
+                ),
+            )
+        }
+    }
+
+    fun setPunchMuteWindow(startFrame: Long?, endFrame: Long?) = synchronized(nativeLock) {
+        val handle = nativeHandle
+        if (handle == 0L) return@synchronized
+        val valid = startFrame != null && endFrame != null && startFrame >= 0L && endFrame > startFrame
+        nativeSetPunchMuteWindow(
+            handle,
+            if (valid) startFrame!! else -1L,
+            if (valid) endFrame!! else -1L,
+        )
     }
 
     fun setPlaying(playing: Boolean) = synchronized(nativeLock) {
@@ -107,6 +152,8 @@ class StudioNativeAudio(context: Context) : Closeable {
             isPlaying = values[17] != 0L,
             isRecording = values[18] != 0L,
             writerErrorCode = values[19].toInt(),
+            arrangementClipCount = values[20].toInt(),
+            arrangementDurationFrames = values[21],
         )
     }
 
@@ -131,6 +178,18 @@ class StudioNativeAudio(context: Context) : Closeable {
     private external fun nativeStart(handle: Long): Int
     private external fun nativeStop(handle: Long): Int
     private external fun nativeLoadBeat(handle: Long, path: String, sampleRate: Int, channelCount: Int): Int
+    private external fun nativeSetArrangement(
+        handle: Long,
+        paths: Array<String>,
+        timelineStarts: LongArray,
+        sourceStarts: LongArray,
+        sourceEnds: LongArray,
+        gainsDb: FloatArray,
+        fadeIns: LongArray,
+        fadeOuts: LongArray,
+        projectSampleRate: Int,
+    ): Int
+    private external fun nativeSetPunchMuteWindow(handle: Long, startFrame: Long, endFrame: Long)
     private external fun nativeSetPlaying(handle: Long, playing: Boolean)
     private external fun nativeSeek(handle: Long, projectFrame: Long)
     private external fun nativePrepareInput(handle: Long, preferredDeviceId: Int, inputMode: Int): Int
@@ -141,7 +200,7 @@ class StudioNativeAudio(context: Context) : Closeable {
     private external fun nativeRelease(handle: Long)
 
     companion object {
-        private const val DIAGNOSTIC_FIELD_COUNT = 20
+        private const val DIAGNOSTIC_FIELD_COUNT = 22
 
         init {
             System.loadLibrary("mediatool_studio")
@@ -176,6 +235,8 @@ data class StudioAudioDiagnostics(
     val isPlaying: Boolean,
     val isRecording: Boolean,
     val writerErrorCode: Int,
+    val arrangementClipCount: Int,
+    val arrangementDurationFrames: Long,
 ) {
     val approximateBufferMs: Double
         get() = if (sampleRate > 0) bufferSizeFrames * 1000.0 / sampleRate else 0.0

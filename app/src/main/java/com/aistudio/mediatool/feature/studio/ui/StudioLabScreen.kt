@@ -36,6 +36,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
 import com.aistudio.mediatool.feature.studio.data.StudioDerivedAssetEditor
 import com.aistudio.mediatool.feature.studio.data.StudioProjectRepository
@@ -263,7 +266,21 @@ private fun StudioProCard(project: StudioProject, enabled: Boolean, onSave: (Stu
     var fx by remember(project.id, project.proSettings.vocalFx) { mutableStateOf(project.proSettings.vocalFx) }
     var previewClick by remember { mutableStateOf(false) }
     val toneGenerator = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 70) }
-    DisposableEffect(toneGenerator) { onDispose { toneGenerator.release() } }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(toneGenerator, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                previewClick = false
+                toneGenerator.stopTone()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            toneGenerator.stopTone()
+            toneGenerator.release()
+        }
+    }
     LaunchedEffect(previewClick, bpm, beatsPerBar) {
         if (!previewClick) return@LaunchedEffect
         var beat = 0

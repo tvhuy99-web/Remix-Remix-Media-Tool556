@@ -1,6 +1,6 @@
 package com.aistudio.mediatool.feature.studio.domain
 
-const val STUDIO_PROJECT_SCHEMA_VERSION = 2
+const val STUDIO_PROJECT_SCHEMA_VERSION = 4
 const val STUDIO_TIMELINE_SAMPLE_RATE = 48_000
 
 enum class StudioAssetKind {
@@ -33,6 +33,9 @@ data class StudioAsset(
     val mimeType: String? = null,
     val bytes: Long = 0L,
     val sourceAssetId: String? = null,
+    val processorId: String? = null,
+    val processorLabel: String? = null,
+    val processorConfig: String? = null,
     val sampleRate: Int? = null,
     val channelCount: Int? = null,
     val durationFrames: Long? = null,
@@ -81,6 +84,35 @@ data class StudioMasterMix(
     val limiterEnabled: Boolean = true,
 )
 
+data class StudioTempoSettings(
+    val bpm: Float = 120f,
+    val beatsPerBar: Int = 4,
+    val metronomeEnabled: Boolean = false,
+    val metronomeGainDb: Float = -12f,
+)
+
+data class StudioVocalFxSettings(
+    val enabled: Boolean = true,
+    val highPassHz: Float = 80f,
+    val lowGainDb: Float = 0f,
+    val midGainDb: Float = 1.5f,
+    val highGainDb: Float = 0.5f,
+    val compressorEnabled: Boolean = true,
+    val compressorThresholdDb: Float = -18f,
+    val compressorRatio: Float = 3f,
+    val compressorAttackMs: Float = 10f,
+    val compressorReleaseMs: Float = 120f,
+    val compressorMakeupDb: Float = 1f,
+    val reverbWet: Float = 0.10f,
+    val reverbDelayMs: Float = 55f,
+    val reverbDecay: Float = 0.22f,
+)
+
+data class StudioProSettings(
+    val tempo: StudioTempoSettings = StudioTempoSettings(),
+    val vocalFx: StudioVocalFxSettings = StudioVocalFxSettings(),
+)
+
 data class StudioProject(
     val schemaVersion: Int = STUDIO_PROJECT_SCHEMA_VERSION,
     val id: String,
@@ -92,6 +124,7 @@ data class StudioProject(
     val assets: List<StudioAsset> = emptyList(),
     val tracks: List<StudioTrack> = emptyList(),
     val masterMix: StudioMasterMix = StudioMasterMix(),
+    val proSettings: StudioProSettings = StudioProSettings(),
 ) {
     fun asset(assetId: String?): StudioAsset? =
         assetId?.let { id -> assets.firstOrNull { it.id == id } }

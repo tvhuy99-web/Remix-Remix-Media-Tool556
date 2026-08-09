@@ -48,12 +48,11 @@ class StudioProjectStore(context: Context) {
             }
         }
 
-        val installed = temporary.renameTo(target)
-        if (!installed) {
-            runCatching { temporary.copyTo(target, overwrite = true) }
+        if (!temporary.renameTo(target)) {
+            temporary.copyTo(target, overwrite = true)
             temporary.delete()
         }
-        check(target.isFile && target.length() > 0L) { "Không thể lưu dự án Studio" }
+        check(isValidSnapshot(target, project.id)) { "Không thể lưu dự án Studio hợp lệ" }
         // Keep the previous valid project snapshot. loadFromDirectory() can then
         // recover from a later torn/corrupted primary file. If the primary was
         // already corrupt, do not overwrite a known-good backup with it.

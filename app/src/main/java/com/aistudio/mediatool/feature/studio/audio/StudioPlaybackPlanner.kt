@@ -12,19 +12,20 @@ object StudioPlaybackPlanner {
     fun build(
         project: StudioProject,
         repository: StudioProjectRepository,
-    ): List<StudioPlaybackClip> {
+    ): StudioPlaybackPlan {
+        val hasSolo = project.tracks.any { it.solo }
+        val beatTrack = project.tracks.firstOrNull { it.type == StudioTrackType.BEAT }
         val monitorTracks = project.tracks.filter { it.type != StudioTrackType.BEAT }
-        val hasSolo = monitorTracks.any { it.solo }
-        return buildList {
+        val clips = buildList {
             monitorTracks
                 .filter { !it.muted && (!hasSolo || it.solo) }
                 .forEach { track ->
-                    val clips = if (track.clips.isNotEmpty()) {
+                    val arrangement = if (track.clips.isNotEmpty()) {
                         track.clips
                     } else {
                         activeTake(track)?.let { listOf(fullTakeClip(it)) }.orEmpty()
                     }
-                    clips.forEach { clip ->
+                    arrangement.forEach { clip ->
                         val file = requireNotNull(repository.assetFile(project.id, clip.sourceAssetId)) {
                             "Không tìm thấy audio asset cho clip ${clip.id}"
                         }
@@ -35,6 +36,7 @@ object StudioPlaybackPlanner {
                                 sourceStartFrame = clip.sourceStartFrame,
                                 sourceEndFrame = clip.sourceEndFrame,
                                 gainDb = (clip.gainDb + track.volumeDb).coerceIn(-60f, 18f),
+                                pan = track.pan.coerceIn(-1f, 1f),
                                 fadeInFrames = clip.fadeInFrames,
                                 fadeOutFrames = clip.fadeOutFrames,
                             ),
@@ -42,6 +44,15 @@ object StudioPlaybackPlanner {
                     }
                 }
         }
+        val beatAudible = beatTrack?.let { !it.muted && (!hasSolo || it.solo) } ?: false
+        return StudioPlaybackPlan(
+            clips = clips,
+            beatGainDb = beatTrack?.volumeDb?.coerceIn(-60f, 18f) ?: 0f,
+            beatPan = beatTrack?.pan?.coerceIn(-1f, 1f) ?: 0f,
+            beatMuted = !beatAudible,
+            masterGainDb = project.masterMix.gainDb.coerceIn(-24f, 12f),
+            limiterEnabled = project.masterMix.limiterEnabled,
+        )
     }
 
     private fun activeTake(track: StudioTrack): StudioTake? =

@@ -82,6 +82,15 @@ fun StudioRoutingLatencyCard(
                 },
             )
 
+            session.project?.let { project ->
+                StudioWorkingTrackPanel(
+                    project = project,
+                    selectedClipId = session.selectedClipId,
+                    enabled = enabled,
+                    syncSelectedClip = true,
+                )
+            }
+
             Text("Mic dùng để thu", style = MaterialTheme.typography.labelLarge)
             DeviceChipRow(
                 devices = session.audioDevices.inputs,
@@ -217,6 +226,13 @@ fun StudioMixerCard(
                 "Cân âm",
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.semantics { heading() },
+            )
+
+            StudioWorkingTrackPanel(
+                project = project,
+                selectedClipId = null,
+                enabled = trackEditingEnabled,
+                syncSelectedClip = false,
             )
 
             project.tracks.forEach { track ->

@@ -36,6 +36,8 @@ class StudioRenderEngine(context: Context) {
         target
     }
 
+    suspend fun renderDryMix(project: StudioProject, format: StudioExportFormat): File = renderMix(project, format)
+
     suspend fun renderStems(project: StudioProject): File = withContext(Dispatchers.IO) {
         val rendered = mutableListOf<File>()
         val temporaryFiles = mutableListOf<File>()

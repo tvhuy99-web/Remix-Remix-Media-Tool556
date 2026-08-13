@@ -23,6 +23,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.aistudio.mediatool.ui.components.ToolScaffold
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,6 +36,8 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val player = remember(context) { ExoPlayer.Builder(context).build() }
     var playing by remember { mutableStateOf(false) }
+    var playingOriginal by remember { mutableStateOf(false) }
+    var sourcePreviewFile by remember(projectId) { mutableStateOf<File?>(null) }
     var model by remember(projectId) { mutableStateOf(StudioPitchUiModel()) }
 
     DisposableEffect(player) {
@@ -64,10 +67,12 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
         player.stop()
         player.clearMediaItems()
         playing = false
+        playingOriginal = false
     }
 
     fun invalidate(next: StudioPitchUiModel) {
         stopPreview()
+        sourcePreviewFile = null
         model = next.copy(preview = null)
     }
 
@@ -84,6 +89,7 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
         if (!model.canProcess) return
         val request = model.copy(processing = true, preview = null, status = "Đang chuẩn bị xử lý cao độ...")
         stopPreview()
+        sourcePreviewFile = null
         model = request
         scope.launch {
             runCatching {
@@ -119,18 +125,41 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
         }
     }
 
+    fun toggleOriginalPreview() {
+        val trackId = model.selectedTrackId ?: return
+        scope.launch {
+            if (player.isPlaying && playingOriginal) {
+                player.pause()
+                return@launch
+            }
+            val file = sourcePreviewFile ?: runCatching {
+                model = model.copy(status = "Đang dựng giọng gốc để so sánh A/B...")
+                withContext(Dispatchers.IO) { session.renderSourcePreview(projectId, trackId) }
+            }.getOrElse {
+                model = model.copy(status = it.message ?: "Không thể dựng giọng gốc")
+                return@launch
+            }.also { sourcePreviewFile = it }
+            player.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+            player.prepare()
+            player.play()
+            playingOriginal = true
+            model = model.copy(status = "A/B dùng cùng một lớp giọng nguồn")
+        }
+    }
+
     fun togglePreview() {
         val preview = model.preview ?: return
         scope.launch {
             val file = withContext(Dispatchers.IO) { session.previewFile(projectId, preview.asset.id) }
             if (file == null) {
                 model = model.copy(status = "Không tìm thấy bản nghe thử")
-            } else if (player.isPlaying) {
+            } else if (player.isPlaying && !playingOriginal) {
                 player.pause()
             } else {
                 player.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
                 player.prepare()
                 player.play()
+                playingOriginal = false
             }
         }
     }
@@ -144,6 +173,7 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
             StudioPitchToolsSurface(
                 model = model,
                 playing = playing,
+                playingOriginal = playingOriginal,
                 onSelectTrack = { invalidate(model.copy(selectedTrackId = it)) },
                 onMode = { invalidate(model.copy(mode = it)) },
                 onStrength = { invalidate(model.copy(strength = it)) },
@@ -152,6 +182,7 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
                 onHarmonyVolume = { invalidate(model.copy(harmonyVolume = it)) },
                 onHarmonyPan = { invalidate(model.copy(harmonyPan = it)) },
                 onCreatePreview = ::runPreview,
+                onToggleOriginal = ::toggleOriginalPreview,
                 onTogglePreview = ::togglePreview,
                 onApply = ::applyPreview,
                 onRestore = ::restoreAutoTune,

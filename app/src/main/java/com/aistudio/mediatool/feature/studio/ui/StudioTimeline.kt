@@ -66,7 +66,8 @@ fun StudioTimeline(
         modifier = modifier
             .fillMaxWidth()
             .semantics {
-                contentDescription = "Dòng thời gian âm thanh. Chạm vào sóng âm để chuyển vị trí phát hoặc chọn một đoạn."
+                contentDescription =
+                    "Dòng thời gian âm thanh trực quan. Không cần kéo hoặc chạm chính xác. Dùng các nút điều hướng và phần Chỉnh đoạn thu để thao tác bằng trình đọc màn hình."
             },
     ) {
         val timelineWidthDp = max(

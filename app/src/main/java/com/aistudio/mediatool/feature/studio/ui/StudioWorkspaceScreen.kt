@@ -35,8 +35,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -47,10 +49,12 @@ import com.aistudio.mediatool.feature.studio.audio.StudioInputMode
 import com.aistudio.mediatool.feature.studio.audio.StudioRecordingKind
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionStatus
+import com.aistudio.mediatool.feature.studio.data.StudioEditEngine
 import com.aistudio.mediatool.feature.studio.data.StudioRecordingTargetRequests
 import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
+import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import java.util.Locale
@@ -445,41 +449,81 @@ private fun TimelinePanel(
     onZoomChanged: (Float) -> Unit,
     enabled: Boolean,
 ) {
+    var seekStepMs by rememberSaveable { mutableStateOf(5_000L) }
+    val seekStepFrames = seekStepMs * project.timelineSampleRate.toLong() / 1_000L
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             "Dòng thời gian",
             fontWeight = FontWeight.Bold,
             modifier = Modifier.semantics { heading() },
         )
+        Text(
+            "Không cần kéo trên sóng âm. Chọn bước rồi dùng Lùi hoặc Tiến để đặt vị trí nghe thật chính xác.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
+        Text("Bước di chuyển vị trí nghe", style = MaterialTheme.typography.labelLarge)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ACCESSIBLE_POSITION_STEPS_MS.forEach { step ->
+                FilterChip(
+                    selected = seekStepMs == step,
+                    onClick = { seekStepMs = step },
+                    enabled = enabled,
+                    label = { Text(positionStepLabel(step)) },
+                    modifier = Modifier.semantics {
+                        contentDescription = "Bước di chuyển ${spokenStepLabel(step)}"
+                        stateDescription = if (seekStepMs == step) "đang chọn" else "chưa chọn"
+                    },
+                )
+            }
+        }
+
+        Text(
+            formatFrames(session.transportFrame, project.timelineSampleRate),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.semantics {
+                liveRegion = LiveRegionMode.Polite
+                contentDescription =
+                    "Vị trí đang nghe ${spokenFrames(session.transportFrame, project.timelineSampleRate)}"
+            },
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
                 onClick = {
                     StudioSessionRuntime.seek(
-                        (session.transportFrame - project.timelineSampleRate * 5L).coerceAtLeast(0L),
+                        (session.transportFrame - seekStepFrames).coerceAtLeast(0L),
                     )
                 },
                 enabled = enabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("Lùi 5 giây") }
-            Text(
-                formatFrames(session.transportFrame, project.timelineSampleRate),
-                style = MaterialTheme.typography.labelLarge,
-            )
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics {
+                        contentDescription = "Lùi ${spokenStepLabel(seekStepMs)}"
+                    },
+            ) { Text("Lùi ${positionStepLabel(seekStepMs)}") }
             OutlinedButton(
                 onClick = {
                     StudioSessionRuntime.seek(
-                        (session.transportFrame + project.timelineSampleRate * 5L)
-                            .coerceAtMost(session.durationFrames),
+                        (session.transportFrame + seekStepFrames).coerceAtMost(session.durationFrames),
                     )
                 },
                 enabled = enabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("Tiến 5 giây") }
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics {
+                        contentDescription = "Tiến ${spokenStepLabel(seekStepMs)}"
+                    },
+            ) { Text("Tiến ${positionStepLabel(seekStepMs)}") }
         }
 
         Text("Thu phóng", style = MaterialTheme.typography.labelMedium)
@@ -497,7 +541,7 @@ private fun TimelinePanel(
         Box(
             modifier = Modifier.semantics {
                 contentDescription =
-                    "Sóng âm của bài hát. Có thể chạm để chọn vị trí. Khi dùng trình đọc màn hình, dùng các nút lùi, tiến và danh sách đoạn bên dưới."
+                    "Sóng âm chỉ để tham khảo trực quan. Không cần chạm hoặc kéo. Dùng các nút điều hướng và danh sách đoạn bên dưới khi dùng trình đọc màn hình."
             },
         ) {
             StudioTimeline(
@@ -525,10 +569,13 @@ private fun EditPanel(
     enabled: Boolean,
 ) {
     val vocalTrack = project.tracks.firstOrNull { it.type == StudioTrackType.VOCAL }
-    val clips = project.tracks
+    val clipChoices = project.tracks
         .filter { it.type != StudioTrackType.BEAT }
-        .flatMap { it.clips }
+        .flatMap { track ->
+            track.clips.mapIndexed { index, clip -> EditableClipChoice(track, index, clip) }
+        }
     val selectedClip = project.findClip(selectedClipId)
+    val selectedChoice = clipChoices.firstOrNull { it.clip.id == selectedClipId }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -539,6 +586,11 @@ private fun EditPanel(
                 "Chỉnh đoạn thu",
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.semantics { heading() },
+            )
+            Text(
+                "Không cần kéo đoạn trên sóng âm. Chọn đoạn, chọn bước dịch rồi dùng các nút lớn bên dưới. Mọi thay đổi đều có thể Hoàn tác.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             Row(
@@ -567,7 +619,7 @@ private fun EditPanel(
                 }
             }
 
-            if (clips.isNotEmpty()) {
+            if (clipChoices.isNotEmpty()) {
                 Text("Chọn đoạn", style = MaterialTheme.typography.labelLarge)
                 Row(
                     modifier = Modifier
@@ -575,19 +627,114 @@ private fun EditPanel(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    clips.forEachIndexed { index, clip ->
+                    clipChoices.forEach { choice ->
+                        val start = choice.clip.timelineStartFrame
+                        val end = StudioEditEngine.timelineEnd(project, choice.clip)
+                        val name = editTrackName(choice.track)
                         FilterChip(
-                            selected = clip.id == selectedClipId,
-                            onClick = { StudioSessionRuntime.selectClip(clip.id) },
+                            selected = choice.clip.id == selectedClipId,
+                            onClick = { StudioSessionRuntime.selectClip(choice.clip.id) },
                             enabled = enabled,
-                            label = { Text("Đoạn ${index + 1}") },
+                            label = { Text("$name · Đoạn ${choice.indexInTrack + 1}") },
+                            modifier = Modifier.semantics {
+                                contentDescription =
+                                    "$name, đoạn ${choice.indexInTrack + 1}, bắt đầu ${spokenFrames(start, project.timelineSampleRate)}, dài ${spokenFrames(end - start, project.timelineSampleRate)}"
+                                stateDescription =
+                                    if (choice.clip.id == selectedClipId) "đang chọn" else "chưa chọn"
+                            },
                         )
                     }
                 }
             }
 
-            if (selectedClip != null) {
-                Text("Đoạn đã chọn", fontWeight = FontWeight.SemiBold)
+            if (selectedClip != null && selectedChoice != null) {
+                var moveStepMs by rememberSaveable(selectedClip.id) { mutableStateOf(100L) }
+                val start = selectedClip.timelineStartFrame
+                val end = StudioEditEngine.timelineEnd(project, selectedClip)
+                val duration = (end - start).coerceAtLeast(0L)
+                val selectedName = editTrackName(selectedChoice.track)
+
+                Text(
+                    "$selectedName · Đoạn ${selectedChoice.indexInTrack + 1}",
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "Bắt đầu ${formatFrames(start, project.timelineSampleRate)} · Kết thúc ${formatFrames(end, project.timelineSampleRate)} · Dài ${formatFrames(duration, project.timelineSampleRate)}",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.semantics {
+                        liveRegion = LiveRegionMode.Polite
+                        contentDescription =
+                            "Vị trí đoạn đã chọn. Bắt đầu ${spokenFrames(start, project.timelineSampleRate)}, kết thúc ${spokenFrames(end, project.timelineSampleRate)}, độ dài ${spokenFrames(duration, project.timelineSampleRate)}"
+                    },
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { StudioSessionRuntime.seek(start) },
+                        enabled = enabled,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Tới đầu đoạn") }
+                    OutlinedButton(
+                        onClick = { StudioSessionRuntime.seek(end) },
+                        enabled = enabled,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Tới cuối đoạn") }
+                }
+
+                Text("Bước dịch đoạn", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ACCESSIBLE_POSITION_STEPS_MS.forEach { step ->
+                        FilterChip(
+                            selected = moveStepMs == step,
+                            onClick = { moveStepMs = step },
+                            enabled = enabled,
+                            label = { Text(positionStepLabel(step)) },
+                            modifier = Modifier.semantics {
+                                contentDescription = "Bước dịch đoạn ${spokenStepLabel(step)}"
+                                stateDescription = if (moveStepMs == step) "đang chọn" else "chưa chọn"
+                            },
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { StudioSessionRuntime.moveSelectedByMillis(-moveStepMs) },
+                        enabled = enabled,
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics {
+                                contentDescription = "Lùi đoạn ${spokenStepLabel(moveStepMs)}"
+                            },
+                    ) { Text("Lùi ${positionStepLabel(moveStepMs)}") }
+                    OutlinedButton(
+                        onClick = { StudioSessionRuntime.moveSelectedByMillis(moveStepMs) },
+                        enabled = enabled,
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics {
+                                contentDescription = "Tiến đoạn ${spokenStepLabel(moveStepMs)}"
+                            },
+                    ) { Text("Tiến ${positionStepLabel(moveStepMs)}") }
+                }
+                OutlinedButton(
+                    onClick = StudioSessionRuntime::moveSelectedToPlayhead,
+                    enabled = enabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Đưa đầu đoạn tới vị trí đang nghe")
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -617,21 +764,6 @@ private fun EditPanel(
                         enabled = enabled,
                         modifier = Modifier.weight(1f),
                     ) { Text("Bỏ phần sau") }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedButton(
-                        onClick = { StudioSessionRuntime.moveSelectedByMillis(-100L) },
-                        enabled = enabled,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Lùi đoạn") }
-                    OutlinedButton(
-                        onClick = { StudioSessionRuntime.moveSelectedByMillis(100L) },
-                        enabled = enabled,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Tiến đoạn") }
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -679,9 +811,9 @@ private fun EditPanel(
                         modifier = Modifier.weight(1f),
                     ) { Text("Cuối mượt hơn") }
                 }
-            } else if (clips.isNotEmpty()) {
+            } else if (clipChoices.isNotEmpty()) {
                 Text(
-                    "Chọn một đoạn ở trên để chỉnh.",
+                    "Chọn một đoạn ở trên để chỉnh. TalkBack sẽ đọc tên lớp, vị trí bắt đầu và độ dài của từng đoạn.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -827,6 +959,50 @@ private fun TakesPanel(project: StudioProject, enabled: Boolean) {
             }
         }
     }
+}
+
+private data class EditableClipChoice(
+    val track: StudioTrack,
+    val indexInTrack: Int,
+    val clip: StudioClip,
+)
+
+private val ACCESSIBLE_POSITION_STEPS_MS = listOf(5_000L, 1_000L, 100L, 10L)
+
+private fun positionStepLabel(milliseconds: Long): String = when (milliseconds) {
+    5_000L -> "5 giây"
+    1_000L -> "1 giây"
+    100L -> "100 ms"
+    10L -> "10 ms"
+    else -> "$milliseconds ms"
+}
+
+private fun spokenStepLabel(milliseconds: Long): String = when (milliseconds) {
+    5_000L -> "5 giây"
+    1_000L -> "1 giây"
+    else -> "$milliseconds mili giây"
+}
+
+private fun spokenFrames(frame: Long, sampleRate: Int): String {
+    val safeRate = sampleRate.coerceAtLeast(1)
+    val totalMillis = frame.coerceAtLeast(0L) * 1_000L / safeRate
+    val minutes = totalMillis / 60_000L
+    val seconds = (totalMillis / 1_000L) % 60L
+    val millis = totalMillis % 1_000L
+    return buildList {
+        if (minutes > 0L) add("$minutes phút")
+        if (seconds > 0L || minutes > 0L) add("$seconds giây")
+        if (millis > 0L || isEmpty()) add("$millis mili giây")
+    }.joinToString(" ")
+}
+
+private fun editTrackName(track: StudioTrack): String = when {
+    track.name.isNotBlank() && !track.name.equals("Vocal", ignoreCase = true) -> track.name
+    track.type == StudioTrackType.VOCAL -> "Giọng chính"
+    track.type == StudioTrackType.BACKING_VOCAL -> "Giọng bè"
+    track.type == StudioTrackType.ADLIB -> "Giọng phụ"
+    track.type == StudioTrackType.INSTRUMENT -> "Nhạc cụ"
+    else -> "Giọng khác"
 }
 
 private fun StudioProject.findClip(id: String?): StudioClip? {

@@ -409,6 +409,20 @@ object StudioSessionRuntime {
         }
     }
 
+    fun moveSelectedToPlayhead() {
+        scope.launch {
+            val current = _state.value
+            val clipId = current.selectedClipId ?: return@launch
+            val project = current.project ?: return@launch
+            val clip = project.tracks
+                .asSequence()
+                .flatMap { it.clips.asSequence() }
+                .firstOrNull { it.id == clipId } ?: return@launch
+            val deltaFrames = current.transportFrame - clip.timelineStartFrame
+            applyEdit("move_to_playhead") { StudioEditEngine.move(it, clipId, deltaFrames) }
+        }
+    }
+
     fun deleteSelectedClip() {
         scope.launch {
             val clipId = _state.value.selectedClipId ?: return@launch

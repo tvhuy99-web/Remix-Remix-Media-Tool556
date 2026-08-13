@@ -2,6 +2,7 @@ package com.aistudio.mediatool.feature.studio.data
 
 import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
+import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
@@ -34,6 +35,62 @@ class StudioEditEngineTest {
     }
 
     @Test
+    fun splitPreservesOuterFadesAndAddsSafetyAtNewBoundary() {
+        val materialized = StudioEditEngine.materializeTrack(baseProject(), TRACK_ID)
+        val original = materialized.project.tracks.single().clips.single().copy(
+            fadeInFrames = 111L,
+            fadeOutFrames = 222L,
+        )
+        val prepared = materialized.project.copy(
+            tracks = listOf(materialized.project.tracks.single().copy(clips = listOf(original))),
+        )
+
+        val split = StudioEditEngine.split(prepared, original.id, 96_000L)
+        val clips = split.project.tracks.single().clips
+
+        assertEquals(111L, clips[0].fadeInFrames)
+        assertEquals(222L, clips[1].fadeOutFrames)
+        assertEquals(384L, clips[0].fadeOutFrames)
+        assertEquals(384L, clips[1].fadeInFrames)
+    }
+
+    @Test
+    fun trimAddsSafetyFadeAtExposedBoundary() {
+        val materialized = StudioEditEngine.materializeTrack(baseProject(), TRACK_ID)
+        val original = materialized.project.tracks.single().clips.single().copy(fadeInFrames = 0L, fadeOutFrames = 0L)
+        val prepared = materialized.project.copy(
+            tracks = listOf(materialized.project.tracks.single().copy(clips = listOf(original))),
+        )
+
+        val startTrim = StudioEditEngine.trimStart(prepared, original.id, 48_000L)
+        val startClip = startTrim.project.tracks.single().clips.single()
+        assertEquals(384L, startClip.fadeInFrames)
+
+        val endTrim = StudioEditEngine.trimEnd(prepared, original.id, 144_000L)
+        val endClip = endTrim.project.tracks.single().clips.single()
+        assertEquals(384L, endClip.fadeOutFrames)
+    }
+
+    @Test
+    fun deleteAddsSafetyFadesToNewlyExposedNeighbors() {
+        val project = baseProject()
+        val track = project.tracks.single()
+        val clips = listOf(
+            StudioClip("c1", ASSET_OLD, timelineStartFrame = 0L, sourceStartFrame = 0L, sourceEndFrame = 48_000L),
+            StudioClip("c2", ASSET_OLD, timelineStartFrame = 48_000L, sourceStartFrame = 48_000L, sourceEndFrame = 96_000L),
+            StudioClip("c3", ASSET_OLD, timelineStartFrame = 96_000L, sourceStartFrame = 96_000L, sourceEndFrame = 144_000L),
+        )
+        val prepared = project.copy(tracks = listOf(track.copy(clips = clips)))
+
+        val result = StudioEditEngine.delete(prepared, "c2")
+        val retained = result.project.tracks.single().clips
+
+        assertEquals(2, retained.size)
+        assertEquals(384L, retained[0].fadeOutFrames)
+        assertEquals(384L, retained[1].fadeInFrames)
+    }
+
+    @Test
     fun trimStartRejectsPlayheadOutsideClip() {
         val materialized = StudioEditEngine.materializeTrack(baseProject(), TRACK_ID)
         val clip = materialized.project.tracks.single().clips.single()
@@ -63,6 +120,7 @@ class StudioEditEngineTest {
         assertEquals(ASSET_OLD, clips[0].sourceAssetId)
         assertEquals(0L, clips[0].timelineStartFrame)
         assertEquals(96_000L, clips[0].sourceEndFrame)
+        assertTrue(clips[0].fadeOutFrames > 0L)
 
         val punch = clips[1]
         assertEquals(ASSET_NEW, punch.sourceAssetId)
@@ -75,6 +133,7 @@ class StudioEditEngineTest {
         assertEquals(ASSET_OLD, clips[2].sourceAssetId)
         assertEquals(144_000L, clips[2].timelineStartFrame)
         assertEquals(144_000L, clips[2].sourceStartFrame)
+        assertTrue(clips[2].fadeInFrames > 0L)
         assertEquals(2, result.project.tracks.single().takes.size)
     }
 

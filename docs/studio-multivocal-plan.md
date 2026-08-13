@@ -54,6 +54,13 @@ Implemented instead of drag/drop as a required editing path:
 - Waveform tap remains available as a convenience for sighted users, but the UI explicitly states that tapping/dragging is not required.
 - Movement stays non-destructive, uses the existing `StudioEditEngine.move`, preserves source audio and participates in Undo/Redo.
 
+## Beat import hardening ✅
+
+- Studio accepts MP3, WAV, M4A and FLAC for the beat source.
+- Known extensions are validated before copying; if a document provider omits the extension, known MIME types for those four formats are used as a fallback.
+- Unsupported OGG/Opus/AAC or other formats fail early with an actionable Vietnamese message instead of reaching the decoder first.
+- The app keeps modern SAF/content-URI handling and persisted read permission. Broad storage permission and absolute source paths are not required.
+
 ## Phase 3 — rhythm and vocal production
 
 Foundation completed:
@@ -78,7 +85,6 @@ Next dependency order:
 - Loudness normalization and de-pop/crossfade defaults across edits.
 - A/B preview for derived vocal processing with clearly announced active version.
 - Final mix and stem export validation across long projects and many simultaneous vocal layers.
-- Revisit system-picker format validation so Studio can give a clear unsupported-format message while keeping modern SAF/content-URI handling rather than requiring broad storage access or absolute source paths.
 
 ## Validation completed
 
@@ -105,5 +111,9 @@ Recording-role and shared-working-track verification:
 Musical-grid foundation verification:
 
 - Standard workflow `31690303731` passed verify, debug APK, native inspection, signature, lint and unit tests for optional key/scale metadata, grid origin persistence and deterministic beat-grid calculations.
+
+Beat import format verification:
+
+- Standard workflow `31691074221` passed verify, debug APK, native inspection, signature, lint and unit tests for MP3/WAV/M4A/FLAC filtering and friendly unsupported-format handling.
 
 Validation-only pull requests were closed without merging to `main`. The Studio feature commits were merged only into `agent/studio-foundation-native-audio-core`, keeping PR #40 Draft until device-level validation is complete.

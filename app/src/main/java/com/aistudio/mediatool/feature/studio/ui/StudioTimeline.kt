@@ -463,13 +463,14 @@ private fun framesToTimeline(frames: Long, sourceRate: Int, timelineRate: Int): 
     return (frames.toDouble() * timelineRate.toDouble() / sourceRate.toDouble()).toLong()
 }
 
-private fun friendlyTrackName(track: StudioTrack): String = when (track.type) {
-    StudioTrackType.BEAT -> "Nhạc nền"
-    StudioTrackType.VOCAL -> "Giọng chính"
-    StudioTrackType.BACKING_VOCAL -> "Giọng bè"
-    StudioTrackType.ADLIB -> "Giọng phụ"
-    StudioTrackType.INSTRUMENT -> "Nhạc cụ"
-    StudioTrackType.OTHER -> track.name.ifBlank { "Âm thanh khác" }
+private fun friendlyTrackName(track: StudioTrack): String = when {
+    track.type == StudioTrackType.BEAT -> "Nhạc nền"
+    track.name.isNotBlank() && !track.name.equals("Vocal", ignoreCase = true) -> track.name
+    track.type == StudioTrackType.VOCAL -> "Giọng chính"
+    track.type == StudioTrackType.BACKING_VOCAL -> "Giọng bè"
+    track.type == StudioTrackType.ADLIB -> "Giọng phụ"
+    track.type == StudioTrackType.INSTRUMENT -> "Nhạc cụ"
+    else -> "Âm thanh khác"
 }
 
 private fun formatRulerTime(seconds: Long): String {

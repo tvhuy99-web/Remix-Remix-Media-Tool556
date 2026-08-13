@@ -11,11 +11,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -191,6 +193,7 @@ private fun DeviceChipRow(
 fun StudioMixerCard(
     project: StudioProject,
     enabled: Boolean,
+    trackEditingEnabled: Boolean = enabled,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -211,10 +214,100 @@ fun StudioMixerCard(
                     var pan by remember(track.id, track.pan) {
                         mutableFloatStateOf(track.pan.coerceIn(-1f, 1f))
                     }
+                    var showManagement by rememberSaveable(track.id) { mutableStateOf(false) }
+                    var editName by rememberSaveable(track.id, track.name) { mutableStateOf(track.name) }
+                    var confirmDelete by rememberSaveable(track.id) { mutableStateOf(false) }
                     val name = friendlyTrackName(track)
 
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(name, fontWeight = FontWeight.SemiBold)
+
+                        if (track.type != StudioTrackType.BEAT) {
+                            OutlinedButton(
+                                onClick = { showManagement = !showManagement },
+                                enabled = trackEditingEnabled,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(if (showManagement) "Ẩn quản lý lớp" else "Quản lý lớp")
+                            }
+
+                            if (showManagement) {
+                                Text("Vai trò", style = MaterialTheme.typography.labelLarge)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    TrackRoleChip("Chính", StudioTrackType.VOCAL, track, trackEditingEnabled)
+                                    TrackRoleChip("Bè", StudioTrackType.BACKING_VOCAL, track, trackEditingEnabled)
+                                    TrackRoleChip("Phụ", StudioTrackType.ADLIB, track, trackEditingEnabled)
+                                    TrackRoleChip("Song ca / khác", StudioTrackType.OTHER, track, trackEditingEnabled)
+                                }
+
+                                OutlinedTextField(
+                                    value = editName,
+                                    onValueChange = { editName = it.take(48) },
+                                    label = { Text("Tên lớp") },
+                                    singleLine = true,
+                                    enabled = trackEditingEnabled,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Button(
+                                    onClick = { StudioSessionRuntime.renameTrack(track.id, editName) },
+                                    enabled = trackEditingEnabled && editName.isNotBlank() && editName.trim() != track.name,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) { Text("Lưu tên lớp") }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { StudioSessionRuntime.moveTrack(track.id, -1) },
+                                        enabled = trackEditingEnabled,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("Đưa lên") }
+                                    OutlinedButton(
+                                        onClick = { StudioSessionRuntime.moveTrack(track.id, 1) },
+                                        enabled = trackEditingEnabled,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("Đưa xuống") }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { StudioSessionRuntime.duplicateTrack(track.id) },
+                                        enabled = trackEditingEnabled,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("Nhân bản") }
+                                    OutlinedButton(
+                                        onClick = { confirmDelete = true },
+                                        enabled = trackEditingEnabled,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("Xóa lớp") }
+                                }
+                            }
+
+                            if (confirmDelete) {
+                                AlertDialog(
+                                    onDismissRequest = { confirmDelete = false },
+                                    title = { Text("Xóa lớp âm thanh?") },
+                                    text = { Text("File thu gốc vẫn được giữ trong dự án và thao tác này có thể Hoàn tác.") },
+                                    confirmButton = {
+                                        Button(onClick = {
+                                            confirmDelete = false
+                                            StudioSessionRuntime.deleteTrack(track.id)
+                                        }) { Text("Xóa lớp") }
+                                    },
+                                    dismissButton = {
+                                        OutlinedButton(onClick = { confirmDelete = false }) { Text("Giữ lại") }
+                                    },
+                                )
+                            }
+                        }
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -403,13 +496,29 @@ private fun friendlyDeviceLabel(device: StudioAudioDevice): String = device.labe
     .replace("USB Headset", "Tai nghe USB")
     .ifBlank { "Thiết bị âm thanh" }
 
-private fun friendlyTrackName(track: StudioTrack): String = when (track.type) {
-    StudioTrackType.BEAT -> "Nhạc nền"
-    StudioTrackType.VOCAL -> "Giọng chính"
-    StudioTrackType.BACKING_VOCAL -> "Giọng bè"
-    StudioTrackType.ADLIB -> "Giọng phụ"
-    StudioTrackType.INSTRUMENT -> "Nhạc cụ"
-    StudioTrackType.OTHER -> track.name.ifBlank { "Âm thanh khác" }
+@Composable
+private fun TrackRoleChip(
+    label: String,
+    type: StudioTrackType,
+    track: StudioTrack,
+    enabled: Boolean,
+) {
+    FilterChip(
+        selected = track.type == type,
+        onClick = { StudioSessionRuntime.setTrackRole(track.id, type) },
+        enabled = enabled,
+        label = { Text(label) },
+    )
+}
+
+private fun friendlyTrackName(track: StudioTrack): String = when {
+    track.type == StudioTrackType.BEAT -> "Nhạc nền"
+    track.name.isNotBlank() && !track.name.equals("Vocal", ignoreCase = true) -> track.name
+    track.type == StudioTrackType.VOCAL -> "Giọng chính"
+    track.type == StudioTrackType.BACKING_VOCAL -> "Giọng bè"
+    track.type == StudioTrackType.ADLIB -> "Giọng phụ"
+    track.type == StudioTrackType.INSTRUMENT -> "Nhạc cụ"
+    else -> "Âm thanh khác"
 }
 
 private fun volumeLabel(value: Float): String = when {

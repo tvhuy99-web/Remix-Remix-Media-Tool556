@@ -50,6 +50,55 @@ class StudioRecordingTargetTest {
     }
 
     @Test
+    fun explicitRoleCreatesBackingVocalWithAccessibleName() {
+        val project = projectWithTracks(beatTrack())
+
+        val first = project.selectRecordingTrack(
+            StudioRecordingTargetRequest.NewLayerForRole(StudioTrackType.BACKING_VOCAL),
+        )
+        val second = first.project.selectRecordingTrack(
+            StudioRecordingTargetRequest.NewLayerForRole(StudioTrackType.BACKING_VOCAL),
+        )
+
+        assertEquals(StudioTrackType.BACKING_VOCAL, first.track.type)
+        assertEquals("Giọng bè", first.track.name)
+        assertEquals("Giọng bè 2", second.track.name)
+        assertTrue(first.track.isAutoRecordingLayer())
+        assertTrue(second.track.isAutoRecordingLayer())
+    }
+
+    @Test
+    fun explicitRoleSupportsMainAdlibAndDuetNames() {
+        assertEquals("Giọng chính", recordingLayerName(StudioTrackType.VOCAL, 1))
+        assertEquals("Giọng chính 2", recordingLayerName(StudioTrackType.VOCAL, 2))
+        assertEquals("Giọng phụ", recordingLayerName(StudioTrackType.ADLIB, 1))
+        assertEquals("Song ca / khác", recordingLayerName(StudioTrackType.OTHER, 1))
+    }
+
+    @Test
+    fun explicitRoleRequestIsOneShotAndKeepsTheRole() {
+        StudioRecordingTargetRequests.requestNewLayer(StudioTrackType.ADLIB)
+
+        assertEquals(
+            StudioRecordingTargetRequest.NewLayerForRole(StudioTrackType.ADLIB),
+            StudioRecordingTargetRequests.consume(),
+        )
+        assertNull(StudioRecordingTargetRequests.consume())
+    }
+
+    @Test
+    fun normalRecUsesTheRoleChosenBeforeRecording() {
+        StudioRecordingTargetRequests.setNextNewLayerRole(StudioTrackType.BACKING_VOCAL)
+        StudioRecordingTargetRequests.requestNewLayer()
+
+        assertEquals(StudioTrackType.BACKING_VOCAL, StudioRecordingTargetRequests.nextNewLayerRole())
+        assertEquals(
+            StudioRecordingTargetRequest.NewLayerForRole(StudioTrackType.BACKING_VOCAL),
+            StudioRecordingTargetRequests.consume(),
+        )
+    }
+
+    @Test
     fun punchRequestKeepsTheRequestedExistingTrack() {
         val main = StudioTrack(
             id = "main-vocal",
@@ -78,7 +127,7 @@ class StudioRecordingTargetTest {
         StudioRecordingTargetRequests.requestNewLayer()
 
         assertEquals(
-            StudioRecordingTargetRequest.NewLayer,
+            StudioRecordingTargetRequest.NewLayerForRole(StudioTrackType.VOCAL),
             StudioRecordingTargetRequests.consume(),
         )
         assertNull(StudioRecordingTargetRequests.consume())

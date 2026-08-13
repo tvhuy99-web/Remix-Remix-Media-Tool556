@@ -14,16 +14,32 @@ import java.util.concurrent.atomic.AtomicReference
  * consumes the request exactly once when it creates the pending take.
  */
 sealed interface StudioRecordingTargetRequest {
+    /** Legacy fresh-layer request kept for callers that construct the request directly. */
     data object NewLayer : StudioRecordingTargetRequest
+    data class NewLayerForRole(val type: StudioTrackType) : StudioRecordingTargetRequest
     data class ExistingTrack(val trackId: String) : StudioRecordingTargetRequest
 }
 
 object StudioRecordingTargetRequests {
     private val pending = AtomicReference<StudioRecordingTargetRequest?>(null)
+    private val nextNewLayerRole = AtomicReference(StudioTrackType.VOCAL)
 
+    /** The normal REC button uses the role chosen in the Studio controls. */
     fun requestNewLayer() {
-        pending.set(StudioRecordingTargetRequest.NewLayer)
+        pending.set(StudioRecordingTargetRequest.NewLayerForRole(nextNewLayerRole.get()))
     }
+
+    fun requestNewLayer(type: StudioTrackType) {
+        setNextNewLayerRole(type)
+        pending.set(StudioRecordingTargetRequest.NewLayerForRole(type))
+    }
+
+    fun setNextNewLayerRole(type: StudioTrackType) {
+        require(type in RECORDABLE_VOICE_TYPES) { "Loại lớp này không dùng để thu giọng" }
+        nextNewLayerRole.set(type)
+    }
+
+    fun nextNewLayerRole(): StudioTrackType = nextNewLayerRole.get()
 
     fun requestExistingTrack(trackId: String?) {
         pending.set(trackId?.let { StudioRecordingTargetRequest.ExistingTrack(it) })
@@ -33,6 +49,7 @@ object StudioRecordingTargetRequests {
 
     internal fun clear() {
         pending.set(null)
+        nextNewLayerRole.set(StudioTrackType.VOCAL)
     }
 }
 
@@ -51,6 +68,20 @@ internal fun StudioProject.selectRecordingTrack(
         }
         require(existing.type != StudioTrackType.BEAT) { "Không thể thu đè lên nhạc nền" }
         return StudioRecordingTrackSelection(this, existing, createdNewTrack = false)
+    }
+
+    if (request is StudioRecordingTargetRequest.NewLayerForRole) {
+        val ordinal = tracks.count { it.type == request.type } + 1
+        val track = StudioTrack(
+            id = UUID.randomUUID().toString(),
+            type = request.type,
+            name = recordingLayerName(request.type, ordinal),
+        )
+        return StudioRecordingTrackSelection(
+            project = copy(tracks = tracks + track),
+            track = track,
+            createdNewTrack = true,
+        )
     }
 
     if (request == StudioRecordingTargetRequest.NewLayer) {
@@ -84,15 +115,43 @@ internal fun StudioProject.selectRecordingTrack(
     )
 }
 
+private val RECORDABLE_VOICE_TYPES = setOf(
+    StudioTrackType.VOCAL,
+    StudioTrackType.BACKING_VOCAL,
+    StudioTrackType.ADLIB,
+    StudioTrackType.OTHER,
+)
+
+internal fun recordingLayerName(type: StudioTrackType, ordinal: Int): String {
+    require(type in RECORDABLE_VOICE_TYPES) { "Loại lớp này không dùng để thu giọng" }
+    require(ordinal >= 1) { "Số thứ tự lớp phải từ 1" }
+    val base = when (type) {
+        StudioTrackType.VOCAL -> "Giọng chính"
+        StudioTrackType.BACKING_VOCAL -> "Giọng bè"
+        StudioTrackType.ADLIB -> "Giọng phụ"
+        StudioTrackType.OTHER -> "Song ca / khác"
+        StudioTrackType.BEAT,
+        StudioTrackType.INSTRUMENT,
+        -> error("Loại lớp này không dùng để thu giọng")
+    }
+    return if (ordinal == 1) base else "$base $ordinal"
+}
+
 internal fun StudioTrack.isAutoRecordingLayer(): Boolean =
-    name == "Giọng chính" || (type == StudioTrackType.OTHER && name.matches(Regex("Giọng \\d+")))
+    type in RECORDABLE_VOICE_TYPES && (
+        name.matches(Regex("Giọng chính(?: \\d+)?")) ||
+            name.matches(Regex("Giọng bè(?: \\d+)?")) ||
+            name.matches(Regex("Giọng phụ(?: \\d+)?")) ||
+            name.matches(Regex("Song ca / khác(?: \\d+)?")) ||
+            name.matches(Regex("Giọng \\d+"))
+        )
 
 private fun StudioTrack.isRecordingVoiceLayer(): Boolean = when (type) {
     StudioTrackType.VOCAL,
     StudioTrackType.BACKING_VOCAL,
     StudioTrackType.ADLIB,
     -> true
-    StudioTrackType.OTHER -> name.startsWith("Giọng ")
+    StudioTrackType.OTHER -> name.startsWith("Giọng ") || name.startsWith("Song ca / khác")
     StudioTrackType.BEAT,
     StudioTrackType.INSTRUMENT,
     -> false

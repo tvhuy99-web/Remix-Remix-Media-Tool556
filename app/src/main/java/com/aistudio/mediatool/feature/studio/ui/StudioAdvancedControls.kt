@@ -41,6 +41,7 @@ import com.aistudio.mediatool.feature.studio.audio.StudioAudioDevice
 import com.aistudio.mediatool.feature.studio.audio.StudioInputMode
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionState
+import com.aistudio.mediatool.feature.studio.data.StudioRecordingTargetRequests
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
@@ -56,6 +57,9 @@ fun StudioRoutingLatencyCard(
     enabled: Boolean,
 ) {
     var showFineTune by rememberSaveable { mutableStateOf(false) }
+    var nextRecordingRole by rememberSaveable {
+        mutableStateOf(StudioRecordingTargetRequests.nextNewLayerRole())
+    }
     val profile = session.latencyProfile
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -67,6 +71,15 @@ fun StudioRoutingLatencyCard(
                 "Mic, tai nghe & căn tiếng",
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.semantics { heading() },
+            )
+
+            StudioRecordingRolePanel(
+                selectedRole = nextRecordingRole,
+                enabled = enabled,
+                onSelected = { role ->
+                    nextRecordingRole = role
+                    StudioRecordingTargetRequests.setNextNewLayerRole(role)
+                },
             )
 
             Text("Mic dùng để thu", style = MaterialTheme.typography.labelLarge)

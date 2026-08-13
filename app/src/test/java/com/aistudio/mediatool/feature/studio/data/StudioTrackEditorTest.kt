@@ -9,6 +9,7 @@ import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -42,7 +43,7 @@ class StudioTrackEditorTest {
         assertTrue(copy.takes.isEmpty())
         assertEquals(1, copy.clips.size)
         assertEquals(take.assetId, copy.clips.single().sourceAssetId)
-        assertEquals(take.id, copy.clips.single().sourceTakeId)
+        assertNull(copy.clips.single().sourceTakeId)
         assertEquals(900L, copy.clips.single().timelineStartFrame)
         assertEquals(-0.25f, copy.pan)
     }

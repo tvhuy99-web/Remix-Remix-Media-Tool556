@@ -305,9 +305,12 @@ object StudioSessionRuntime {
                 _state.value = current.copy(errorMessage = "Hãy đặt điểm Punch In và Punch Out trước")
                 return@launch
             }
-            val vocalTrack = project.tracks.firstOrNull { it.type == StudioTrackType.VOCAL }
-            if (vocalTrack == null || vocalTrack.takes.isEmpty()) {
-                _state.value = current.copy(errorMessage = "Cần ít nhất một vocal take trước khi Punch")
+            val editableVoiceTrack = project.tracks.firstOrNull { track ->
+                track.type != StudioTrackType.BEAT &&
+                    (track.takes.isNotEmpty() || track.clips.isNotEmpty())
+            }
+            if (editableVoiceTrack == null) {
+                _state.value = current.copy(errorMessage = "Cần ít nhất một lớp giọng trước khi thu sửa đoạn")
                 return@launch
             }
             val preRoll = DEFAULT_PUNCH_PREROLL_SECONDS * project.timelineSampleRate.toLong()
@@ -315,7 +318,7 @@ object StudioSessionRuntime {
                 startFrame = start,
                 endFrame = end,
                 recordStartFrame = (start - preRoll).coerceAtLeast(0L),
-                trackId = vocalTrack.id,
+                trackId = editableVoiceTrack.id,
             )
             startRecordingInternal(
                 mode,

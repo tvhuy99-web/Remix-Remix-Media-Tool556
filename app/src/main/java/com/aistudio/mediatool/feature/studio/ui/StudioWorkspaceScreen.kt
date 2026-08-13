@@ -700,8 +700,9 @@ private fun RetakePanel(
     enabled: Boolean,
     onRecord: () -> Unit,
 ) {
-    val hasVocal = project.tracks.any {
-        it.type == StudioTrackType.VOCAL && it.takes.isNotEmpty()
+    val hasVocal = project.tracks.any { track ->
+        track.type != StudioTrackType.BEAT &&
+            (track.takes.isNotEmpty() || track.clips.isNotEmpty())
     }
     val validRange = punchStartFrame != null && punchEndFrame != null && punchEndFrame > punchStartFrame
 

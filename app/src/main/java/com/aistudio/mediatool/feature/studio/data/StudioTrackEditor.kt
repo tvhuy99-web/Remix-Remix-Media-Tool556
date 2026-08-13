@@ -29,7 +29,10 @@ object StudioTrackEditor {
         val source = editableTrack(project, trackId)
         val sourceIndex = project.tracks.indexOfFirst { it.id == source.id }
         val clonedClips = materializedClips(project, source).map { clip ->
-            clip.copy(id = UUID.randomUUID().toString())
+            clip.copy(
+                id = UUID.randomUUID().toString(),
+                sourceTakeId = null,
+            )
         }
         val duplicate = source.copy(
             id = UUID.randomUUID().toString(),

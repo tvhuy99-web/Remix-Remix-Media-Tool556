@@ -25,6 +25,34 @@ enum class StudioTakeStatus {
     FAILED,
 }
 
+enum class StudioPitchClass {
+    C,
+    C_SHARP,
+    D,
+    D_SHARP,
+    E,
+    F,
+    F_SHARP,
+    G,
+    G_SHARP,
+    A,
+    A_SHARP,
+    B,
+}
+
+enum class StudioScaleMode {
+    MAJOR,
+    MINOR,
+}
+
+data class StudioMusicalKeySettings(
+    val root: StudioPitchClass? = null,
+    val scale: StudioScaleMode? = null,
+) {
+    val isKnown: Boolean
+        get() = root != null && scale != null
+}
+
 data class StudioAsset(
     val id: String,
     val kind: StudioAssetKind,
@@ -89,6 +117,8 @@ data class StudioTempoSettings(
     val beatsPerBar: Int = 4,
     val metronomeEnabled: Boolean = false,
     val metronomeGainDb: Float = -12f,
+    /** Timeline frame treated as beat 1 of bar 1 for snapping/alignment. */
+    val gridOriginFrame: Long = 0L,
 )
 
 data class StudioVocalFxSettings(
@@ -110,6 +140,7 @@ data class StudioVocalFxSettings(
 
 data class StudioProSettings(
     val tempo: StudioTempoSettings = StudioTempoSettings(),
+    val musicalKey: StudioMusicalKeySettings = StudioMusicalKeySettings(),
     val vocalFx: StudioVocalFxSettings = StudioVocalFxSettings(),
 )
 

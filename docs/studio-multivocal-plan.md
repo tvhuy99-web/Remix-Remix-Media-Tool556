@@ -56,15 +56,20 @@ Implemented instead of drag/drop as a required editing path:
 
 ## Phase 3 — rhythm and vocal production
 
-Current dependency order:
+Foundation completed:
 
-1. Add persisted musical-key/scale metadata beside the existing BPM and beats-per-bar settings, with backward-compatible project codec defaults.
-2. Build a deterministic beat-grid utility from timeline sample rate, BPM, time signature and an explicit grid origin. Keep manual BPM override even after analysis is added.
-3. Add beat/key analysis as suggestions rather than silently overwriting project metadata. The review UI must announce the detected BPM/key, confidence and the value that will be applied.
-4. Add semi-automatic vocal alignment as a suggested offset. Review must support the same accessible **5 s / 1 s / 100 ms / 10 ms** fine-tuning model before Apply/Undo.
-5. Add pitch correction with explicit key/scale controls and formant-aware shifting. The first version should be controllable and reversible before any “one tap” automatic mode.
-6. Add harmony generation on top of the safe duplicate/layer system, with each generated harmony remaining an independent layer with its own pan/volume.
-7. Extend the existing EQ/compressor/reverb/Spatial chain only where the current Studio effects do not already cover the requested sound.
+- ✅ Persisted optional musical root note and major/minor scale beside the existing tempo settings. Missing fields remain safe defaults for older project JSON.
+- ✅ Persisted `gridOriginFrame`, the timeline frame treated as beat 1 of bar 1.
+- ✅ Added deterministic `StudioBeatGrid` calculations for frames-per-beat, exact beat frames, nearest beat, beat-in-bar/bar index and bounded marker ranges. The grid is timeline/sample-rate based and does not depend on waveform pixels.
+
+Next dependency order:
+
+1. Add accessible controls for key/scale and **Đặt phách 1 tại vị trí đang nghe**, while preserving musical metadata when saving existing Pro voice settings.
+2. Add beat/key analysis as suggestions rather than silently overwriting project metadata. The review UI must announce detected BPM/key, confidence and the value that will be applied.
+3. Add semi-automatic vocal alignment as a suggested offset. Review must support the same accessible **5 s / 1 s / 100 ms / 10 ms** fine-tuning model before Apply/Undo.
+4. Add pitch correction with explicit key/scale controls and formant-aware shifting. The first version should be controllable and reversible before any “one tap” automatic mode.
+5. Add harmony generation on top of the safe duplicate/layer system, with each generated harmony remaining an independent layer with its own pan/volume.
+6. Extend the existing EQ/compressor/reverb/Spatial chain only where the current Studio effects do not already cover the requested sound.
 
 ## Phase 4 — final production workflow
 
@@ -95,5 +100,10 @@ Recording-role and shared-working-track verification:
 
 - Standard workflow `31687971661` passed verify, debug APK, native inspection, signature, lint and unit tests for **Lớp sắp thu**.
 - Standard workflow `31689266238` passed the same full suite for **Lớp đang thao tác** after an earlier validation run correctly caught and led to a fix for an incomplete unit-test clip fixture.
+- Integrated PR #40 workflow `31689906367` passed verify, build, native inspection, signature, lint and unit tests after both Phase 2 additions were merged.
+
+Musical-grid foundation verification:
+
+- Standard workflow `31690303731` passed verify, debug APK, native inspection, signature, lint and unit tests for optional key/scale metadata, grid origin persistence and deterministic beat-grid calculations.
 
 Validation-only pull requests were closed without merging to `main`. The Studio feature commits were merged only into `agent/studio-foundation-native-audio-core`, keeping PR #40 Draft until device-level validation is complete.

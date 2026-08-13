@@ -1,0 +1,107 @@
+name: Studio multivocal overdub verification
+
+on:
+  push:
+    branches:
+      - agent/studio-multivocal-overdub
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: studio-multivocal-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  patch-build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout Studio multivocal branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/studio-multivocal-overdub
+          fetch-depth: 2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Restore stable CI signing key
+        run: |
+          base64 --decode .ci/mediatool-ci-debug.keystore.b64 > .ci/mediatool-ci-debug.keystore
+          keytool -list \
+            -keystore .ci/mediatool-ci-debug.keystore \
+            -storepass android \
+            -alias androiddebugkey >/dev/null
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+
+      - name: Apply independent vocal-layer patch
+        run: |
+          python3 scripts/studio_multivocal_patch_runner.py
+          git diff --check
+          git status --short
+
+      - name: Verify project structure
+        run: python3 scripts/verify_project.py
+
+      - name: Run Studio unit tests, lint and build
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest lintDebug assembleDebug --stacktrace --build-cache
+
+      - name: Inspect native Studio packaging
+        run: |
+          python3 scripts/inspect_apks.py app/build/outputs/apk/debug/app-debug.apk
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/libmediatool_studio.so'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/libmediatool_spatial.so'
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Commit verified Studio source patch
+        run: |
+          if git diff --quiet; then
+            echo "Source patch already committed."
+            exit 0
+          fi
+          git config user.name "studio-multivocal-bot"
+          git config user.email "studio-multivocal-bot@users.noreply.github.com"
+          git add \
+            app/src/main/java/com/aistudio/mediatool/feature/studio/data/StudioProjectRepository.kt \
+            app/src/main/java/com/aistudio/mediatool/feature/studio/ui/StudioWorkspaceScreen.kt
+          git commit -m "Add independent Studio vocal layers"
+          git push origin HEAD:agent/studio-multivocal-overdub
+
+      - name: Upload verified APK
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-multivocal-app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Upload reports
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-multivocal-reports
+          path: |
+            app/build/reports/lint-results-*.html
+            app/build/reports/tests/**
+          if-no-files-found: ignore
+          retention-days: 3

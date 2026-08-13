@@ -6,8 +6,11 @@ import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioMasterMix
+import com.aistudio.mediatool.feature.studio.domain.StudioMusicalKeySettings
+import com.aistudio.mediatool.feature.studio.domain.StudioPitchClass
 import com.aistudio.mediatool.feature.studio.domain.StudioProSettings
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
+import com.aistudio.mediatool.feature.studio.domain.StudioScaleMode
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
 import com.aistudio.mediatool.feature.studio.domain.StudioTempoSettings
@@ -182,6 +185,11 @@ object StudioProjectCodec {
             put("beatsPerBar", settings.tempo.beatsPerBar)
             put("metronomeEnabled", settings.tempo.metronomeEnabled)
             put("metronomeGainDb", settings.tempo.metronomeGainDb.toDouble())
+            put("gridOriginFrame", settings.tempo.gridOriginFrame)
+        })
+        put("musicalKey", JSONObject().apply {
+            putNullable("root", settings.musicalKey.root?.name)
+            putNullable("scale", settings.musicalKey.scale?.name)
         })
         put("vocalFx", JSONObject().apply {
             val fx = settings.vocalFx
@@ -204,6 +212,7 @@ object StudioProjectCodec {
 
     private fun proSettingsFromJson(json: JSONObject): StudioProSettings {
         val tempoJson = json.optJSONObject("tempo")
+        val keyJson = json.optJSONObject("musicalKey")
         val fxJson = json.optJSONObject("vocalFx")
         return StudioProSettings(
             tempo = StudioTempoSettings(
@@ -211,6 +220,11 @@ object StudioProjectCodec {
                 beatsPerBar = tempoJson?.optInt("beatsPerBar", 4)?.coerceIn(2, 12) ?: 4,
                 metronomeEnabled = tempoJson?.optBoolean("metronomeEnabled", false) ?: false,
                 metronomeGainDb = tempoJson?.optDouble("metronomeGainDb", -12.0)?.toFloat()?.coerceIn(-36f, 0f) ?: -12f,
+                gridOriginFrame = tempoJson?.optLong("gridOriginFrame", 0L)?.coerceAtLeast(0L) ?: 0L,
+            ),
+            musicalKey = StudioMusicalKeySettings(
+                root = keyJson?.nullableString("root")?.let { enumOrNull<StudioPitchClass>(it) },
+                scale = keyJson?.nullableString("scale")?.let { enumOrNull<StudioScaleMode>(it) },
             ),
             vocalFx = StudioVocalFxSettings(
                 enabled = fxJson?.optBoolean("enabled", true) ?: true,
@@ -233,6 +247,9 @@ object StudioProjectCodec {
 
     private inline fun <reified T : Enum<T>> enumOrDefault(value: String, fallback: T): T =
         runCatching { enumValueOf<T>(value) }.getOrDefault(fallback)
+
+    private inline fun <reified T : Enum<T>> enumOrNull(value: String): T? =
+        runCatching { enumValueOf<T>(value) }.getOrNull()
 
     private fun JSONObject.putNullable(key: String, value: Any?) {
         put(key, value ?: JSONObject.NULL)

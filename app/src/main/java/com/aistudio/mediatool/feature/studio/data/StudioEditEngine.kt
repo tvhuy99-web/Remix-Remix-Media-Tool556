@@ -172,10 +172,12 @@ object StudioEditEngine {
                 if (clipStart < punchStart) {
                     val leftEnd = sourceFrameAtTimeline(materialized, clip, punchStart)
                     if (leftEnd > clip.sourceStartFrame) {
+                        val leftLength = leftEnd - clip.sourceStartFrame
                         add(
                             clip.copy(
                                 sourceEndFrame = leftEnd,
-                                fadeOutFrames = clip.fadeOutFrames.coerceAtMost(leftEnd - clip.sourceStartFrame),
+                                fadeInFrames = clip.fadeInFrames.coerceAtMost(leftLength),
+                                fadeOutFrames = safetyFadeFrames(materialized, clip, leftLength),
                             ),
                         )
                     }
@@ -183,12 +185,14 @@ object StudioEditEngine {
                 if (clipEnd > punchEnd) {
                     val rightStart = sourceFrameAtTimeline(materialized, clip, punchEnd)
                     if (rightStart < clip.sourceEndFrame) {
+                        val rightLength = clip.sourceEndFrame - rightStart
                         add(
                             clip.copy(
                                 id = UUID.randomUUID().toString(),
                                 timelineStartFrame = punchEnd,
                                 sourceStartFrame = rightStart,
-                                fadeInFrames = clip.fadeInFrames.coerceAtMost(clip.sourceEndFrame - rightStart),
+                                fadeInFrames = safetyFadeFrames(materialized, clip, rightLength),
+                                fadeOutFrames = clip.fadeOutFrames.coerceAtMost(rightLength),
                             ),
                         )
                     }
@@ -209,7 +213,7 @@ object StudioEditEngine {
         )
         val sourceEnd = requestedSourceEnd.coerceIn(sourceStart, take.recordedFrames)
         require(sourceEnd > sourceStart) { "Punch take quá ngắn cho vùng đã chọn" }
-        val safetyFade = (sourceRate / 100L).coerceAtMost((sourceEnd - sourceStart) / 2L)
+        val safetyFade = StudioEditSafety.frames(sourceRate, sourceEnd - sourceStart)
         val punchClip = StudioClip(
             id = UUID.randomUUID().toString(),
             sourceAssetId = take.assetId,
@@ -272,6 +276,8 @@ object StudioEditEngine {
 
     private fun fullTakeClip(project: StudioProject, take: StudioTake): StudioClip {
         val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
+        val length = (placement.sourceEndFrame - placement.sourceStartFrame).coerceAtLeast(0L)
+        val fade = StudioEditSafety.frames(take.inputSampleRate, length)
         return StudioClip(
             id = UUID.randomUUID().toString(),
             sourceAssetId = take.assetId,
@@ -279,6 +285,8 @@ object StudioEditEngine {
             timelineStartFrame = placement.timelineStartFrame,
             sourceStartFrame = placement.sourceStartFrame,
             sourceEndFrame = placement.sourceEndFrame,
+            fadeInFrames = fade,
+            fadeOutFrames = fade,
         )
     }
 

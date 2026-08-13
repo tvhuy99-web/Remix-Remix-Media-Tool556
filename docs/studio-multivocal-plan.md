@@ -2,118 +2,108 @@
 
 ## Goal
 
-Upgrade Studio full-take recording from replacement takes on one vocal track to independent vocal layers that can play, mix, edit and export at the same time, while keeping punch recording, latency compensation, recovery and existing projects compatible.
+Upgrade Studio into an independent multi-vocal production workspace while preserving punch recording, latency compensation, recovery, non-destructive editing and backward-compatible projects.
 
-Accessibility is a product constraint, not a later polish pass. Core editing must remain fully operable without drag gestures, precise waveform tapping or visual-only state.
+Accessibility is a product constraint, not a later polish pass. Core workflows must remain fully operable without drag gestures, precise waveform tapping or visual-only state.
 
 ## Phase 1 — independent overdub layers ✅
 
 Implemented:
 
-- Normal **Thu giọng** requests a fresh recording layer.
-- The first layer is **Giọng chính**; later recordings create independent voice layers instead of replacing one main vocal take.
-- Additional layers are immediately materialized as editable timeline clips using the existing latency-compensated placement.
-- Punch recording targets an existing voice layer instead of creating an overdub layer.
-- Failed recording setup removes an empty auto-created layer so projects do not accumulate ghost tracks.
-- Playback, mixer and export reuse the existing all-track planners/renderers, so independent layers overlap without a second audio engine.
-- Existing direct callers can still use the legacy `NewLayer` request for compatibility.
+- Normal **Thu giọng** creates a fresh independent voice layer instead of replacing one main-vocal take.
+- The first layer is **Giọng chính**; later layers can overlap for backing vocals, duet and ad-lib work.
+- New layers are immediately materialized as latency-compensated editable clips.
+- Punch recording targets an existing voice layer and does not create an accidental overdub layer.
+- Playback, Mixer and export reuse the existing all-track planner/renderers.
+- Failed recording setup removes empty auto-created layers.
 
 ## Phase 2 — layer controls and recording intent ✅
 
 Implemented:
 
-- Per-layer management is collapsed behind **Quản lý lớp** so the normal Studio surface stays simple.
-- Voice roles: **Chính**, **Bè**, **Phụ**, **Song ca / khác**.
-- Rename, reorder, duplicate and delete controls.
-- Custom names are shown consistently in Mixer and Timeline.
-- Duplicate is non-destructive: it reuses source assets with new clip identities instead of copying audio files.
-- Delete keeps source assets and participates in the existing Undo/Redo history.
-- Beat remains locked out of voice-layer edits and cannot be reordered through vocal layers.
-- Track-management edits are blocked while recording/busy, without disabling the existing realtime mixer controls.
-- Punch recording remains available even if the original main-vocal track was renamed, reclassified or deleted, as long as an editable recorded layer remains.
-- **Lớp sắp thu** is chosen before REC: **Giọng chính**, **Giọng bè**, **Giọng phụ** or **Song ca / khác**. Normal REC keeps its existing permission flow and creates the new independent layer with the selected role and an accessible generated name.
-- **Lớp đang thao tác** is a project-scoped shared state used by clip selection, the pre-record controls, Mixer and punch targeting.
-- Selecting a clip synchronizes the working layer to that clip's track; explicitly selecting a working layer clears the old clip selection so the UI cannot silently carry two conflicting targets.
-- TalkBack announces both the next-recording role and the active working layer through state descriptions/live regions.
+- **Quản lý lớp**: role, rename, reorder, duplicate and delete.
+- Roles: **Chính**, **Bè**, **Phụ**, **Song ca / khác**.
+- Duplicate is non-destructive and reuses source assets with new clip identities.
+- Delete preserves source assets and participates in Undo/Redo.
+- **Lớp sắp thu** is selected before REC and the created layer carries that role immediately.
+- **Lớp đang thao tác** is shared by clip selection, pre-record controls, Mixer and punch targeting.
+- TalkBack announces recording role and working layer state.
+- Beat remains locked out of voice-layer management.
 
-Still optional and device-dependent rather than a blocking Phase 2 requirement:
+Optional, device-dependent follow-up:
 
-- Per-layer monitor/input preferences should only be added where Android routing can make the behavior reliable and understandable on the target device.
+- Per-layer monitoring/input preferences only where Android routing can make the behavior reliable.
 
 ## Phase 2.5 — accessible clip positioning ✅
 
-Implemented instead of drag/drop as a required editing path:
-
-- Timeline navigation uses selectable **5 s / 1 s / 100 ms / 10 ms** steps with large Back/Forward buttons.
-- The current playhead time is exposed through a polite accessibility live region so TalkBack can announce position changes.
-- Clip selection announces track name, clip number, start time and duration.
-- The selected clip announces its start, end and duration, and updates that announcement after movement.
-- **Tới đầu đoạn** and **Tới cuối đoạn** place the playhead at exact clip boundaries for preview, split, trim and punch workflows.
-- Clip movement uses the same **5 s / 1 s / 100 ms / 10 ms** step model instead of requiring a drag gesture.
-- **Đưa đầu đoạn tới vị trí đang nghe** aligns the clip start to the current playhead without dragging.
-- Waveform tap remains available as a convenience for sighted users, but the UI explicitly states that tapping/dragging is not required.
-- Movement stays non-destructive, uses the existing `StudioEditEngine.move`, preserves source audio and participates in Undo/Redo.
+- Playhead and clip movement use selectable **5 s / 1 s / 100 ms / 10 ms** steps.
+- TalkBack receives playhead and selected-clip position updates through live regions/state descriptions.
+- **Tới đầu đoạn**, **Tới cuối đoạn** and **Đưa đầu đoạn tới vị trí đang nghe** provide exact non-drag editing paths.
+- Waveform tap/drag remains optional for sighted users.
+- Movement stays non-destructive through `StudioEditEngine.move` and Undo/Redo.
 
 ## Beat import hardening ✅
 
-- Studio accepts MP3, WAV, M4A and FLAC for the beat source.
-- Known extensions are validated before copying; if a document provider omits the extension, known MIME types for those four formats are used as a fallback.
-- Unsupported OGG/Opus/AAC or other formats fail early with an actionable Vietnamese message instead of reaching the decoder first.
-- The app keeps modern SAF/content-URI handling and persisted read permission. Broad storage permission and absolute source paths are not required.
+- Beat input accepts MP3, WAV, M4A and FLAC.
+- Extension validation uses known MIME types as fallback when document providers omit extensions.
+- Unsupported formats fail early with a Vietnamese actionable message.
+- Studio keeps SAF/content URI + persisted read permission; broad storage permission and absolute source paths are not required.
 
 ## Phase 3 — rhythm and vocal production
 
-Foundation completed:
+### Foundation ✅
 
-- ✅ Persisted optional musical root note and major/minor scale beside the existing tempo settings. Missing fields remain safe defaults for older project JSON.
-- ✅ Persisted `gridOriginFrame`, the timeline frame treated as beat 1 of bar 1.
-- ✅ Added deterministic `StudioBeatGrid` calculations for frames-per-beat, exact beat frames, nearest beat, beat-in-bar/bar index and bounded marker ranges. The grid is timeline/sample-rate based and does not depend on waveform pixels.
+- Persisted optional root note + Major/Minor metadata with safe defaults for older project JSON.
+- Persisted `gridOriginFrame`, the timeline frame treated as beat 1 of bar 1.
+- Deterministic `StudioBeatGrid` for beat frames, nearest beat, bar/beat index and bounded marker ranges.
 
-Next dependency order:
+### 3.1 Accessible musical controls ✅
 
-1. Add accessible controls for key/scale and **Đặt phách 1 tại vị trí đang nghe**, while preserving musical metadata when saving existing Pro voice settings.
-2. Add beat/key analysis as suggestions rather than silently overwriting project metadata. The review UI must announce detected BPM/key, confidence and the value that will be applied.
-3. Add semi-automatic vocal alignment as a suggested offset. Review must support the same accessible **5 s / 1 s / 100 ms / 10 ms** fine-tuning model before Apply/Undo.
-4. Add pitch correction with explicit key/scale controls and formant-aware shifting. The first version should be controllable and reversible before any “one tap” automatic mode.
-5. Add harmony generation on top of the safe duplicate/layer system, with each generated harmony remaining an independent layer with its own pan/volume.
-6. Extend the existing EQ/compressor/reverb/Spatial chain only where the current Studio effects do not already cover the requested sound.
+- **Nhịp & tông** exposes manual BPM, all 12 pitch classes and Major/Minor.
+- Beat can be previewed and **Đặt phách 1 tại vị trí đang nghe** stores an exact timeline grid origin.
+- Suggestions and save state are announced through TalkBack semantics/live regions.
+- Existing Pro voice saves preserve musical key and grid-origin metadata.
+
+### 3.2 Automatic BPM + key suggestions ✅ first production version
+
+- BPM analysis runs offline on the prepared 48 kHz beat PCM using onset-envelope autocorrelation.
+- Key analysis uses Goertzel chroma energy and Major/Minor tonal profiles.
+- Results contain confidence values and remain suggestions until the user explicitly chooses them and saves.
+- Analyzer never silently overwrites project metadata.
+
+### 3.3 Semi-automatic vocal alignment ✅ first production version
+
+- The selected vocal clip is analyzed for multiple significant onset points.
+- Candidate timing offsets are scored against the persisted half-beat grid.
+- Review announces suggested offset, confidence and average timing error before/after.
+- User can fine-tune with **5 s / 1 s / 100 ms / 10 ms** steps before Apply.
+- Apply uses the existing non-destructive move edit path and can be undone immediately.
+- This phase intentionally shifts clips only; it does not time-warp or stretch vocal audio.
+
+### Next dependency order
+
+1. Pitch correction / Auto-Tune with explicit key/scale, strength controls and formant-aware shifting. Keep it reversible before adding a one-tap mode.
+2. Harmony generation on top of independent layers, with each generated harmony retaining its own pan/volume/mute/solo controls.
+3. Extend existing EQ/compressor/reverb/Spatial processing only where current Studio effects do not cover the requested sound.
 
 ## Phase 4 — final production workflow
 
-- Region selection through named clip/region lists, boundary controls, snapping presets and fine time-step movement. Dragging may remain optional for sighted users but must never be required.
-- Accessible start/end markers whose time values and state changes are announced to TalkBack.
-- Loudness normalization and de-pop/crossfade defaults across edits.
-- A/B preview for derived vocal processing with clearly announced active version.
-- Final mix and stem export validation across long projects and many simultaneous vocal layers.
+- Named region selection, boundary controls and snapping presets with full TalkBack operation.
+- Loudness normalization plus de-pop/crossfade defaults across edits.
+- Accessible A/B preview for derived vocal processing.
+- Long-project and many-layer export/stem validation.
+- Device-level validation for TalkBack, headphone routing, latency, overdub and Punch.
 
 ## Validation completed
 
-Phase 1 feature verification:
+- `31662633869`: Phase 1 multi-vocal foundation.
+- `31663560484`, `31664012208`: Phase 2 track-management and edge-case hardening.
+- `31684859962`: accessible non-drag positioning.
+- `31687971661`: role before REC.
+- `31689266238`: shared working-track/Punch.
+- `31689906367`: integrated Phase 2 PR #40 head.
+- `31690303731`: key/grid foundation.
+- `31691074221`: beat-format validation.
+- `31698189515`: Phase 3 musical UI, BPM/key suggestions, semi-auto vocal alignment, metadata preservation, full build/native/signature/lint/unit-test validation.
 
-- GitHub Actions `31662633869`: project verification, unit tests, lint, debug APK, native Studio packaging and signature verification all passed.
-- Standard PR #40 workflow `31663157244`: build, APK inspection, signature, lint and unit tests all passed on the integrated Studio head.
-
-Phase 2 track management verification:
-
-- GitHub Actions `31663560484`: first full track-management implementation passed project verification, unit tests, lint, build, native packaging and APK signature verification.
-- GitHub Actions `31664012208`: edge-case hardening passed the same full verification after fixing punch-without-main-vocal and safe duplicate source identity.
-
-Accessible positioning verification:
-
-- GitHub Actions `31684859962`: project verification, accessible editing unit tests, full unit suite, lint, debug APK, native Studio/Spatial packaging and APK signature verification all passed.
-
-Recording-role and shared-working-track verification:
-
-- Standard workflow `31687971661` passed verify, debug APK, native inspection, signature, lint and unit tests for **Lớp sắp thu**.
-- Standard workflow `31689266238` passed the same full suite for **Lớp đang thao tác** after an earlier validation run correctly caught and led to a fix for an incomplete unit-test clip fixture.
-- Integrated PR #40 workflow `31689906367` passed verify, build, native inspection, signature, lint and unit tests after both Phase 2 additions were merged.
-
-Musical-grid foundation verification:
-
-- Standard workflow `31690303731` passed verify, debug APK, native inspection, signature, lint and unit tests for optional key/scale metadata, grid origin persistence and deterministic beat-grid calculations.
-
-Beat import format verification:
-
-- Standard workflow `31691074221` passed verify, debug APK, native inspection, signature, lint and unit tests for MP3/WAV/M4A/FLAC filtering and friendly unsupported-format handling.
-
-Validation-only pull requests were closed without merging to `main`. The Studio feature commits were merged only into `agent/studio-foundation-native-audio-core`, keeping PR #40 Draft until device-level validation is complete.
+Validation-only pull requests targeting `main` were closed without merging. Studio feature commits are merged only into `agent/studio-foundation-native-audio-core`; PR #40 remains Draft until device-level validation is complete.

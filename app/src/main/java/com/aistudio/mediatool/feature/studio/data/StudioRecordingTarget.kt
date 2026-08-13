@@ -42,7 +42,8 @@ object StudioRecordingTargetRequests {
     fun nextNewLayerRole(): StudioTrackType = nextNewLayerRole.get()
 
     fun requestExistingTrack(trackId: String?) {
-        pending.set(trackId?.let { StudioRecordingTargetRequest.ExistingTrack(it) })
+        val preferredTrackId = StudioWorkingTrackSelection.preferredPunchTrackId(trackId)
+        pending.set(preferredTrackId?.let { StudioRecordingTargetRequest.ExistingTrack(it) })
     }
 
     internal fun consume(): StudioRecordingTargetRequest? = pending.getAndSet(null)

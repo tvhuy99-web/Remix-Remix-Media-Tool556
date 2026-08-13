@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference
  * consumes the request exactly once when it creates the pending take.
  */
 sealed interface StudioRecordingTargetRequest {
-    /** Legacy fresh-layer request kept for callers that do not choose a role yet. */
+    /** Legacy fresh-layer request kept for callers that construct the request directly. */
     data object NewLayer : StudioRecordingTargetRequest
     data class NewLayerForRole(val type: StudioTrackType) : StudioRecordingTargetRequest
     data class ExistingTrack(val trackId: String) : StudioRecordingTargetRequest
@@ -22,15 +22,24 @@ sealed interface StudioRecordingTargetRequest {
 
 object StudioRecordingTargetRequests {
     private val pending = AtomicReference<StudioRecordingTargetRequest?>(null)
+    private val nextNewLayerRole = AtomicReference(StudioTrackType.VOCAL)
 
+    /** The normal REC button uses the role chosen in the Studio controls. */
     fun requestNewLayer() {
-        pending.set(StudioRecordingTargetRequest.NewLayer)
+        pending.set(StudioRecordingTargetRequest.NewLayerForRole(nextNewLayerRole.get()))
     }
 
     fun requestNewLayer(type: StudioTrackType) {
-        require(type in RECORDABLE_VOICE_TYPES) { "Loại lớp này không dùng để thu giọng" }
+        setNextNewLayerRole(type)
         pending.set(StudioRecordingTargetRequest.NewLayerForRole(type))
     }
+
+    fun setNextNewLayerRole(type: StudioTrackType) {
+        require(type in RECORDABLE_VOICE_TYPES) { "Loại lớp này không dùng để thu giọng" }
+        nextNewLayerRole.set(type)
+    }
+
+    fun nextNewLayerRole(): StudioTrackType = nextNewLayerRole.get()
 
     fun requestExistingTrack(trackId: String?) {
         pending.set(trackId?.let { StudioRecordingTargetRequest.ExistingTrack(it) })
@@ -40,6 +49,7 @@ object StudioRecordingTargetRequests {
 
     internal fun clear() {
         pending.set(null)
+        nextNewLayerRole.set(StudioTrackType.VOCAL)
     }
 }
 

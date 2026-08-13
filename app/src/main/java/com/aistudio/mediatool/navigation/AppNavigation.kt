@@ -1,9 +1,17 @@
 package com.aistudio.mediatool.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
+import com.aistudio.mediatool.feature.studio.ui.StudioPhase4ToolsScreen
+import com.aistudio.mediatool.feature.studio.ui.StudioPhase3WorkspaceScreen
+import com.aistudio.mediatool.feature.studio.ui.StudioProjectsScreen
 import com.aistudio.mediatool.ui.screens.*
 
 @Composable
@@ -13,6 +21,7 @@ fun AppNavigation() {
     NavHost(navController = navController, startDestination = Route.Main.path) {
         composable(Route.Main.path) {
             MainScreen(
+                onNavigateToStudio = { navController.navigate(Route.StudioProjects.path) },
                 onNavigateToRecord = { navController.navigate(Route.Record.path) },
                 onNavigateToTrim = { navController.navigate(Route.Trim.path) },
                 onNavigateToJoin = { navController.navigate(Route.Join.path) },
@@ -23,6 +32,45 @@ fun AppNavigation() {
                 onNavigateToVoiceCleanup = { navController.navigate(Route.VoiceCleanup.path) },
                 onNavigateToOther = { navController.navigate(Route.Other.path) },
                 onNavigateToSettings = { navController.navigate(Route.Settings.path) },
+            )
+        }
+        composable(Route.StudioProjects.path) {
+            StudioProjectsScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onOpenProject = { projectId -> navController.navigate(Route.StudioProject.create(projectId)) },
+                onOpenLab = { projectId -> navController.navigate(Route.StudioLab.create(projectId)) },
+            )
+        }
+        composable(Route.StudioProject.path) { backStackEntry ->
+            val projectId = backStackEntry.arguments?.getString("projectId").orEmpty()
+            val lifecycleOwner = LocalLifecycleOwner.current
+            DisposableEffect(projectId, lifecycleOwner) {
+                val observer = LifecycleEventObserver { _, event ->
+                    when (event) {
+                        Lifecycle.Event.ON_START, Lifecycle.Event.ON_RESUME -> StudioSessionRuntime.setUiVisible(true)
+                        Lifecycle.Event.ON_STOP -> StudioSessionRuntime.setUiVisible(false)
+                        else -> Unit
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                StudioSessionRuntime.setUiVisible(
+                    lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+                )
+                onDispose {
+                    lifecycleOwner.lifecycle.removeObserver(observer)
+                    StudioSessionRuntime.closeProject()
+                }
+            }
+            StudioPhase3WorkspaceScreen(
+                projectId = projectId,
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+        composable(Route.StudioLab.path) { backStackEntry ->
+            val projectId = backStackEntry.arguments?.getString("projectId").orEmpty()
+            StudioPhase4ToolsScreen(
+                projectId = projectId,
+                onNavigateBack = { navController.popBackStack() },
             )
         }
         composable(Route.Record.path) { RecordScreen(navController = navController) }

@@ -1,0 +1,275 @@
+package com.aistudio.mediatool.feature.studio.data
+
+import com.aistudio.mediatool.feature.studio.domain.STUDIO_PROJECT_SCHEMA_VERSION
+import com.aistudio.mediatool.feature.studio.domain.STUDIO_TIMELINE_SAMPLE_RATE
+import com.aistudio.mediatool.feature.studio.domain.StudioAsset
+import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
+import com.aistudio.mediatool.feature.studio.domain.StudioClip
+import com.aistudio.mediatool.feature.studio.domain.StudioMasterMix
+import com.aistudio.mediatool.feature.studio.domain.StudioMusicalKeySettings
+import com.aistudio.mediatool.feature.studio.domain.StudioPitchClass
+import com.aistudio.mediatool.feature.studio.domain.StudioProSettings
+import com.aistudio.mediatool.feature.studio.domain.StudioProject
+import com.aistudio.mediatool.feature.studio.domain.StudioScaleMode
+import com.aistudio.mediatool.feature.studio.domain.StudioTake
+import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
+import com.aistudio.mediatool.feature.studio.domain.StudioTempoSettings
+import com.aistudio.mediatool.feature.studio.domain.StudioTrack
+import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
+import com.aistudio.mediatool.feature.studio.domain.StudioVocalFxSettings
+import org.json.JSONArray
+import org.json.JSONObject
+
+object StudioProjectCodec {
+    fun encode(project: StudioProject): String = JSONObject().apply {
+        put("schemaVersion", project.schemaVersion)
+        put("id", project.id)
+        put("name", project.name)
+        put("createdAt", project.createdAt)
+        put("updatedAt", project.updatedAt)
+        put("timelineSampleRate", project.timelineSampleRate)
+        putNullable("beatAssetId", project.beatAssetId)
+        put("assets", JSONArray().apply { project.assets.forEach { put(assetToJson(it)) } })
+        put("tracks", JSONArray().apply { project.tracks.forEach { put(trackToJson(it)) } })
+        put("masterMix", masterMixToJson(project.masterMix))
+        put("proSettings", proSettingsToJson(project.proSettings))
+    }.toString(2)
+
+    fun decode(raw: String): StudioProject {
+        val json = JSONObject(raw)
+        val schemaVersion = json.optInt("schemaVersion", 1)
+        require(schemaVersion in 1..STUDIO_PROJECT_SCHEMA_VERSION) {
+            "Phiên bản dự án Studio chưa được hỗ trợ: $schemaVersion"
+        }
+        val id = json.getString("id").trim()
+        require(id.isNotEmpty()) { "Dự án Studio thiếu id" }
+        val name = json.optString("name").trim().ifEmpty { "Dự án Studio" }
+        val sampleRate = json.optInt("timelineSampleRate", STUDIO_TIMELINE_SAMPLE_RATE)
+            .takeIf { it > 0 } ?: STUDIO_TIMELINE_SAMPLE_RATE
+        return StudioProject(
+            schemaVersion = schemaVersion,
+            id = id,
+            name = name,
+            createdAt = json.optLong("createdAt", 0L),
+            updatedAt = json.optLong("updatedAt", 0L),
+            timelineSampleRate = sampleRate,
+            beatAssetId = json.nullableString("beatAssetId"),
+            assets = json.optJSONArray("assets").mapObjects(::assetFromJson),
+            tracks = json.optJSONArray("tracks").mapObjects(::trackFromJson),
+            masterMix = json.optJSONObject("masterMix")?.let(::masterMixFromJson) ?: StudioMasterMix(),
+            proSettings = json.optJSONObject("proSettings")?.let(::proSettingsFromJson) ?: StudioProSettings(),
+        )
+    }
+
+    private fun assetToJson(asset: StudioAsset) = JSONObject().apply {
+        put("id", asset.id)
+        put("kind", asset.kind.name)
+        put("relativePath", asset.relativePath)
+        put("displayName", asset.displayName)
+        putNullable("mimeType", asset.mimeType)
+        put("bytes", asset.bytes)
+        putNullable("sourceAssetId", asset.sourceAssetId)
+        putNullable("processorId", asset.processorId)
+        putNullable("processorLabel", asset.processorLabel)
+        putNullable("processorConfig", asset.processorConfig)
+        putNullable("sampleRate", asset.sampleRate)
+        putNullable("channelCount", asset.channelCount)
+        putNullable("durationFrames", asset.durationFrames)
+    }
+
+    private fun assetFromJson(json: JSONObject) = StudioAsset(
+        id = json.getString("id"),
+        kind = enumOrDefault(json.optString("kind"), StudioAssetKind.DERIVED),
+        relativePath = json.getString("relativePath"),
+        displayName = json.optString("displayName").ifBlank { "Audio" },
+        mimeType = json.nullableString("mimeType"),
+        bytes = json.optLong("bytes", 0L),
+        sourceAssetId = json.nullableString("sourceAssetId"),
+        processorId = json.nullableString("processorId"),
+        processorLabel = json.nullableString("processorLabel"),
+        processorConfig = json.nullableString("processorConfig"),
+        sampleRate = json.nullableInt("sampleRate"),
+        channelCount = json.nullableInt("channelCount"),
+        durationFrames = json.nullableLong("durationFrames"),
+    )
+
+    private fun trackToJson(track: StudioTrack) = JSONObject().apply {
+        put("id", track.id)
+        put("type", track.type.name)
+        put("name", track.name)
+        putNullable("primaryAssetId", track.primaryAssetId)
+        putNullable("activeTakeId", track.activeTakeId)
+        put("volumeDb", track.volumeDb.toDouble())
+        put("pan", track.pan.toDouble())
+        put("muted", track.muted)
+        put("solo", track.solo)
+        put("locked", track.locked)
+        put("takes", JSONArray().apply { track.takes.forEach { put(takeToJson(it)) } })
+        put("clips", JSONArray().apply { track.clips.forEach { put(clipToJson(it)) } })
+    }
+
+    private fun trackFromJson(json: JSONObject) = StudioTrack(
+        id = json.getString("id"),
+        type = enumOrDefault(json.optString("type"), StudioTrackType.OTHER),
+        name = json.optString("name").ifBlank { "Track" },
+        primaryAssetId = json.nullableString("primaryAssetId"),
+        activeTakeId = json.nullableString("activeTakeId"),
+        volumeDb = json.optDouble("volumeDb", 0.0).toFloat().coerceIn(-60f, 18f),
+        pan = json.optDouble("pan", 0.0).toFloat().coerceIn(-1f, 1f),
+        muted = json.optBoolean("muted", false),
+        solo = json.optBoolean("solo", false),
+        locked = json.optBoolean("locked", false),
+        takes = json.optJSONArray("takes").mapObjects(::takeFromJson),
+        clips = json.optJSONArray("clips").mapObjects(::clipFromJson),
+    )
+
+    private fun takeToJson(take: StudioTake) = JSONObject().apply {
+        put("id", take.id)
+        put("assetId", take.assetId)
+        put("recordedTimelineFrame", take.recordedTimelineFrame)
+        put("recordedFrames", take.recordedFrames)
+        putNullable("inputDeviceId", take.inputDeviceId)
+        put("inputSampleRate", take.inputSampleRate)
+        put("latencyCompensationFrames", take.latencyCompensationFrames)
+        put("status", take.status.name)
+    }
+
+    private fun takeFromJson(json: JSONObject) = StudioTake(
+        id = json.getString("id"),
+        assetId = json.getString("assetId"),
+        recordedTimelineFrame = json.optLong("recordedTimelineFrame", 0L),
+        recordedFrames = json.optLong("recordedFrames", 0L),
+        inputDeviceId = json.nullableInt("inputDeviceId"),
+        inputSampleRate = json.optInt("inputSampleRate", STUDIO_TIMELINE_SAMPLE_RATE),
+        latencyCompensationFrames = json.optLong("latencyCompensationFrames", 0L),
+        status = enumOrDefault(json.optString("status"), StudioTakeStatus.FAILED),
+    )
+
+    private fun clipToJson(clip: StudioClip) = JSONObject().apply {
+        put("id", clip.id)
+        put("sourceAssetId", clip.sourceAssetId)
+        putNullable("sourceTakeId", clip.sourceTakeId)
+        put("timelineStartFrame", clip.timelineStartFrame)
+        put("sourceStartFrame", clip.sourceStartFrame)
+        put("sourceEndFrame", clip.sourceEndFrame)
+        put("gainDb", clip.gainDb.toDouble())
+        put("fadeInFrames", clip.fadeInFrames)
+        put("fadeOutFrames", clip.fadeOutFrames)
+    }
+
+    private fun clipFromJson(json: JSONObject) = StudioClip(
+        id = json.getString("id"),
+        sourceAssetId = json.getString("sourceAssetId"),
+        sourceTakeId = json.nullableString("sourceTakeId"),
+        timelineStartFrame = json.optLong("timelineStartFrame", 0L),
+        sourceStartFrame = json.optLong("sourceStartFrame", 0L),
+        sourceEndFrame = json.optLong("sourceEndFrame", 0L),
+        gainDb = json.optDouble("gainDb", 0.0).toFloat().coerceIn(-60f, 18f),
+        fadeInFrames = json.optLong("fadeInFrames", 0L),
+        fadeOutFrames = json.optLong("fadeOutFrames", 0L),
+    )
+
+    private fun masterMixToJson(mix: StudioMasterMix) = JSONObject().apply {
+        put("gainDb", mix.gainDb.toDouble())
+        put("limiterEnabled", mix.limiterEnabled)
+    }
+
+    private fun masterMixFromJson(json: JSONObject) = StudioMasterMix(
+        gainDb = json.optDouble("gainDb", 0.0).toFloat().coerceIn(-24f, 12f),
+        limiterEnabled = json.optBoolean("limiterEnabled", true),
+    )
+
+    private fun proSettingsToJson(settings: StudioProSettings) = JSONObject().apply {
+        put("tempo", JSONObject().apply {
+            put("bpm", settings.tempo.bpm.toDouble())
+            put("beatsPerBar", settings.tempo.beatsPerBar)
+            put("metronomeEnabled", settings.tempo.metronomeEnabled)
+            put("metronomeGainDb", settings.tempo.metronomeGainDb.toDouble())
+            put("gridOriginFrame", settings.tempo.gridOriginFrame)
+        })
+        put("musicalKey", JSONObject().apply {
+            putNullable("root", settings.musicalKey.root?.name)
+            putNullable("scale", settings.musicalKey.scale?.name)
+        })
+        put("vocalFx", JSONObject().apply {
+            val fx = settings.vocalFx
+            put("enabled", fx.enabled)
+            put("highPassHz", fx.highPassHz.toDouble())
+            put("lowGainDb", fx.lowGainDb.toDouble())
+            put("midGainDb", fx.midGainDb.toDouble())
+            put("highGainDb", fx.highGainDb.toDouble())
+            put("compressorEnabled", fx.compressorEnabled)
+            put("compressorThresholdDb", fx.compressorThresholdDb.toDouble())
+            put("compressorRatio", fx.compressorRatio.toDouble())
+            put("compressorAttackMs", fx.compressorAttackMs.toDouble())
+            put("compressorReleaseMs", fx.compressorReleaseMs.toDouble())
+            put("compressorMakeupDb", fx.compressorMakeupDb.toDouble())
+            put("reverbWet", fx.reverbWet.toDouble())
+            put("reverbDelayMs", fx.reverbDelayMs.toDouble())
+            put("reverbDecay", fx.reverbDecay.toDouble())
+        })
+    }
+
+    private fun proSettingsFromJson(json: JSONObject): StudioProSettings {
+        val tempoJson = json.optJSONObject("tempo")
+        val keyJson = json.optJSONObject("musicalKey")
+        val fxJson = json.optJSONObject("vocalFx")
+        return StudioProSettings(
+            tempo = StudioTempoSettings(
+                bpm = tempoJson?.optDouble("bpm", 120.0)?.toFloat()?.coerceIn(40f, 260f) ?: 120f,
+                beatsPerBar = tempoJson?.optInt("beatsPerBar", 4)?.coerceIn(2, 12) ?: 4,
+                metronomeEnabled = tempoJson?.optBoolean("metronomeEnabled", false) ?: false,
+                metronomeGainDb = tempoJson?.optDouble("metronomeGainDb", -12.0)?.toFloat()?.coerceIn(-36f, 0f) ?: -12f,
+                gridOriginFrame = tempoJson?.optLong("gridOriginFrame", 0L)?.coerceAtLeast(0L) ?: 0L,
+            ),
+            musicalKey = StudioMusicalKeySettings(
+                root = keyJson?.nullableString("root")?.let { enumOrNull<StudioPitchClass>(it) },
+                scale = keyJson?.nullableString("scale")?.let { enumOrNull<StudioScaleMode>(it) },
+            ),
+            vocalFx = StudioVocalFxSettings(
+                enabled = fxJson?.optBoolean("enabled", true) ?: true,
+                highPassHz = fxJson?.optDouble("highPassHz", 80.0)?.toFloat()?.coerceIn(20f, 300f) ?: 80f,
+                lowGainDb = fxJson?.optDouble("lowGainDb", 0.0)?.toFloat()?.coerceIn(-12f, 12f) ?: 0f,
+                midGainDb = fxJson?.optDouble("midGainDb", 1.5)?.toFloat()?.coerceIn(-12f, 12f) ?: 1.5f,
+                highGainDb = fxJson?.optDouble("highGainDb", 0.5)?.toFloat()?.coerceIn(-12f, 12f) ?: 0.5f,
+                compressorEnabled = fxJson?.optBoolean("compressorEnabled", true) ?: true,
+                compressorThresholdDb = fxJson?.optDouble("compressorThresholdDb", -18.0)?.toFloat()?.coerceIn(-48f, -2f) ?: -18f,
+                compressorRatio = fxJson?.optDouble("compressorRatio", 3.0)?.toFloat()?.coerceIn(1f, 20f) ?: 3f,
+                compressorAttackMs = fxJson?.optDouble("compressorAttackMs", 10.0)?.toFloat()?.coerceIn(1f, 200f) ?: 10f,
+                compressorReleaseMs = fxJson?.optDouble("compressorReleaseMs", 120.0)?.toFloat()?.coerceIn(20f, 2_000f) ?: 120f,
+                compressorMakeupDb = fxJson?.optDouble("compressorMakeupDb", 1.0)?.toFloat()?.coerceIn(-12f, 18f) ?: 1f,
+                reverbWet = fxJson?.optDouble("reverbWet", 0.10)?.toFloat()?.coerceIn(0f, 0.65f) ?: 0.10f,
+                reverbDelayMs = fxJson?.optDouble("reverbDelayMs", 55.0)?.toFloat()?.coerceIn(20f, 250f) ?: 55f,
+                reverbDecay = fxJson?.optDouble("reverbDecay", 0.22)?.toFloat()?.coerceIn(0f, 0.9f) ?: 0.22f,
+            ),
+        )
+    }
+
+    private inline fun <reified T : Enum<T>> enumOrDefault(value: String, fallback: T): T =
+        runCatching { enumValueOf<T>(value) }.getOrDefault(fallback)
+
+    private inline fun <reified T : Enum<T>> enumOrNull(value: String): T? =
+        runCatching { enumValueOf<T>(value) }.getOrNull()
+
+    private fun JSONObject.putNullable(key: String, value: Any?) {
+        put(key, value ?: JSONObject.NULL)
+    }
+
+    private fun JSONObject.nullableString(key: String): String? =
+        if (!has(key) || isNull(key)) null else optString(key).takeIf { it.isNotBlank() }
+
+    private fun JSONObject.nullableInt(key: String): Int? =
+        if (!has(key) || isNull(key)) null else optInt(key)
+
+    private fun JSONObject.nullableLong(key: String): Long? =
+        if (!has(key) || isNull(key)) null else optLong(key)
+
+    private inline fun <T> JSONArray?.mapObjects(transform: (JSONObject) -> T): List<T> {
+        if (this == null) return emptyList()
+        return buildList(length()) {
+            for (index in 0 until length()) {
+                optJSONObject(index)?.let { add(transform(it)) }
+            }
+        }
+    }
+}

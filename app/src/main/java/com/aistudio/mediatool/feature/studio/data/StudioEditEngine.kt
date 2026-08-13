@@ -73,10 +73,15 @@ object StudioEditEngine {
         require(sourceAt >= location.clip.sourceStartFrame && sourceAt < location.clip.sourceEndFrame) {
             "Playhead không nằm trong clip"
         }
+        val length = location.clip.sourceEndFrame - sourceAt
         val updated = location.clip.copy(
             timelineStartFrame = timelineFrame,
             sourceStartFrame = sourceAt,
-            fadeInFrames = location.clip.fadeInFrames.coerceAtMost(location.clip.sourceEndFrame - sourceAt),
+            fadeInFrames = maxOf(
+                location.clip.fadeInFrames.coerceAtMost(length),
+                safetyFadeFrames(project, location.clip, length),
+            ),
+            fadeOutFrames = location.clip.fadeOutFrames.coerceAtMost(length),
         )
         return replaceClip(project, location, updated)
     }
@@ -88,9 +93,14 @@ object StudioEditEngine {
         require(sourceAt > location.clip.sourceStartFrame && sourceAt <= location.clip.sourceEndFrame) {
             "Playhead không nằm trong clip"
         }
+        val length = sourceAt - location.clip.sourceStartFrame
         val updated = location.clip.copy(
             sourceEndFrame = sourceAt,
-            fadeOutFrames = location.clip.fadeOutFrames.coerceAtMost(sourceAt - location.clip.sourceStartFrame),
+            fadeInFrames = location.clip.fadeInFrames.coerceAtMost(length),
+            fadeOutFrames = maxOf(
+                location.clip.fadeOutFrames.coerceAtMost(length),
+                safetyFadeFrames(project, location.clip, length),
+            ),
         )
         return replaceClip(project, location, updated)
     }

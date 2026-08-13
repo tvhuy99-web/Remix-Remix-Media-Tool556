@@ -7,12 +7,14 @@ import com.aistudio.mediatool.feature.studio.domain.STUDIO_PROJECT_SCHEMA_VERSIO
 import com.aistudio.mediatool.feature.studio.domain.STUDIO_TIMELINE_SAMPLE_RATE
 import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
+import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioProSettings
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
+import com.aistudio.mediatool.feature.studio.domain.latencyCompensatedPlacement
 import java.io.File
 import java.util.UUID
 
@@ -155,18 +157,13 @@ class StudioProjectRepository(context: Context) {
         latencyCompensationFrames: Long = 0L,
     ): PendingStudioTake {
         var project = requireNotNull(load(projectId)) { "Không tìm thấy dự án Studio" }
-        var vocalTrack = project.tracks.firstOrNull { it.type == StudioTrackType.VOCAL }
-        if (vocalTrack == null) {
-            vocalTrack = StudioTrack(
-                id = UUID.randomUUID().toString(),
-                type = StudioTrackType.VOCAL,
-                name = "Vocal",
-            )
-            project = save(project.copy(tracks = project.tracks + vocalTrack))
+        val selection = project.selectRecordingTrack(StudioRecordingTargetRequests.consume())
+        if (selection.project != project) {
+            project = save(selection.project)
         }
         return takeStore.begin(
             projectId = project.id,
-            trackId = vocalTrack.id,
+            trackId = selection.track.id,
             recordedTimelineFrame = recordedTimelineFrame,
             inputSampleRate = inputSampleRate,
             inputDeviceId = inputDeviceId,
@@ -208,7 +205,7 @@ class StudioProjectRepository(context: Context) {
             id = pending.assetId,
             kind = StudioAssetKind.TAKE,
             relativePath = finalized.relativePath,
-            displayName = "Vocal Take $takeNumber",
+            displayName = "${baseTrack.name.ifBlank { "Vocal" }} · Bản $takeNumber",
             mimeType = "audio/wav",
             bytes = finalized.file.length(),
             sampleRate = finalized.info.sampleRate,
@@ -225,10 +222,29 @@ class StudioProjectRepository(context: Context) {
             latencyCompensationFrames = pending.latencyCompensationFrames,
             status = status,
         )
+        val initialLayerClip = if (
+            baseTrack.type == StudioTrackType.OTHER &&
+            baseTrack.isAutoRecordingLayer() &&
+            baseTrack.takes.isEmpty() &&
+            baseTrack.clips.isEmpty()
+        ) {
+            val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
+            StudioClip(
+                id = UUID.randomUUID().toString(),
+                sourceAssetId = asset.id,
+                sourceTakeId = take.id,
+                timelineStartFrame = placement.timelineStartFrame,
+                sourceStartFrame = placement.sourceStartFrame,
+                sourceEndFrame = placement.sourceEndFrame,
+            )
+        } else {
+            null
+        }
         val updatedTrack = baseTrack.copy(
             primaryAssetId = if (activateTake) asset.id else baseTrack.primaryAssetId,
             activeTakeId = if (activateTake) take.id else baseTrack.activeTakeId,
             takes = baseTrack.takes + take,
+            clips = initialLayerClip?.let(::listOf) ?: baseTrack.clips,
         )
         val updatedTracks = if (trackIndex >= 0) {
             project.tracks.toMutableList().apply { this[trackIndex] = updatedTrack }
@@ -253,7 +269,8 @@ class StudioProjectRepository(context: Context) {
             }.getOrElse {
                 val partial = runCatching { takeStore.partialFile(pending) }.getOrNull()
                 if (partial == null || !partial.isFile || partial.length() <= StudioWavFile.HEADER_BYTES) {
-                    takeStore.cancel(pending)
+                    cancelTake(pending)
+                    project = load(projectId) ?: project
                 }
                 null
             }
@@ -262,7 +279,19 @@ class StudioProjectRepository(context: Context) {
         return project
     }
 
-    fun cancelTake(pending: PendingStudioTake) = takeStore.cancel(pending)
+    fun cancelTake(pending: PendingStudioTake) {
+        takeStore.cancel(pending)
+        val project = load(pending.projectId) ?: return
+        val track = project.tracks.firstOrNull { it.id == pending.trackId } ?: return
+        if (
+            track.isAutoRecordingLayer() &&
+            track.primaryAssetId == null &&
+            track.takes.isEmpty() &&
+            track.clips.isEmpty()
+        ) {
+            save(project.copy(tracks = project.tracks.filterNot { it.id == track.id }))
+        }
+    }
 
     fun delete(projectId: String): Boolean = projectStore.delete(projectId)
 

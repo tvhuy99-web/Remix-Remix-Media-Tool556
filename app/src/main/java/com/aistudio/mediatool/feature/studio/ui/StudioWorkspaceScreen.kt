@@ -47,6 +47,7 @@ import com.aistudio.mediatool.feature.studio.audio.StudioInputMode
 import com.aistudio.mediatool.feature.studio.audio.StudioRecordingKind
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionRuntime
 import com.aistudio.mediatool.feature.studio.audio.StudioSessionStatus
+import com.aistudio.mediatool.feature.studio.data.StudioRecordingTargetRequests
 import com.aistudio.mediatool.feature.studio.domain.StudioClip
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.domain.StudioTakeStatus
@@ -75,8 +76,21 @@ fun StudioWorkspaceScreen(
 
     fun beginRecordingAfterPermission() {
         when (requestedRecordingKind) {
-            StudioRecordingKind.FULL_TAKE -> StudioSessionRuntime.startRecording(mode = inputMode)
-            StudioRecordingKind.PUNCH -> StudioSessionRuntime.startPunchRecording(mode = inputMode)
+            StudioRecordingKind.FULL_TAKE -> {
+                StudioRecordingTargetRequests.requestNewLayer()
+                StudioSessionRuntime.startRecording(mode = inputMode)
+            }
+            StudioRecordingKind.PUNCH -> {
+                val selectedTrackId = session.project?.tracks
+                    ?.firstOrNull { track ->
+                        session.selectedClipId != null &&
+                            track.clips.any { it.id == session.selectedClipId }
+                    }
+                    ?.id
+                    ?: session.project?.tracks?.firstOrNull { it.type == StudioTrackType.VOCAL }?.id
+                StudioRecordingTargetRequests.requestExistingTrack(selectedTrackId)
+                StudioSessionRuntime.startPunchRecording(mode = inputMode)
+            }
         }
     }
 

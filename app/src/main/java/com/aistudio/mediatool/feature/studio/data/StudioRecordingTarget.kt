@@ -26,7 +26,7 @@ object StudioRecordingTargetRequests {
     }
 
     fun requestExistingTrack(trackId: String?) {
-        pending.set(trackId?.let(StudioRecordingTargetRequest::ExistingTrack))
+        pending.set(trackId?.let { StudioRecordingTargetRequest.ExistingTrack(it) })
     }
 
     internal fun consume(): StudioRecordingTargetRequest? = pending.getAndSet(null)

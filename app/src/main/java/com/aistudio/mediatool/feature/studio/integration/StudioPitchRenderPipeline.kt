@@ -32,7 +32,7 @@ class StudioPitchRenderPipeline(context: Context) {
         val project = requireNotNull(repository.load(projectId)) { "Không tìm thấy dự án Studio" }
         val sourceTrack = requireNotNull(project.tracks.firstOrNull { it.id == trackId }) { "Không tìm thấy lớp giọng" }
         onProgress(0.03f, "Đang dựng lớp giọng để phân tích")
-        val sourceFile = renderer.renderMix(
+        val sourceFile = renderer.renderDryMix(
             StudioPitchSourceProject.create(project, trackId),
             StudioExportFormat.WAV,
         )

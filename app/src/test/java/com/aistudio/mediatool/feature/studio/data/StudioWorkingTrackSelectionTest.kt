@@ -93,13 +93,29 @@ class StudioWorkingTrackSelectionTest {
                 id = MAIN,
                 type = StudioTrackType.VOCAL,
                 name = "Giọng chính",
-                clips = listOf(StudioClip(id = MAIN_CLIP, sourceAssetId = "a1", sourceEndFrame = 48_000L)),
+                clips = listOf(
+                    StudioClip(
+                        id = MAIN_CLIP,
+                        sourceAssetId = "a1",
+                        timelineStartFrame = 0L,
+                        sourceStartFrame = 0L,
+                        sourceEndFrame = 48_000L,
+                    ),
+                ),
             ),
             StudioTrack(
                 id = BACKING,
                 type = StudioTrackType.BACKING_VOCAL,
                 name = "Giọng bè",
-                clips = listOf(StudioClip(id = BACKING_CLIP, sourceAssetId = "a2", sourceEndFrame = 48_000L)),
+                clips = listOf(
+                    StudioClip(
+                        id = BACKING_CLIP,
+                        sourceAssetId = "a2",
+                        timelineStartFrame = 48_000L,
+                        sourceStartFrame = 0L,
+                        sourceEndFrame = 48_000L,
+                    ),
+                ),
             ),
         ),
     )

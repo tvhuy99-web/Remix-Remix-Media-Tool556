@@ -87,6 +87,18 @@ class StudioRecordingTargetTest {
     }
 
     @Test
+    fun normalRecUsesTheRoleChosenBeforeRecording() {
+        StudioRecordingTargetRequests.setNextNewLayerRole(StudioTrackType.BACKING_VOCAL)
+        StudioRecordingTargetRequests.requestNewLayer()
+
+        assertEquals(StudioTrackType.BACKING_VOCAL, StudioRecordingTargetRequests.nextNewLayerRole())
+        assertEquals(
+            StudioRecordingTargetRequest.NewLayerForRole(StudioTrackType.BACKING_VOCAL),
+            StudioRecordingTargetRequests.consume(),
+        )
+    }
+
+    @Test
     fun punchRequestKeepsTheRequestedExistingTrack() {
         val main = StudioTrack(
             id = "main-vocal",
@@ -115,7 +127,7 @@ class StudioRecordingTargetTest {
         StudioRecordingTargetRequests.requestNewLayer()
 
         assertEquals(
-            StudioRecordingTargetRequest.NewLayer,
+            StudioRecordingTargetRequest.NewLayerForRole(StudioTrackType.VOCAL),
             StudioRecordingTargetRequests.consume(),
         )
         assertNull(StudioRecordingTargetRequests.consume())

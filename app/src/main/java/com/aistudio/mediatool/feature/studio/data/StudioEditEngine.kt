@@ -40,16 +40,20 @@ object StudioEditEngine {
         require(sourceAt > clip.sourceStartFrame && sourceAt < clip.sourceEndFrame) {
             "Playhead phải nằm bên trong clip để Split"
         }
+        val leftLength = sourceAt - clip.sourceStartFrame
+        val rightLength = clip.sourceEndFrame - sourceAt
         val left = clip.copy(
             id = UUID.randomUUID().toString(),
             sourceEndFrame = sourceAt,
-            fadeOutFrames = clip.fadeOutFrames.coerceAtMost(sourceAt - clip.sourceStartFrame),
+            fadeInFrames = clip.fadeInFrames.coerceAtMost(leftLength),
+            fadeOutFrames = safetyFadeFrames(project, clip, leftLength),
         )
         val right = clip.copy(
             id = UUID.randomUUID().toString(),
             timelineStartFrame = timelineFrame,
             sourceStartFrame = sourceAt,
-            fadeInFrames = clip.fadeInFrames.coerceAtMost(clip.sourceEndFrame - sourceAt),
+            fadeInFrames = safetyFadeFrames(project, clip, rightLength),
+            fadeOutFrames = clip.fadeOutFrames.coerceAtMost(rightLength),
         )
         val clips = location.track.clips.toMutableList().apply {
             removeAt(location.clipIndex)

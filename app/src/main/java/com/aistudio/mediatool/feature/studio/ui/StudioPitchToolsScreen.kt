@@ -1,6 +1,7 @@
 package com.aistudio.mediatool.feature.studio.ui
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,7 +55,7 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
         val project = withContext(Dispatchers.IO) { session.load(projectId) }
         model = model.copy(
             project = project,
-            selectedTrackId = project?.pitchEditableTracks()?.firstOrNull()?.id,
+            selectedTrackId = project?.pitchVocalTracks()?.firstOrNull()?.id,
             status = if (project == null) "Không tìm thấy dự án Studio" else model.status,
         )
     }
@@ -68,6 +69,15 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
     fun invalidate(next: StudioPitchUiModel) {
         stopPreview()
         model = next.copy(preview = null)
+    }
+
+    fun requestBack() {
+        if (model.processing) {
+            model = model.copy(status = "Đang tạo file xử lý. Hãy đợi hoàn tất trước khi quay lại.")
+        } else {
+            stopPreview()
+            onNavigateBack()
+        }
     }
 
     fun runPreview() {
@@ -125,7 +135,8 @@ fun StudioPitchToolsScreen(projectId: String, onNavigateBack: () -> Unit) {
         }
     }
 
-    ToolScaffold(title = "Auto-Tune & bè", onNavigateBack = onNavigateBack) { padding ->
+    BackHandler(onBack = ::requestBack)
+    ToolScaffold(title = "Auto-Tune & bè", onNavigateBack = ::requestBack) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),

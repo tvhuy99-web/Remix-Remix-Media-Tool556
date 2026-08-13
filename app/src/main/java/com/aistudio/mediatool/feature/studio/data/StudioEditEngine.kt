@@ -116,6 +116,24 @@ object StudioEditEngine {
     fun delete(project: StudioProject, clipId: String): EditResult {
         val location = requireClip(project, clipId)
         val clips = location.track.clips.toMutableList().apply { removeAt(location.clipIndex) }
+        val previousIndex = location.clipIndex - 1
+        if (previousIndex in clips.indices) {
+            val previous = clips[previousIndex]
+            val length = (previous.sourceEndFrame - previous.sourceStartFrame).coerceAtLeast(0L)
+            clips[previousIndex] = previous.copy(
+                fadeOutFrames = maxOf(previous.fadeOutFrames, safetyFadeFrames(project, previous, length))
+                    .coerceAtMost(length),
+            )
+        }
+        val nextIndex = location.clipIndex
+        if (nextIndex in clips.indices) {
+            val next = clips[nextIndex]
+            val length = (next.sourceEndFrame - next.sourceStartFrame).coerceAtLeast(0L)
+            clips[nextIndex] = next.copy(
+                fadeInFrames = maxOf(next.fadeInFrames, safetyFadeFrames(project, next, length))
+                    .coerceAtMost(length),
+            )
+        }
         val nextSelection = clips.getOrNull(location.clipIndex.coerceAtMost(clips.lastIndex.coerceAtLeast(0)))?.id
         return EditResult(project.replaceTrack(location.trackIndex, location.track.copy(clips = clips)), nextSelection)
     }

@@ -2,6 +2,7 @@ package com.aistudio.mediatool.feature.studio.ui
 
 import android.content.Context
 import com.aistudio.mediatool.feature.studio.data.StudioGeneratedLayerResult
+import com.aistudio.mediatool.feature.studio.data.StudioPitchSourceProject
 import com.aistudio.mediatool.feature.studio.data.StudioProjectRepository
 import com.aistudio.mediatool.feature.studio.domain.StudioProject
 import com.aistudio.mediatool.feature.studio.integration.StudioAutoTuneConfig
@@ -9,16 +10,28 @@ import com.aistudio.mediatool.feature.studio.integration.StudioAutoTuneProcessor
 import com.aistudio.mediatool.feature.studio.integration.StudioHarmonyConfig
 import com.aistudio.mediatool.feature.studio.integration.StudioHarmonyProcessor
 import com.aistudio.mediatool.feature.studio.integration.StudioPitchPreviewResult
+import com.aistudio.mediatool.feature.studio.render.StudioExportFormat
+import com.aistudio.mediatool.feature.studio.render.StudioRenderEngine
 import java.io.File
 
 internal class StudioPitchToolSession(context: Context) {
-    private val repository = StudioProjectRepository(context.applicationContext)
-    private val autoTune = StudioAutoTuneProcessor(context.applicationContext)
-    private val harmony = StudioHarmonyProcessor(context.applicationContext)
+    private val appContext = context.applicationContext
+    private val repository = StudioProjectRepository(appContext)
+    private val renderer = StudioRenderEngine(appContext)
+    private val autoTune = StudioAutoTuneProcessor(appContext)
+    private val harmony = StudioHarmonyProcessor(appContext)
 
     fun load(projectId: String): StudioProject? = repository.load(projectId)
 
     fun previewFile(projectId: String, assetId: String): File? = repository.assetFile(projectId, assetId)
+
+    suspend fun renderSourcePreview(projectId: String, trackId: String): File {
+        val project = requireNotNull(repository.load(projectId)) { "Không tìm thấy dự án Studio" }
+        return renderer.renderMix(
+            StudioPitchSourceProject.create(project, trackId),
+            StudioExportFormat.WAV,
+        )
+    }
 
     suspend fun preview(
         projectId: String,

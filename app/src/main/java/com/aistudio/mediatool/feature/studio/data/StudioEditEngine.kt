@@ -280,6 +280,12 @@ object StudioEditEngine {
             .coerceIn(clip.sourceStartFrame, clip.sourceEndFrame)
     }
 
+    private fun safetyFadeFrames(project: StudioProject, clip: StudioClip, lengthFrames: Long): Long {
+        val asset = project.asset(clip.sourceAssetId)
+        val sampleRate = asset?.sampleRate ?: project.timelineSampleRate
+        return StudioEditSafety.frames(sampleRate, lengthFrames)
+    }
+
     private fun sourceDeltaToTimeline(sourceFrames: Long, sourceRate: Int, timelineRate: Int): Long =
         (sourceFrames.toDouble() * timelineRate.toDouble() / sourceRate.toDouble()).roundToLong()
 

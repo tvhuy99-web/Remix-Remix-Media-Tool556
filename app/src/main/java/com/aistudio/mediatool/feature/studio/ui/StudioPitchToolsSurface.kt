@@ -2,6 +2,7 @@ package com.aistudio.mediatool.feature.studio.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
@@ -58,8 +59,21 @@ internal fun StudioPitchToolsSurface(
             modifier = Modifier.fillMaxWidth(),
         ) { androidx.compose.material3.Text(if (model.processing) "Đang xử lý..." else "Tạo bản nghe thử") }
         if (model.preview != null) {
-            OutlinedButton(onClick = onTogglePreview, enabled = !model.processing, modifier = Modifier.fillMaxWidth()) {
-                androidx.compose.material3.Text(if (playing) "Tạm dừng bản thử" else "Nghe bản thử")
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onToggleOriginal,
+                    enabled = !model.processing,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    androidx.compose.material3.Text(if (playing && playingOriginal) "Dừng A" else "A · Giọng gốc")
+                }
+                OutlinedButton(
+                    onClick = onTogglePreview,
+                    enabled = !model.processing,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    androidx.compose.material3.Text(if (playing && !playingOriginal) "Dừng B" else "B · Bản xử lý")
+                }
             }
             Button(onClick = onApply, enabled = !model.processing, modifier = Modifier.fillMaxWidth()) {
                 androidx.compose.material3.Text("Áp dụng")

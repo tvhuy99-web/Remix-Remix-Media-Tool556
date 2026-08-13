@@ -73,7 +73,11 @@ class StudioProjectRepository(context: Context) {
 
     fun updateProSettings(projectId: String, settings: StudioProSettings): StudioProject {
         val project = requireNotNull(load(projectId)) { "Không tìm thấy dự án Studio" }
-        return save(project.copy(proSettings = settings))
+        val merged = StudioProSettingsMerge.preserveMusicalMetadata(
+            existing = project.proSettings,
+            editedByLegacyProUi = settings,
+        )
+        return save(project.copy(proSettings = merged))
     }
 
     fun derivedOutputFile(projectId: String, processorId: String): Pair<String, File> {

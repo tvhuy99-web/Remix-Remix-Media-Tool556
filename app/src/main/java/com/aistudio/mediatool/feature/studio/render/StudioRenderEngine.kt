@@ -11,11 +11,12 @@ import com.aistudio.mediatool.feature.studio.domain.StudioTake
 import com.aistudio.mediatool.feature.studio.domain.StudioTrack
 import com.aistudio.mediatool.feature.studio.domain.StudioTrackType
 import com.aistudio.mediatool.feature.studio.domain.latencyCompensatedPlacement
+import java.io.File
+import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.Locale
 
 enum class StudioExportFormat(val extension: String) {
     WAV("wav"),
@@ -28,15 +29,43 @@ class StudioRenderEngine(context: Context) {
     private val repository = StudioProjectRepository(appContext)
 
     suspend fun renderMix(project: StudioProject, format: StudioExportFormat): File = withContext(Dispatchers.IO) {
+        val activeTracks = finalMixTracks(project)
+        require(activeTracks.isNotEmpty()) { "Dự án chưa có track nào để xuất" }
+        val workDir = File(appContext.cacheDir, "studio_final_${UUID.randomUUID().toString().take(8)}").apply { mkdirs() }
+        try {
+            val trackFiles = mutableListOf<File>()
+            activeTracks.forEachIndexed { index, track ->
+                val sources = buildTrackSources(project, track)
+                if (sources.isEmpty()) return@forEachIndexed
+                val target = File(workDir, "track_${index.toString().padStart(3, '0')}.wav")
+                execute(
+                    buildCommand(project, sources, target, StudioExportFormat.WAV, applyMaster = false),
+                    "studio_export_track_stage",
+                )
+                require(target.isFile && target.length() > 0L) { "Không thể dựng lớp ${track.name}" }
+                trackFiles += target
+            }
+            require(trackFiles.isNotEmpty()) { "Dự án chưa có lớp âm thanh hợp lệ để xuất" }
+            val target = FileExportManager.resultFile(appContext, "${project.name}_Studio_Mix", format.extension)
+            execute(
+                buildFinalStageCommand(project, trackFiles, target, format, StudioMasteringOptions()),
+                "studio_export_final_master",
+            )
+            require(target.isFile && target.length() > 0L) { "File mix xuất ra bị rỗng" }
+            target
+        } finally {
+            workDir.deleteRecursively()
+        }
+    }
+
+    suspend fun renderDryMix(project: StudioProject, format: StudioExportFormat): File = withContext(Dispatchers.IO) {
         val target = FileExportManager.resultFile(appContext, "${project.name}_Studio_Mix", format.extension)
         val sources = buildFinalMixSources(project)
         require(sources.isNotEmpty()) { "Dự án chưa có track nào để xuất" }
-        execute(buildCommand(project, sources, target, format, applyMaster = true), "studio_export_mix")
+        execute(buildCommand(project, sources, target, format, applyMaster = true), "studio_export_dry_mix")
         require(target.isFile && target.length() > 0L) { "File mix xuất ra bị rỗng" }
         target
     }
-
-    suspend fun renderDryMix(project: StudioProject, format: StudioExportFormat): File = renderMix(project, format)
 
     suspend fun renderStems(project: StudioProject): File = withContext(Dispatchers.IO) {
         val rendered = mutableListOf<File>()
@@ -75,12 +104,13 @@ class StudioRenderEngine(context: Context) {
         }
     }
 
-    private fun buildFinalMixSources(project: StudioProject): List<RenderSource> {
+    private fun finalMixTracks(project: StudioProject): List<StudioTrack> {
         val hasSolo = project.tracks.any { it.solo }
-        return project.tracks
-            .filter { !it.muted && (!hasSolo || it.solo) }
-            .flatMap { buildTrackSources(project, it) }
+        return project.tracks.filter { track -> !track.muted && (!hasSolo || track.solo) }
     }
+
+    private fun buildFinalMixSources(project: StudioProject): List<RenderSource> =
+        finalMixTracks(project).flatMap { buildTrackSources(project, it) }
 
     private fun buildTrackSources(project: StudioProject, track: StudioTrack): List<RenderSource> {
         if (track.type == StudioTrackType.BEAT) {
@@ -121,6 +151,29 @@ class StudioRenderEngine(context: Context) {
                 fadeOutFrames = clip.fadeOutFrames,
             )
         }
+    }
+
+    private fun buildFinalStageCommand(
+        project: StudioProject,
+        trackFiles: List<File>,
+        target: File,
+        format: StudioExportFormat,
+        mastering: StudioMasteringOptions,
+    ): String {
+        val inputArgs = trackFiles.joinToString(" ") { "-i ${quote(it.absolutePath)}" }
+        val labels = trackFiles.indices.joinToString("") { "[$it:a]" }
+        val filters = mutableListOf(
+            "${labels}amix=inputs=${trackFiles.size}:normalize=0:dropout_transition=0",
+            "volume=${formatDb(project.masterMix.gainDb)}dB",
+        )
+        filters += StudioMasteringFilter.chain(mastering)
+        if (project.masterMix.limiterEnabled) {
+            filters += "alimiter=limit=0.98:attack=5:release=50:level=0:latency=1"
+        }
+        target.parentFile?.mkdirs()
+        target.delete()
+        val codec = codec(format)
+        return "-y $inputArgs -filter_complex ${quote(filters.joinToString(",") + "[outa]")} -map [outa] -ar ${project.timelineSampleRate} $codec ${quote(target.absolutePath)}"
     }
 
     private fun buildCommand(
@@ -176,13 +229,14 @@ class StudioRenderEngine(context: Context) {
         }
         filters += "$mixed$master[outa]"
 
-        val codec = when (format) {
-            StudioExportFormat.WAV -> "-c:a pcm_s16le"
-            StudioExportFormat.M4A -> "-c:a aac -b:a 256k"
-        }
         target.parentFile?.mkdirs()
         target.delete()
-        return "-y $inputArgs -filter_complex ${quote(filters.joinToString(";"))} -map [outa] -ar ${project.timelineSampleRate} $codec ${quote(target.absolutePath)}"
+        return "-y $inputArgs -filter_complex ${quote(filters.joinToString(";"))} -map [outa] -ar ${project.timelineSampleRate} ${codec(format)} ${quote(target.absolutePath)}"
+    }
+
+    private fun codec(format: StudioExportFormat): String = when (format) {
+        StudioExportFormat.WAV -> "-c:a pcm_s16le"
+        StudioExportFormat.M4A -> "-c:a aac -b:a 256k"
     }
 
     private fun activeTake(track: StudioTrack): StudioTake? =

@@ -40,16 +40,20 @@ object StudioEditEngine {
         require(sourceAt > clip.sourceStartFrame && sourceAt < clip.sourceEndFrame) {
             "Playhead phải nằm bên trong clip để Split"
         }
+        val leftLength = sourceAt - clip.sourceStartFrame
+        val rightLength = clip.sourceEndFrame - sourceAt
         val left = clip.copy(
             id = UUID.randomUUID().toString(),
             sourceEndFrame = sourceAt,
-            fadeOutFrames = clip.fadeOutFrames.coerceAtMost(sourceAt - clip.sourceStartFrame),
+            fadeInFrames = clip.fadeInFrames.coerceAtMost(leftLength),
+            fadeOutFrames = safetyFadeFrames(project, clip, leftLength),
         )
         val right = clip.copy(
             id = UUID.randomUUID().toString(),
             timelineStartFrame = timelineFrame,
             sourceStartFrame = sourceAt,
-            fadeInFrames = clip.fadeInFrames.coerceAtMost(clip.sourceEndFrame - sourceAt),
+            fadeInFrames = safetyFadeFrames(project, clip, rightLength),
+            fadeOutFrames = clip.fadeOutFrames.coerceAtMost(rightLength),
         )
         val clips = location.track.clips.toMutableList().apply {
             removeAt(location.clipIndex)
@@ -69,10 +73,15 @@ object StudioEditEngine {
         require(sourceAt >= location.clip.sourceStartFrame && sourceAt < location.clip.sourceEndFrame) {
             "Playhead không nằm trong clip"
         }
+        val length = location.clip.sourceEndFrame - sourceAt
         val updated = location.clip.copy(
             timelineStartFrame = timelineFrame,
             sourceStartFrame = sourceAt,
-            fadeInFrames = location.clip.fadeInFrames.coerceAtMost(location.clip.sourceEndFrame - sourceAt),
+            fadeInFrames = maxOf(
+                location.clip.fadeInFrames.coerceAtMost(length),
+                safetyFadeFrames(project, location.clip, length),
+            ),
+            fadeOutFrames = location.clip.fadeOutFrames.coerceAtMost(length),
         )
         return replaceClip(project, location, updated)
     }
@@ -84,9 +93,14 @@ object StudioEditEngine {
         require(sourceAt > location.clip.sourceStartFrame && sourceAt <= location.clip.sourceEndFrame) {
             "Playhead không nằm trong clip"
         }
+        val length = sourceAt - location.clip.sourceStartFrame
         val updated = location.clip.copy(
             sourceEndFrame = sourceAt,
-            fadeOutFrames = location.clip.fadeOutFrames.coerceAtMost(sourceAt - location.clip.sourceStartFrame),
+            fadeInFrames = location.clip.fadeInFrames.coerceAtMost(length),
+            fadeOutFrames = maxOf(
+                location.clip.fadeOutFrames.coerceAtMost(length),
+                safetyFadeFrames(project, location.clip, length),
+            ),
         )
         return replaceClip(project, location, updated)
     }
@@ -102,6 +116,24 @@ object StudioEditEngine {
     fun delete(project: StudioProject, clipId: String): EditResult {
         val location = requireClip(project, clipId)
         val clips = location.track.clips.toMutableList().apply { removeAt(location.clipIndex) }
+        val previousIndex = location.clipIndex - 1
+        if (previousIndex in clips.indices) {
+            val previous = clips[previousIndex]
+            val length = (previous.sourceEndFrame - previous.sourceStartFrame).coerceAtLeast(0L)
+            clips[previousIndex] = previous.copy(
+                fadeOutFrames = maxOf(previous.fadeOutFrames, safetyFadeFrames(project, previous, length))
+                    .coerceAtMost(length),
+            )
+        }
+        val nextIndex = location.clipIndex
+        if (nextIndex in clips.indices) {
+            val next = clips[nextIndex]
+            val length = (next.sourceEndFrame - next.sourceStartFrame).coerceAtLeast(0L)
+            clips[nextIndex] = next.copy(
+                fadeInFrames = maxOf(next.fadeInFrames, safetyFadeFrames(project, next, length))
+                    .coerceAtMost(length),
+            )
+        }
         val nextSelection = clips.getOrNull(location.clipIndex.coerceAtMost(clips.lastIndex.coerceAtLeast(0)))?.id
         return EditResult(project.replaceTrack(location.trackIndex, location.track.copy(clips = clips)), nextSelection)
     }
@@ -158,10 +190,12 @@ object StudioEditEngine {
                 if (clipStart < punchStart) {
                     val leftEnd = sourceFrameAtTimeline(materialized, clip, punchStart)
                     if (leftEnd > clip.sourceStartFrame) {
+                        val leftLength = leftEnd - clip.sourceStartFrame
                         add(
                             clip.copy(
                                 sourceEndFrame = leftEnd,
-                                fadeOutFrames = clip.fadeOutFrames.coerceAtMost(leftEnd - clip.sourceStartFrame),
+                                fadeInFrames = clip.fadeInFrames.coerceAtMost(leftLength),
+                                fadeOutFrames = safetyFadeFrames(materialized, clip, leftLength),
                             ),
                         )
                     }
@@ -169,12 +203,14 @@ object StudioEditEngine {
                 if (clipEnd > punchEnd) {
                     val rightStart = sourceFrameAtTimeline(materialized, clip, punchEnd)
                     if (rightStart < clip.sourceEndFrame) {
+                        val rightLength = clip.sourceEndFrame - rightStart
                         add(
                             clip.copy(
                                 id = UUID.randomUUID().toString(),
                                 timelineStartFrame = punchEnd,
                                 sourceStartFrame = rightStart,
-                                fadeInFrames = clip.fadeInFrames.coerceAtMost(clip.sourceEndFrame - rightStart),
+                                fadeInFrames = safetyFadeFrames(materialized, clip, rightLength),
+                                fadeOutFrames = clip.fadeOutFrames.coerceAtMost(rightLength),
                             ),
                         )
                     }
@@ -195,7 +231,7 @@ object StudioEditEngine {
         )
         val sourceEnd = requestedSourceEnd.coerceIn(sourceStart, take.recordedFrames)
         require(sourceEnd > sourceStart) { "Punch take quá ngắn cho vùng đã chọn" }
-        val safetyFade = (sourceRate / 100L).coerceAtMost((sourceEnd - sourceStart) / 2L)
+        val safetyFade = StudioEditSafety.frames(sourceRate, sourceEnd - sourceStart)
         val punchClip = StudioClip(
             id = UUID.randomUUID().toString(),
             sourceAssetId = take.assetId,
@@ -258,6 +294,8 @@ object StudioEditEngine {
 
     private fun fullTakeClip(project: StudioProject, take: StudioTake): StudioClip {
         val placement = take.latencyCompensatedPlacement(project.timelineSampleRate)
+        val length = (placement.sourceEndFrame - placement.sourceStartFrame).coerceAtLeast(0L)
+        val fade = StudioEditSafety.frames(take.inputSampleRate, length)
         return StudioClip(
             id = UUID.randomUUID().toString(),
             sourceAssetId = take.assetId,
@@ -265,6 +303,8 @@ object StudioEditEngine {
             timelineStartFrame = placement.timelineStartFrame,
             sourceStartFrame = placement.sourceStartFrame,
             sourceEndFrame = placement.sourceEndFrame,
+            fadeInFrames = fade,
+            fadeOutFrames = fade,
         )
     }
 
@@ -278,6 +318,12 @@ object StudioEditEngine {
         val delta = (timelineFrame - clip.timelineStartFrame).coerceAtLeast(0L)
         return (clip.sourceStartFrame + timelineDeltaToSource(delta, sourceRate, project.timelineSampleRate))
             .coerceIn(clip.sourceStartFrame, clip.sourceEndFrame)
+    }
+
+    private fun safetyFadeFrames(project: StudioProject, clip: StudioClip, lengthFrames: Long): Long {
+        val asset = project.asset(clip.sourceAssetId)
+        val sampleRate = asset?.sampleRate ?: project.timelineSampleRate
+        return StudioEditSafety.frames(sampleRate, lengthFrames)
     }
 
     private fun sourceDeltaToTimeline(sourceFrames: Long, sourceRate: Int, timelineRate: Int): Long =

@@ -15,8 +15,11 @@ object StudioPsola {
         plan: StudioPitchPlan,
     ): FloatArray {
         if (input.size < sampleRate / 5) return input.copyOf()
-        val detected = StudioPitchDetector.estimate(input, sampleRate)
-        val marks = pitchMarks(input, sampleRate, detected)
+        val analysisGroup = max(1, sampleRate / 12_000)
+        val analysisRate = sampleRate / analysisGroup
+        val analysis = downsample(input, analysisGroup)
+        val detected = StudioPitchDetector.estimate(analysis, analysisRate)
+        val marks = pitchMarks(input, sampleRate, detected, analysisGroup)
         if (marks.size < 3) return input.copyOf()
 
         val sum = FloatArray(input.size)
@@ -46,23 +49,39 @@ object StudioPsola {
         }
 
         return FloatArray(input.size) { index ->
-            if (weight[index] > 0.12f) {
-                (sum[index] / weight[index]).coerceIn(-1f, 1f)
-            } else input[index]
+            if (weight[index] > 0.12f) (sum[index] / weight[index]).coerceIn(-1f, 1f) else input[index]
         }
+    }
+
+    private fun downsample(input: FloatArray, group: Int): FloatArray {
+        if (group <= 1) return input
+        val output = FloatArray((input.size + group - 1) / group)
+        var source = 0
+        for (index in output.indices) {
+            var sum = 0.0
+            var count = 0
+            while (count < group && source < input.size) {
+                sum += input[source++]
+                count++
+            }
+            output[index] = if (count > 0) (sum / count).toFloat() else 0f
+        }
+        return output
     }
 
     private fun pitchMarks(
         input: FloatArray,
         sampleRate: Int,
         frames: List<StudioDetectedPitchFrame>,
+        analysisGroup: Int,
     ): IntArray {
         if (frames.isEmpty()) return IntArray(0)
         val marks = ArrayList<Int>()
-        var position = frames.firstOrNull { it.frequencyHz != null }?.startSample ?: return IntArray(0)
+        var position = (frames.firstOrNull { it.frequencyHz != null }?.startSample ?: return IntArray(0)) * analysisGroup
         while (position < input.size) {
-            val frame = frames.lastOrNull { it.startSample <= position && it.frequencyHz != null }
-                ?: frames.firstOrNull { it.startSample >= position && it.frequencyHz != null }
+            val analysisPosition = position / analysisGroup
+            val frame = frames.lastOrNull { it.startSample <= analysisPosition && it.frequencyHz != null }
+                ?: frames.firstOrNull { it.startSample >= analysisPosition && it.frequencyHz != null }
                 ?: break
             val hz = frame.frequencyHz ?: break
             val period = (sampleRate / hz).roundToInt().coerceIn(sampleRate / 600, sampleRate / 65)
@@ -80,9 +99,11 @@ object StudioPsola {
             }
             if (marks.isEmpty() || mark > marks.last()) marks += mark
             position = mark + period
-            val nextVoiced = frames.firstOrNull { it.startSample >= position && it.frequencyHz != null }
-            if (nextVoiced != null && nextVoiced.startSample - position > period * 3) {
-                position = nextVoiced.startSample
+            val nextVoiced = frames.firstOrNull {
+                it.startSample * analysisGroup >= position && it.frequencyHz != null
+            }
+            if (nextVoiced != null && nextVoiced.startSample * analysisGroup - position > period * 3) {
+                position = nextVoiced.startSample * analysisGroup
             }
         }
         return marks.toIntArray()

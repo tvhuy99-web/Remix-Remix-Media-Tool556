@@ -14,6 +14,7 @@ import com.aistudio.mediatool.feature.studio.audio.StudioHarmonyPreset
 internal fun StudioPitchToolsSurface(
     model: StudioPitchUiModel,
     playing: Boolean,
+    playingOriginal: Boolean = false,
     onSelectTrack: (String) -> Unit,
     onMode: (StudioPitchToolMode) -> Unit,
     onStrength: (Float) -> Unit,
@@ -22,6 +23,7 @@ internal fun StudioPitchToolsSurface(
     onHarmonyVolume: (Float) -> Unit,
     onHarmonyPan: (Float) -> Unit,
     onCreatePreview: () -> Unit,
+    onToggleOriginal: () -> Unit = {},
     onTogglePreview: () -> Unit,
     onApply: () -> Unit,
     onRestore: () -> Unit,

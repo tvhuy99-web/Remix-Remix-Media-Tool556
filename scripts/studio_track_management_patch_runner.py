@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,6 +31,17 @@ def patch_runtime() -> bool:
 
     changed |= replace_once(
         path,
+        '''            val vocalTrack = project.tracks.firstOrNull { it.type == StudioTrackType.VOCAL }\n            if (vocalTrack == null || vocalTrack.takes.isEmpty()) {\n                _state.value = current.copy(errorMessage = "Cần ít nhất một vocal take trước khi Punch")\n                return@launch\n            }\n''',
+        '''            val editableVoiceTrack = project.tracks.firstOrNull { track ->\n                track.type != StudioTrackType.BEAT &&\n                    (track.takes.isNotEmpty() || track.clips.isNotEmpty())\n            }\n            if (editableVoiceTrack == null) {\n                _state.value = current.copy(errorMessage = "Cần ít nhất một lớp giọng trước khi thu sửa đoạn")\n                return@launch\n            }\n''',
+    )
+    changed |= replace_once(
+        path,
+        '''                trackId = vocalTrack.id,\n''',
+        '''                trackId = editableVoiceTrack.id,\n''',
+    )
+
+    changed |= replace_once(
+        path,
         '''    fun setMasterGain(gainDb: Float) {\n''',
         '''    fun renameTrack(trackId: String, name: String) {\n        scope.launch { applyTrackEdit("rename_track") { StudioTrackEditor.rename(it, trackId, name) } }\n    }\n\n    fun setTrackRole(trackId: String, type: StudioTrackType) {\n        scope.launch { applyTrackEdit("track_role") { StudioTrackEditor.setRole(it, trackId, type) } }\n    }\n\n    fun duplicateTrack(trackId: String) {\n        scope.launch { applyTrackEdit("duplicate_track") { StudioTrackEditor.duplicate(it, trackId) } }\n    }\n\n    fun deleteTrack(trackId: String) {\n        scope.launch { applyTrackEdit("delete_track") { StudioTrackEditor.delete(it, trackId) } }\n    }\n\n    fun moveTrack(trackId: String, direction: Int) {\n        scope.launch { applyTrackEdit("move_track") { StudioTrackEditor.move(it, trackId, direction) } }\n    }\n\n    fun setMasterGain(gainDb: Float) {\n''',
     )
@@ -44,7 +56,8 @@ def patch_runtime() -> bool:
 
 def patch_workspace() -> bool:
     path = "app/src/main/java/com/aistudio/mediatool/feature/studio/ui/StudioWorkspaceScreen.kt"
-    return replace_once(
+    changed = False
+    changed |= replace_once(
         path,
         "                StudioMixerCard(project = loaded, enabled = mixerEnabled)\n",
         "                StudioMixerCard(\n"
@@ -53,6 +66,12 @@ def patch_workspace() -> bool:
         "                    trackEditingEnabled = editEnabled,\n"
         "                )\n",
     )
+    changed |= replace_once(
+        path,
+        '''    val hasVocal = project.tracks.any {\n        it.type == StudioTrackType.VOCAL && it.takes.isNotEmpty()\n    }\n''',
+        '''    val hasVocal = project.tracks.any { track ->\n        track.type != StudioTrackType.BEAT &&\n            (track.takes.isNotEmpty() || track.clips.isNotEmpty())\n    }\n''',
+    )
+    return changed
 
 
 def patch_advanced_controls() -> bool:
@@ -95,8 +114,52 @@ def patch_timeline() -> bool:
     )
 
 
+def patch_track_editor() -> bool:
+    path = "app/src/main/java/com/aistudio/mediatool/feature/studio/data/StudioTrackEditor.kt"
+    return replace_once(
+        path,
+        '''            clip.copy(id = UUID.randomUUID().toString())\n''',
+        '''            clip.copy(\n                id = UUID.randomUUID().toString(),\n                sourceTakeId = null,\n            )\n''',
+    )
+
+
+def patch_track_editor_test() -> bool:
+    path = "app/src/test/java/com/aistudio/mediatool/feature/studio/data/StudioTrackEditorTest.kt"
+    changed = False
+    changed |= replace_once(
+        path,
+        "import org.junit.Assert.assertNotEquals\n",
+        "import org.junit.Assert.assertNotEquals\nimport org.junit.Assert.assertNull\n",
+    )
+    changed |= replace_once(
+        path,
+        '''        assertEquals(take.id, copy.clips.single().sourceTakeId)\n''',
+        '''        assertNull(copy.clips.single().sourceTakeId)\n''',
+    )
+    return changed
+
+
 def main() -> None:
-    changed = patch_runtime() | patch_workspace() | patch_advanced_controls() | patch_timeline()
+    editor_changed = patch_track_editor()
+    test_changed = patch_track_editor_test()
+    changed = (
+        patch_runtime()
+        | patch_workspace()
+        | patch_advanced_controls()
+        | patch_timeline()
+        | editor_changed
+        | test_changed
+    )
+    if editor_changed:
+        subprocess.run(
+            ["git", "add", "app/src/main/java/com/aistudio/mediatool/feature/studio/data/StudioTrackEditor.kt"],
+            check=True,
+        )
+    if test_changed:
+        subprocess.run(
+            ["git", "add", "app/src/test/java/com/aistudio/mediatool/feature/studio/data/StudioTrackEditorTest.kt"],
+            check=True,
+        )
     print("Studio track-management patch applied" if changed else "Studio track-management patch already applied")
 
 

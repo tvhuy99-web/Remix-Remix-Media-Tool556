@@ -7,7 +7,6 @@ import com.aistudio.mediatool.feature.studio.domain.StudioAsset
 import com.aistudio.mediatool.feature.studio.domain.StudioAssetKind
 import java.io.File
 import java.io.FileOutputStream
-import java.util.Locale
 import java.util.UUID
 
 class StudioAssetStore(
@@ -15,11 +14,11 @@ class StudioAssetStore(
     private val projectStore: StudioProjectStore,
 ) {
     fun importBeat(projectId: String, source: Uri): StudioAsset {
-        DocumentUtils.persistReadPermission(context, source)
         val displayName = DocumentUtils.displayName(context, source)
-        val extension = displayName.substringAfterLast('.', "")
-            .lowercase(Locale.ROOT)
-            .takeIf { it.matches(Regex("[a-z0-9]{1,10}")) }
+        val mimeType = context.contentResolver.getType(source)
+        val format = StudioBeatFormatDetector.requireSupported(displayName, mimeType)
+        DocumentUtils.persistReadPermission(context, source)
+
         val assetId = UUID.randomUUID().toString()
         val baseName = DocumentUtils.sanitizeFileName(displayName.substringBeforeLast('.'))
             .ifBlank { "beat" }
@@ -29,7 +28,7 @@ class StudioAssetStore(
             append(baseName)
             append('_')
             append(assetId.take(8))
-            if (extension != null) append('.').append(extension)
+            append('.').append(format.extension)
         }
         val relativePath = "assets/$fileName"
         val target = projectStore.resolveAssetFile(projectId, relativePath)
@@ -39,8 +38,8 @@ class StudioAssetStore(
         try {
             context.contentResolver.openInputStream(source)?.buffered()?.use { input ->
                 FileOutputStream(target).buffered().use { output -> input.copyTo(output) }
-            } ?: error("Không thể đọc nhạc beat đã chọn")
-            require(target.isFile && target.length() > 0L) { "Nhạc beat không chứa dữ liệu" }
+            } ?: error("Không thể đọc nhạc nền đã chọn")
+            require(target.isFile && target.length() > 0L) { "Nhạc nền không chứa dữ liệu" }
             FileOutputStream(target, true).use { it.fd.sync() }
         } catch (error: Throwable) {
             target.delete()
@@ -53,7 +52,7 @@ class StudioAssetStore(
             kind = StudioAssetKind.BEAT,
             relativePath = relativePath,
             displayName = displayName,
-            mimeType = context.contentResolver.getType(source),
+            mimeType = mimeType,
             bytes = target.length(),
             sampleRate = metadata?.sampleRate,
             channelCount = metadata?.channelCount,

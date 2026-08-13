@@ -27,7 +27,7 @@ internal class StudioPitchToolSession(context: Context) {
 
     suspend fun renderSourcePreview(projectId: String, trackId: String): File {
         val project = requireNotNull(repository.load(projectId)) { "Không tìm thấy dự án Studio" }
-        return renderer.renderMix(
+        return renderer.renderDryMix(
             StudioPitchSourceProject.create(project, trackId),
             StudioExportFormat.WAV,
         )

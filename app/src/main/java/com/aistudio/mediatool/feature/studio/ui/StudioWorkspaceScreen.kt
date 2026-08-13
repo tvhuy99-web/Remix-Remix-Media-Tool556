@@ -232,7 +232,11 @@ fun StudioWorkspaceScreen(
 
                 TakesPanel(project = loaded, enabled = editEnabled)
 
-                StudioMixerCard(project = loaded, enabled = mixerEnabled)
+                StudioMixerCard(
+                    project = loaded,
+                    enabled = mixerEnabled,
+                    trackEditingEnabled = editEnabled,
+                )
 
                 StudioExportCard(
                     context = context,

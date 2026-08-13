@@ -5,6 +5,7 @@ import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.feature.studio.data.PendingStudioTake
 import com.aistudio.mediatool.feature.studio.data.StudioEditEngine
 import com.aistudio.mediatool.feature.studio.data.StudioProjectRepository
+import com.aistudio.mediatool.feature.studio.data.StudioTrackEditor
 import com.aistudio.mediatool.feature.studio.data.StudioWaveform
 import com.aistudio.mediatool.feature.studio.data.StudioWaveformStore
 import com.aistudio.mediatool.feature.studio.data.selectActiveTake
@@ -522,6 +523,26 @@ object StudioSessionRuntime {
         }
     }
 
+    fun renameTrack(trackId: String, name: String) {
+        scope.launch { applyTrackEdit("rename_track") { StudioTrackEditor.rename(it, trackId, name) } }
+    }
+
+    fun setTrackRole(trackId: String, type: StudioTrackType) {
+        scope.launch { applyTrackEdit("track_role") { StudioTrackEditor.setRole(it, trackId, type) } }
+    }
+
+    fun duplicateTrack(trackId: String) {
+        scope.launch { applyTrackEdit("duplicate_track") { StudioTrackEditor.duplicate(it, trackId) } }
+    }
+
+    fun deleteTrack(trackId: String) {
+        scope.launch { applyTrackEdit("delete_track") { StudioTrackEditor.delete(it, trackId) } }
+    }
+
+    fun moveTrack(trackId: String, direction: Int) {
+        scope.launch { applyTrackEdit("move_track") { StudioTrackEditor.move(it, trackId, direction) } }
+    }
+
     fun setMasterGain(gainDb: Float) {
         updateMixer { project -> project.copy(masterMix = project.masterMix.copy(gainDb = gainDb.coerceIn(-24f, 12f))) }
     }
@@ -998,6 +1019,44 @@ object StudioSessionRuntime {
             )
         }.onFailure { error ->
             _state.value = _state.value.copy(errorMessage = error.message ?: "Không thể chỉnh sửa clip")
+        }
+    }
+
+    private fun applyTrackEdit(
+        label: String,
+        transform: (StudioProject) -> StudioProject,
+    ) {
+        val current = _state.value
+        if (current.status == StudioSessionStatus.RECORDING || current.isBusy) return
+        val repo = repository ?: return
+        val project = current.project ?: return
+        runCatching {
+            val changed = transform(project)
+            if (changed == project) return@runCatching project
+            pushBounded(undoStack, project)
+            redoStack.clear()
+            val saved = repo.save(changed)
+            syncPlaybackPlan(saved)
+            saved
+        }.onSuccess { saved ->
+            _state.value = _state.value.copy(
+                project = saved,
+                selectedClipId = current.selectedClipId?.takeIf { id -> saved.hasClip(id) },
+                durationFrames = projectDurationFrames(saved),
+                canUndo = undoStack.isNotEmpty(),
+                canRedo = redoStack.isNotEmpty(),
+                errorMessage = null,
+            )
+            DiagnosticLogger.info(
+                component = TAG,
+                event = "studio_track_edit",
+                sessionId = saved.id,
+                fields = mapOf("command" to label),
+            )
+        }.onFailure { error ->
+            _state.value = _state.value.copy(
+                errorMessage = error.message ?: "Không thể thay đổi lớp âm thanh",
+            )
         }
     }
 

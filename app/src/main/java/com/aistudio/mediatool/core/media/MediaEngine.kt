@@ -1,6 +1,7 @@
 package com.aistudio.mediatool.core.media
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.SystemClock
 import com.aistudio.mediatool.BuildConfig
@@ -11,6 +12,7 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.ReturnCode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
@@ -23,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.roundToInt
 
 class MediaEngine(private val context: Context) {
     sealed class ExecutionState {
@@ -43,6 +46,17 @@ class MediaEngine(private val context: Context) {
         command: String,
         diagnosticPhase: String = "media_command",
         startupTimeoutMs: Long? = null,
+    ): Flow<ExecutionState> {
+        if (diagnosticPhase == VIDEO_COMPRESSION_PHASE && !isShortPreviewCommand(command)) {
+            return executeHardwareVideoCompression(command, diagnosticPhase)
+        }
+        return executeNativeFFmpegCommand(command, diagnosticPhase, startupTimeoutMs)
+    }
+
+    private fun executeNativeFFmpegCommand(
+        command: String,
+        diagnosticPhase: String,
+        startupTimeoutMs: Long?,
     ): Flow<ExecutionState> = callbackFlow {
         val taskId = UUID.randomUUID().toString()
         val sanitization = MediaCommandSanitizer.sanitize(command)
@@ -250,7 +264,7 @@ class MediaEngine(private val context: Context) {
                 }
 
             if (terminal.get()) session?.let { FFmpegKit.cancel(it.sessionId) }
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        } catch (cancelled: CancellationException) {
             cancelStartupWatchdog()
             terminal.set(true)
             releaseKeepAlive("collector_coroutine_cancelled")
@@ -282,6 +296,175 @@ class MediaEngine(private val context: Context) {
             } else {
                 releaseKeepAlive("collector_closed_after_terminal")
             }
+        }
+    }
+
+    /**
+     * OtherScreen mode 4 used a full software MPEG-4 encode. For a full-file compression request,
+     * transparently replace that route with Media3/MediaCodec while preserving OtherScreen's
+     * existing progress/result contract. Short 10-second previews intentionally stay on FFmpeg.
+     */
+    private fun executeHardwareVideoCompression(
+        originalCommand: String,
+        diagnosticPhase: String,
+    ): Flow<ExecutionState> = callbackFlow {
+        val taskId = UUID.randomUUID().toString()
+        val startedAt = SystemClock.elapsedRealtime()
+        val inputParameter = INPUT_PATH_REGEX.find(originalCommand)?.groupValues?.getOrNull(1)
+        val inputUri = inputParameter?.let(registeredReadUris::get)
+        val outputPath = OUTPUT_PATH_REGEX.find(originalCommand)?.groupValues?.getOrNull(1)
+        val outputFile = outputPath?.let(::File)
+
+        if (inputUri == null || outputFile == null) {
+            DiagnosticLogger.warn(
+                component = TAG,
+                event = "hardware_compression_route_unavailable",
+                sessionId = taskId,
+                message = "Không xác định được URI nguồn hoặc đường dẫn đầu ra; dùng FFmpeg dự phòng",
+            )
+            val fallback = launch {
+                executeNativeFFmpegCommand(
+                    originalCommand,
+                    "${diagnosticPhase}_software_fallback",
+                    null,
+                ).collect { state -> trySend(state) }
+                close()
+            }
+            awaitClose { fallback.cancel() }
+            return@callbackFlow
+        }
+
+        val keepAliveHeld = AtomicBoolean(false)
+        fun releaseKeepAlive(reason: String) {
+            if (keepAliveHeld.compareAndSet(true, false)) {
+                MediaProcessingForegroundController.release(context, taskId, reason)
+            }
+        }
+
+        MediaProcessingForegroundController.acquire(context, taskId, "Đang nén video bằng phần cứng")
+        keepAliveHeld.set(true)
+        trySend(ExecutionState.Connecting)
+
+        val job = launch {
+            try {
+                val metadata = readVideoCompressionMetadata(inputUri)
+                val requestedHeight = TARGET_HEIGHT_REGEX.find(originalCommand)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
+                val targetHeight = requestedHeight?.takeIf { metadata.height <= 0 || metadata.height > it }
+                val qValue = Q_VALUE_REGEX.find(originalCommand)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
+                    ?: 10
+                val qualityPercent = (((31 - qValue).coerceIn(0, 30) * 100.0) / 30.0)
+                    .roundToInt()
+                    .coerceIn(10, 100)
+                val targetBitrate = VideoCompressionPolicy.targetVideoBitrate(
+                    sourceBitrate = metadata.bitrate,
+                    sourceHeight = metadata.height,
+                    outputHeight = targetHeight,
+                    qualityPercent = qualityPercent,
+                )
+
+                DiagnosticLogger.info(
+                    component = TAG,
+                    event = "hardware_compression_started",
+                    sessionId = taskId,
+                    fields = mapOf(
+                        "phase" to diagnosticPhase,
+                        "duration_ms" to metadata.durationMs,
+                        "source_height" to metadata.height,
+                        "source_bitrate" to metadata.bitrate,
+                        "output_height" to targetHeight,
+                        "quality_percent" to qualityPercent,
+                        "target_bitrate" to targetBitrate,
+                        "route" to "media3_mediacodec",
+                        "foreground_keepalive" to true,
+                    ),
+                )
+
+                val result = Media3VideoCompressor(context).compress(
+                    inputUri = inputUri,
+                    outputFile = outputFile,
+                    targetHeight = targetHeight,
+                    targetVideoBitrate = targetBitrate,
+                ) { percent ->
+                    val estimatedMediaTime = if (metadata.durationMs > 0L) {
+                        metadata.durationMs * percent / 100L
+                    } else {
+                        0L
+                    }
+                    MediaProcessingForegroundController.update(
+                        context,
+                        taskId,
+                        "Đang nén video bằng phần cứng: $percent%",
+                    )
+                    trySend(
+                        ExecutionState.Progress(
+                            timeInMilliseconds = estimatedMediaTime,
+                            size = outputFile.length().coerceAtLeast(0L),
+                            bitrate = targetBitrate / 1000.0,
+                        ),
+                    )
+                }
+
+                DiagnosticLogger.info(
+                    component = TAG,
+                    event = "hardware_compression_success",
+                    sessionId = taskId,
+                    fields = mapOf(
+                        "phase" to diagnosticPhase,
+                        "elapsed_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                        "output_bytes" to outputFile.length(),
+                        "reported_bytes" to result.fileSizeBytes,
+                        "average_video_bitrate" to result.averageVideoBitrate,
+                        "average_audio_bitrate" to result.averageAudioBitrate,
+                        "target_bitrate" to targetBitrate,
+                    ),
+                )
+                trySend(ExecutionState.Success("Media3 hardware compression completed"))
+                releaseKeepAlive("hardware_compression_success")
+                close()
+            } catch (cancelled: CancellationException) {
+                outputFile.delete()
+                releaseKeepAlive("hardware_compression_cancelled")
+                DiagnosticLogger.info(
+                    component = TAG,
+                    event = "hardware_compression_cancelled",
+                    sessionId = taskId,
+                    fields = mapOf("elapsed_ms" to (SystemClock.elapsedRealtime() - startedAt)),
+                )
+                throw cancelled
+            } catch (error: Throwable) {
+                outputFile.delete()
+                DiagnosticLogger.warn(
+                    component = TAG,
+                    event = "hardware_compression_fallback",
+                    sessionId = taskId,
+                    message = error.message ?: "Media3 hardware compression thất bại",
+                    fields = mapOf("elapsed_ms" to (SystemClock.elapsedRealtime() - startedAt)),
+                    error = error,
+                )
+                MediaProcessingForegroundController.update(
+                    context,
+                    taskId,
+                    "Phần cứng không tương thích, chuyển sang nén dự phòng",
+                )
+                executeNativeFFmpegCommand(
+                    originalCommand,
+                    "${diagnosticPhase}_software_fallback",
+                    null,
+                ).collect { state -> trySend(state) }
+                releaseKeepAlive("software_fallback_finished")
+                close()
+            }
+        }
+
+        awaitClose {
+            if (job.isActive) job.cancel()
+            releaseKeepAlive("hardware_compression_collector_closed")
         }
     }
 
@@ -338,6 +521,26 @@ class MediaEngine(private val context: Context) {
     fun copyUriToCache(uri: Uri, prefix: String = "input"): File =
         DocumentUtils.copyToImportCache(context, uri, prefix)
 
+    private fun readVideoCompressionMetadata(uri: Uri): VideoCompressionMetadata {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, uri)
+            val durationMs = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+            val height = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull() ?: 0
+            val bitrate = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+                ?.toIntOrNull() ?: 0
+            require(durationMs > 0L) { "Không đọc được thời lượng video nguồn" }
+            return VideoCompressionMetadata(durationMs, height, bitrate)
+        } finally {
+            retriever.release()
+        }
+    }
+
     private fun safeLogs(value: String?): String? {
         if (!BuildConfig.DEBUG) return null
         return DiagnosticRedactor.sanitizeFfmpegLogs(value, 8_000)
@@ -368,8 +571,23 @@ class MediaEngine(private val context: Context) {
         else -> "Đang xử lý media"
     }
 
+    private fun isShortPreviewCommand(command: String): Boolean =
+        PREVIEW_DURATION_REGEX.containsMatchIn(command)
+
+    private data class VideoCompressionMetadata(
+        val durationMs: Long,
+        val height: Int,
+        val bitrate: Int,
+    )
+
     companion object {
         private const val TAG = "MediaEngine"
         private const val MAX_REGISTERED_READ_URIS = 32
+        private const val VIDEO_COMPRESSION_PHASE = "other_video_mode_4"
+        private val INPUT_PATH_REGEX = Regex("-i\\s+\\\"([^\\\"]+)\\\"")
+        private val OUTPUT_PATH_REGEX = Regex("\\\"([^\\\"]+)\\\"\\s*$")
+        private val TARGET_HEIGHT_REGEX = Regex("scale=-2:(720|480)")
+        private val Q_VALUE_REGEX = Regex("-q:v\\s+(\\d+)")
+        private val PREVIEW_DURATION_REGEX = Regex("(?:^|\\s)-t\\s+10(?:\\.0+)?(?:\\s|$)")
     }
 }

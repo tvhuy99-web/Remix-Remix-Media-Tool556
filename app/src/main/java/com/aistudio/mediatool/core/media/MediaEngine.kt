@@ -54,6 +54,21 @@ class MediaEngine(private val context: Context) {
         val lastMediaTimeMs = AtomicLong(0L)
         val lastOutputBytes = AtomicLong(0L)
         val startupWatchdog = AtomicReference<Job?>(null)
+        val keepAliveHeld = AtomicBoolean(false)
+
+        fun releaseKeepAlive(reason: String) {
+            if (keepAliveHeld.compareAndSet(true, false)) {
+                MediaProcessingForegroundController.release(context, taskId, reason)
+            }
+        }
+
+        MediaProcessingForegroundController.acquire(
+            context = context,
+            taskId = taskId,
+            label = backgroundLabel(diagnosticPhase),
+        )
+        keepAliveHeld.set(true)
+
         DiagnosticLogger.info(
             component = TAG,
             event = "ffmpeg_start",
@@ -67,6 +82,7 @@ class MediaEngine(private val context: Context) {
                 "command_adjustment_count" to sanitization.adjustments.size,
                 "command_adjustments" to sanitization.adjustments.sorted().joinToString(","),
                 "startup_timeout_ms" to startupTimeoutMs,
+                "foreground_keepalive" to true,
             ),
         )
         trySend(ExecutionState.Connecting)
@@ -79,6 +95,7 @@ class MediaEngine(private val context: Context) {
         fun reportStartFailure(error: Throwable) {
             cancelStartupWatchdog()
             terminal.set(true)
+            releaseKeepAlive("start_failure")
             val cause = if (BuildConfig.DEBUG) {
                 generateSequence(error) { it.cause }
                     .joinToString(" -> ") { it.message ?: it.javaClass.simpleName }
@@ -129,6 +146,7 @@ class MediaEngine(private val context: Context) {
                                 ),
                             )
                             trySend(ExecutionState.Success(logs.orEmpty()))
+                            releaseKeepAlive("success")
                         }
                         ReturnCode.isCancel(returnCode) -> {
                             DiagnosticLogger.info(
@@ -145,6 +163,7 @@ class MediaEngine(private val context: Context) {
                                 ),
                             )
                             trySend(ExecutionState.Error(returnCode, "Đã hủy", logs))
+                            releaseKeepAlive("ffmpeg_cancelled")
                         }
                         else -> {
                             DiagnosticLogger.error(
@@ -174,6 +193,7 @@ class MediaEngine(private val context: Context) {
                                     logs,
                                 ),
                             )
+                            releaseKeepAlive("ffmpeg_failed")
                         }
                     }
                     close()
@@ -221,6 +241,7 @@ class MediaEngine(private val context: Context) {
                                 ),
                             )
                             trySend(ExecutionState.Error(null, message, null))
+                            releaseKeepAlive("startup_timeout")
                             close()
                         }
                     }
@@ -232,6 +253,7 @@ class MediaEngine(private val context: Context) {
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             cancelStartupWatchdog()
             terminal.set(true)
+            releaseKeepAlive("collector_coroutine_cancelled")
             throw cancelled
         } catch (error: LinkageError) {
             reportStartFailure(error)
@@ -243,6 +265,7 @@ class MediaEngine(private val context: Context) {
             cancelStartupWatchdog()
             if (terminal.compareAndSet(false, true)) {
                 session?.let { FFmpegKit.cancel(it.sessionId) }
+                releaseKeepAlive("collector_closed")
                 DiagnosticLogger.info(
                     component = TAG,
                     event = "ffmpeg_collector_cancelled",
@@ -256,6 +279,8 @@ class MediaEngine(private val context: Context) {
                         "ffmpeg_session_id" to session?.sessionId,
                     ),
                 )
+            } else {
+                releaseKeepAlive("collector_closed_after_terminal")
             }
         }
     }
@@ -333,6 +358,15 @@ class MediaEngine(private val context: Context) {
         "media_time_ms" to mediaTimeMs,
         "output_bytes" to outputBytes,
     )
+
+    private fun backgroundLabel(phase: String): String = when {
+        phase.contains("mode_4", ignoreCase = true) || phase.contains("compress", ignoreCase = true) -> "Đang nén video"
+        phase.contains("trim", ignoreCase = true) -> "Đang cắt media"
+        phase.contains("join", ignoreCase = true) || phase.contains("concat", ignoreCase = true) -> "Đang nối media"
+        phase.contains("mix", ignoreCase = true) -> "Đang trộn media"
+        phase.contains("slideshow", ignoreCase = true) -> "Đang tạo video"
+        else -> "Đang xử lý media"
+    }
 
     companion object {
         private const val TAG = "MediaEngine"

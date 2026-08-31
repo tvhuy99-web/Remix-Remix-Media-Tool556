@@ -14,6 +14,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -31,25 +33,51 @@ fun ResultFileActions(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val saving = remember { mutableStateOf(false) }
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(FileExportManager.mimeTypeFor(file)),
     ) { destination ->
         destination ?: return@rememberLauncherForActivityResult
         scope.launch {
+            saving.value = true
             runCatching { FileExportManager.copyToUri(context, file, destination) }
                 .onSuccess { Toast.makeText(context, "Đã lưu ${file.name}", Toast.LENGTH_SHORT).show() }
                 .onFailure { Toast.makeText(context, "Không thể lưu: ${it.message}", Toast.LENGTH_LONG).show() }
+            saving.value = false
         }
     }
 
+    fun saveResult() {
+        if (FileExportManager.hasDefaultSaveLocation(context)) {
+            scope.launch {
+                saving.value = true
+                runCatching { FileExportManager.saveToDefaultLocation(context, file) }
+                    .onSuccess {
+                        Toast.makeText(
+                            context,
+                            "Đã lưu ${file.name} vào thư mục mặc định",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    .onFailure {
+                        Toast.makeText(context, "Không thể lưu: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+                saving.value = false
+            }
+        } else {
+            saveLauncher.launch(file.name)
+        }
+    }
+
+    val valid = file.isFile && file.length() > 0L
     Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Button(
-            onClick = { saveLauncher.launch(file.name) },
+            onClick = ::saveResult,
             modifier = Modifier.weight(1f),
-            enabled = file.isFile && file.length() > 0L,
+            enabled = valid && !saving.value,
         ) {
             Icon(Icons.Default.Save, contentDescription = null)
-            Text(saveLabel)
+            Text(if (saving.value) "Đang lưu…" else saveLabel)
         }
         OutlinedButton(
             onClick = {
@@ -57,7 +85,7 @@ fun ResultFileActions(
                     .onFailure { Toast.makeText(context, "Không thể chia sẻ: ${it.message}", Toast.LENGTH_LONG).show() }
             },
             modifier = Modifier.weight(1f),
-            enabled = file.isFile && file.length() > 0L,
+            enabled = valid && !saving.value,
         ) {
             Icon(Icons.Default.Share, contentDescription = null)
             Text(shareLabel)

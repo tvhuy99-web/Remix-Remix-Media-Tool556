@@ -32,6 +32,7 @@ import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.AudioMath
 import com.aistudio.mediatool.core.media.MediaEngine
 import com.aistudio.mediatool.ui.components.AudioPreviewSource
+import com.aistudio.mediatool.ui.components.PendingUriResultActions
 import com.aistudio.mediatool.ui.components.ResultFileActions
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
@@ -58,14 +59,26 @@ fun JoinScreen(navController: NavController) {
     var progressMsg by remember { mutableStateOf("") }
     var hasOutput by rememberSaveable { mutableStateOf(false) }
     var outputPath by rememberSaveable { mutableStateOf("") }
+    var outputUriText by rememberSaveable { mutableStateOf<String?>(null) }
+    var outputDisplayName by rememberSaveable { mutableStateOf("") }
+    var outputMimeType by rememberSaveable { mutableStateOf("") }
+    var outputIsPending by rememberSaveable { mutableStateOf(false) }
+
+    fun clearResultState() {
+        hasOutput = false
+        outputPath = ""
+        outputUriText = null
+        outputDisplayName = ""
+        outputMimeType = ""
+        outputIsPending = false
+    }
 
     val launcher = rememberLauncherForActivityResult(GetMultipleContentsWithMimeTypes()) { uris ->
         uris.forEach { uri ->
             DocumentUtils.persistReadPermission(context, uri)
             if (uri !in selectedUris) selectedUris.add(uri)
         }
-        hasOutput = false
-        outputPath = ""
+        clearResultState()
     }
 
     fun startJoinAudio() {
@@ -77,11 +90,12 @@ fun JoinScreen(navController: NavController) {
 
             isProcessing = true
             progressMsg = "Đang chuẩn bị nối..."
-            hasOutput = false
+            clearResultState()
             val inputUris = selectedUris.toList()
 
             coroutineScope.launch(Dispatchers.IO) {
                 var pendingOutput: File? = null
+                var pendingDirectUri: Uri? = null
                 try {
                     val safPaths = inputUris.mapNotNull { mediaEngine.getSafParameter(it) }
                     if (safPaths.size != inputUris.size) {
@@ -93,8 +107,21 @@ fun JoinScreen(navController: NavController) {
                     }
 
                     val ext = SettingsManager.getAudioFormatExt(context)
-                    val outputFile = FileExportManager.resultFile(context, "joined_audio", ext)
-                    pendingOutput = outputFile
+                    val directOutput = if (FileExportManager.hasDefaultSaveLocation(context)) {
+                        FileExportManager.createPendingDefaultOutput(context, "joined_audio", ext)
+                    } else {
+                        null
+                    }
+                    pendingDirectUri = directOutput?.uri
+                    val outputFile = if (directOutput == null) {
+                        FileExportManager.resultFile(context, "joined_audio", ext).also { pendingOutput = it }
+                    } else {
+                        null
+                    }
+                    val outputTarget = directOutput?.let {
+                        mediaEngine.getSafParameter(it.uri, "w")
+                            ?: error("Không thể mở tệp đầu ra trong thư mục mặc định")
+                    } ?: requireNotNull(outputFile).absolutePath
 
                     val durationsMs = inputUris.map { uri ->
                         runCatching {
@@ -135,9 +162,13 @@ fun JoinScreen(navController: NavController) {
                     }
 
                     val encodingArgs = SettingsManager.getAudioEncodingArgs(context)
-                    val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $encodingArgs \"${outputFile.absolutePath}\""
+                    val formatArg = if (directOutput != null) " -f ${joinAudioMuxer(ext)}" else ""
+                    val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $encodingArgs$formatArg \"$outputTarget\""
 
-                    mediaEngine.executeFFmpegCommand(command, diagnosticPhase = "join_audio").collect { state ->
+                    mediaEngine.executeFFmpegCommand(
+                        command,
+                        diagnosticPhase = if (directOutput != null) "join_audio_direct_saf" else "join_audio",
+                    ).collect { state ->
                         withContext(Dispatchers.Main) {
                             when (state) {
                                 is MediaEngine.ExecutionState.Connecting -> {
@@ -148,20 +179,44 @@ fun JoinScreen(navController: NavController) {
                                     progressMsg = if (totalDurationMs > 0L) "Đang xử lý: $percent%" else "Đang xử lý…"
                                 }
                                 is MediaEngine.ExecutionState.Success -> {
-                                    require(outputFile.isFile && outputFile.length() > 0L) { "Không tạo được tệp kết quả" }
-                                    progressMsg = if (globalFadeSec > 0.0 && !allDurationsKnown) {
-                                        "Nối thành công; đã bỏ qua fade vì không đọc đủ thời lượng nguồn"
+                                    if (directOutput != null) {
+                                        require(FileExportManager.contentLength(context, directOutput.uri) > 0L) {
+                                            "Không tạo được tệp kết quả"
+                                        }
+                                        progressMsg = if (globalFadeSec > 0.0 && !allDurationsKnown) {
+                                            "Nối thành công; đã bỏ qua fade vì không đọc đủ thời lượng nguồn"
+                                        } else {
+                                            "Nối thành công – bấm Lưu để giữ kết quả"
+                                        }
+                                        hasOutput = true
+                                        outputPath = ""
+                                        outputUriText = directOutput.uri.toString()
+                                        outputDisplayName = directOutput.displayName
+                                        outputMimeType = directOutput.mimeType
+                                        outputIsPending = true
+                                        pendingDirectUri = null
                                     } else {
-                                        "Nối thành công!"
+                                        val localOutput = requireNotNull(outputFile)
+                                        require(localOutput.isFile && localOutput.length() > 0L) {
+                                            "Không tạo được tệp kết quả"
+                                        }
+                                        progressMsg = if (globalFadeSec > 0.0 && !allDurationsKnown) {
+                                            "Nối thành công; đã bỏ qua fade vì không đọc đủ thời lượng nguồn"
+                                        } else {
+                                            "Nối thành công!"
+                                        }
+                                        hasOutput = true
+                                        outputPath = localOutput.absolutePath
+                                        outputUriText = null
+                                        pendingOutput = null
                                     }
                                     isProcessing = false
-                                    hasOutput = true
-                                    outputPath = outputFile.absolutePath
-                                    pendingOutput = null
                                     Toast.makeText(context, "Nối file thành công!", Toast.LENGTH_SHORT).show()
                                 }
                                 is MediaEngine.ExecutionState.Error -> {
                                     pendingOutput?.delete()
+                                    pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
+                                    pendingDirectUri = null
                                     progressMsg = "Không thể nối các tệp đã chọn"
                                     isProcessing = false
                                     Toast.makeText(context, "FFmpeg không thể nối một hoặc nhiều tệp", Toast.LENGTH_LONG).show()
@@ -171,9 +226,11 @@ fun JoinScreen(navController: NavController) {
                     }
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     pendingOutput?.delete()
+                    pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
                     throw cancelled
                 } catch (e: Exception) {
                     pendingOutput?.delete()
+                    pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
                     DiagnosticLogger.error(
                         component = "JoinScreen",
                         event = "join_pipeline_failed",
@@ -262,8 +319,7 @@ fun JoinScreen(navController: NavController) {
                                 TextButton(
                                     onClick = {
                                         selectedUris.add(index + 1, uri)
-                                        hasOutput = false
-                                        outputPath = ""
+                                        clearResultState()
                                     },
                                     enabled = !isProcessing,
                                     modifier = Modifier.semantics {
@@ -275,8 +331,7 @@ fun JoinScreen(navController: NavController) {
                                 IconButton(
                                     onClick = {
                                         selectedUris.removeAt(index)
-                                        hasOutput = false
-                                        outputPath = ""
+                                        clearResultState()
                                     },
                                     enabled = !isProcessing,
                                     modifier = Modifier.semantics {
@@ -337,20 +392,51 @@ fun JoinScreen(navController: NavController) {
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Nối xong! File tạm:\n$outputPath", style = MaterialTheme.typography.bodySmall)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        ResultFileActions(file = File(outputPath))
-                        Spacer(modifier = Modifier.height(16.dp))
-                        UnifiedAudioPlayer(
-                            sources = listOf(
-                                AudioPreviewSource(
-                                    id = "joined-output",
-                                    label = "Kết quả nối",
-                                    uri = Uri.fromFile(File(outputPath)),
+                        val directUri = outputUriText?.let(Uri::parse)
+                        if (directUri != null) {
+                            Text(
+                                if (outputIsPending) {
+                                    "Nối xong và đã ghi trực tiếp vào thư mục mặc định. " +
+                                        "Bấm Lưu để giữ file; rời màn trước khi lưu sẽ tự xóa."
+                                } else {
+                                    "Đã lưu kết quả: $outputDisplayName"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            PendingUriResultActions(
+                                uri = directUri,
+                                displayName = outputDisplayName,
+                                mimeType = outputMimeType,
+                                onCommitted = { outputIsPending = false },
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            UnifiedAudioPlayer(
+                                sources = listOf(
+                                    AudioPreviewSource(
+                                        id = "joined-output-direct",
+                                        label = "Kết quả nối",
+                                        uri = directUri,
+                                    ),
                                 ),
-                            ),
-                            title = "Nghe file kết quả",
-                        )
+                                title = "Nghe file kết quả",
+                            )
+                        } else if (outputPath.isNotBlank()) {
+                            Text("Nối xong! File tạm:\n$outputPath", style = MaterialTheme.typography.bodySmall)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            ResultFileActions(file = File(outputPath))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            UnifiedAudioPlayer(
+                                sources = listOf(
+                                    AudioPreviewSource(
+                                        id = "joined-output",
+                                        label = "Kết quả nối",
+                                        uri = Uri.fromFile(File(outputPath)),
+                                    ),
+                                ),
+                                title = "Nghe file kết quả",
+                            )
+                        }
                     }
                 }
             }
@@ -358,8 +444,7 @@ fun JoinScreen(navController: NavController) {
             OutlinedButton(
                 onClick = {
                     selectedUris.clear()
-                    hasOutput = false
-                    outputPath = ""
+                    clearResultState()
                 },
                 enabled = !isProcessing,
                 modifier = Modifier.fillMaxWidth(),
@@ -368,4 +453,14 @@ fun JoinScreen(navController: NavController) {
             }
         }
     }
+}
+
+private fun joinAudioMuxer(extension: String): String = when (extension.lowercase()) {
+    "m4a", "aac" -> "mp4"
+    "mp3" -> "mp3"
+    "wav" -> "wav"
+    "flac" -> "flac"
+    "ogg" -> "ogg"
+    "opus" -> "opus"
+    else -> "mp4"
 }

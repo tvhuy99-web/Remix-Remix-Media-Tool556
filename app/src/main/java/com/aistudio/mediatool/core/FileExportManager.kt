@@ -3,6 +3,7 @@ package com.aistudio.mediatool.core
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.provider.DocumentsContract
 import androidx.core.content.FileProvider
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
@@ -15,6 +16,12 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 object FileExportManager {
+    data class PendingDefaultOutput(
+        val uri: Uri,
+        val displayName: String,
+        val mimeType: String,
+    )
+
     suspend fun copyToUri(context: Context, source: File, destination: Uri) = withContext(Dispatchers.IO) {
         val destinationId = DiagnosticRedactor.stableId(destination.toString())
         try {
@@ -54,7 +61,7 @@ object FileExportManager {
     /**
      * Creates a child document in the persisted default tree. This removes the repeated
      * CreateDocument picker. Existing processors may still need to copy their private-cache
-     * result into this URI; processors that can write SAF directly can use [createDefaultSaveDocument]
+     * result into this URI; processors that can write SAF directly can use [createPendingDefaultOutput]
      * before processing and avoid that second copy entirely.
      */
     fun createDefaultSaveDocument(
@@ -93,6 +100,25 @@ object FileExportManager {
         }
     }
 
+    fun createPendingDefaultOutput(
+        context: Context,
+        baseName: String,
+        extension: String,
+    ): PendingDefaultOutput {
+        val displayName = resultDisplayName(baseName, extension)
+        val mimeType = mimeTypeForName(displayName)
+        val uri = createDefaultSaveDocument(context, displayName, mimeType)
+        PendingExportStore.register(context, uri)
+        return PendingDefaultOutput(uri = uri, displayName = displayName, mimeType = mimeType)
+    }
+
+    fun commitPendingDefaultOutput(context: Context, uri: Uri) {
+        PendingExportStore.commit(context, uri)
+    }
+
+    fun discardPendingDefaultOutput(context: Context, uri: Uri): Boolean =
+        PendingExportStore.discard(context, uri)
+
     suspend fun saveToDefaultLocation(context: Context, source: File): Uri = withContext(Dispatchers.IO) {
         val destination = createDefaultSaveDocument(context, source.name, mimeTypeFor(source))
         try {
@@ -113,16 +139,30 @@ object FileExportManager {
         }
     }
 
+    fun contentLength(context: Context, uri: Uri): Long {
+        runCatching {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                if (descriptor.statSize >= 0L) return descriptor.statSize
+            }
+        }
+        return runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.SIZE),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else 0L
+            } ?: 0L
+        }.getOrDefault(0L)
+    }
+
     fun shareFile(context: Context, source: File, chooserTitle: String = "Chia sẻ kết quả") {
         try {
             require(source.isFile && source.length() > 0L) { "Tệp kết quả không tồn tại hoặc đang rỗng" }
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", source)
-            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                type = mimeTypeFor(source)
-                putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(Intent.createChooser(shareIntent, chooserTitle))
+            shareUri(context, uri, mimeTypeFor(source), chooserTitle)
             DiagnosticLogger.info(
                 component = "FileExportManager",
                 event = "share_chooser_opened",
@@ -140,17 +180,37 @@ object FileExportManager {
         }
     }
 
+    fun shareUri(
+        context: Context,
+        uri: Uri,
+        mimeType: String,
+        chooserTitle: String = "Chia sẻ kết quả",
+    ) {
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, chooserTitle))
+    }
+
     fun resultFile(context: Context, baseName: String, extension: String): File {
+        val directory = File(context.cacheDir, "results").apply { mkdirs() }
+        var candidate = File(directory, resultDisplayName(baseName, extension))
+        var counter = 1
+        while (candidate.exists()) {
+            val ext = candidate.extension
+            val stem = candidate.nameWithoutExtension
+            candidate = File(directory, "${stem}_${counter++}.$ext")
+        }
+        return candidate
+    }
+
+    fun resultDisplayName(baseName: String, extension: String): String {
         val safeBase = DocumentUtils.sanitizeFileName(baseName).replace(' ', '_').ifBlank { "result" }
         val safeExt = extension.trimStart('.').lowercase(Locale.ROOT).takeIf { it.matches(Regex("[a-z0-9]{1,10}")) }
             ?: "bin"
-        val directory = File(context.cacheDir, "results").apply { mkdirs() }
-        var candidate = File(directory, "${safeBase}_${System.currentTimeMillis()}.$safeExt")
-        var counter = 1
-        while (candidate.exists()) {
-            candidate = File(directory, "${safeBase}_${System.currentTimeMillis()}_${counter++}.$safeExt")
-        }
-        return candidate
+        return "${safeBase}_${System.currentTimeMillis()}.$safeExt"
     }
 
     suspend fun zipFiles(context: Context, files: List<File>, baseName: String): File = withContext(Dispatchers.IO) {
@@ -196,7 +256,9 @@ object FileExportManager {
         }
     }
 
-    fun mimeTypeFor(file: File): String = when (file.extension.lowercase(Locale.ROOT)) {
+    fun mimeTypeFor(file: File): String = mimeTypeForName(file.name)
+
+    fun mimeTypeForName(name: String): String = when (name.substringAfterLast('.', "").lowercase(Locale.ROOT)) {
         "m4a", "aac" -> "audio/mp4"
         "mp3" -> "audio/mpeg"
         "wav" -> "audio/wav"

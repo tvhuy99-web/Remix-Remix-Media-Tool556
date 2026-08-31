@@ -14,6 +14,7 @@ object FastVideoTrimCommandBuilder {
         outputPath: String,
         segment: TimelineSegment,
         sourceDurationSec: Double,
+        outputFormat: String? = null,
     ): Result {
         require(sourceDurationSec.isFinite() && sourceDurationSec > 0.0) {
             "Không đọc được thời lượng video nguồn"
@@ -37,7 +38,12 @@ object FastVideoTrimCommandBuilder {
             append("\" -t ")
             append(formatSeconds(durationSec))
             append(" -map 0:v:0 -map 0:a:0? -map_metadata 0")
-            append(" -c copy -avoid_negative_ts make_zero -movflags +faststart \"")
+            append(" -c copy -avoid_negative_ts make_zero -movflags +faststart")
+            outputFormat?.trim()?.takeIf { it.isNotEmpty() }?.let { format ->
+                append(" -f ")
+                append(format)
+            }
+            append(" \"")
             append(escapeQuoted(outputPath))
             append("\"")
         }

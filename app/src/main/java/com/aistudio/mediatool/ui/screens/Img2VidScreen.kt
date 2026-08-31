@@ -34,6 +34,8 @@ import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.SlideshowTiming
 import com.aistudio.mediatool.core.media.MediaEngine
 import com.aistudio.mediatool.core.media.AudioMath
+import com.aistudio.mediatool.ui.components.AudioPreviewSource
+import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
 import com.aistudio.mediatool.ui.components.VideoPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -47,7 +49,6 @@ data class ImageItem(
     val startMs: String = "",
     val endMs: String = ""
 )
-
 
 private val ImageItemListSaver = Saver<List<ImageItem>, ArrayList<String>>(
     save = { items ->
@@ -66,16 +67,16 @@ fun Img2VidScreen(navController: NavController) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val mediaEngine = remember { MediaEngine(context) }
-    
+
     var audioUriText by rememberSaveable { mutableStateOf<String?>(null) }
     val audioUri = audioUriText?.let(Uri::parse)
     var audioName by rememberSaveable { mutableStateOf("Chưa chọn") }
-    
+
     var selectedImageItems by rememberSaveable(stateSaver = ImageItemListSaver) { mutableStateOf<List<ImageItem>>(emptyList()) }
     var expanded by remember { mutableStateOf(false) }
     var ratioIndex by rememberSaveable { mutableStateOf(0) }
     val ratios = listOf("Ngang 16:9", "Dọc 9:16", "Vuông 1:1")
-    
+
     var isProcessing by remember { mutableStateOf(false) }
     var progressMsg by remember { mutableStateOf("") }
     var outputUriText by rememberSaveable { mutableStateOf<String?>(null) }
@@ -89,7 +90,7 @@ fun Img2VidScreen(navController: NavController) {
             outputUriText = null
         }
     }
-    
+
     val imagesLauncher = rememberLauncherForActivityResult(GetMultipleContentsWithMimeTypes()) { uris ->
         uris.forEach { DocumentUtils.persistReadPermission(context, it) }
         val existing = selectedImageItems.map { it.uri }.toSet()
@@ -262,6 +263,13 @@ fun Img2VidScreen(navController: NavController) {
                 Text("File đã chọn: $audioName", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
+            UnifiedAudioPlayer(
+                sources = audioUri?.let {
+                    listOf(AudioPreviewSource("slideshow-source", audioName, it))
+                }.orEmpty(),
+                title = "Nghe thử âm thanh đã chọn",
+            )
+
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Button(onClick = { imagesLauncher.launch(arrayOf("image/*")) }, modifier = Modifier.fillMaxWidth()) {
                     Text("Thêm Ảnh (Nhiều file)")
@@ -286,8 +294,8 @@ fun Img2VidScreen(navController: NavController) {
                                     ) {
                                         Text("Ảnh ${index + 1}: ${DocumentUtils.displayName(context, uri)}", modifier = Modifier.weight(1f))
                                         IconButton(
-                                            onClick = { 
-                                                selectedImageItems = selectedImageItems.toMutableList().apply { removeAt(index) } 
+                                            onClick = {
+                                                selectedImageItems = selectedImageItems.toMutableList().apply { removeAt(index) }
                                             },
                                             modifier = Modifier.semantics { contentDescription = "Xóa ảnh thứ ${index + 1} khỏi danh sách" }
                                         ) {
@@ -297,7 +305,7 @@ fun Img2VidScreen(navController: NavController) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                                         OutlinedTextField(
                                             value = item.startMs,
-                                            onValueChange = { 
+                                            onValueChange = {
                                                 val newList = selectedImageItems.toMutableList()
                                                 newList[index] = item.copy(startMs = it)
                                                 selectedImageItems = newList
@@ -307,7 +315,7 @@ fun Img2VidScreen(navController: NavController) {
                                         )
                                         OutlinedTextField(
                                             value = item.endMs,
-                                            onValueChange = { 
+                                            onValueChange = {
                                                 val newList = selectedImageItems.toMutableList()
                                                 newList[index] = item.copy(endMs = it)
                                                 selectedImageItems = newList
@@ -353,10 +361,10 @@ fun Img2VidScreen(navController: NavController) {
 
             if (isProcessing || progressMsg.isNotEmpty()) {
                 Text(
-                    text = progressMsg, 
-                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, 
-                    textAlign = TextAlign.Center, 
-                    fontWeight = FontWeight.Bold, 
+                    text = progressMsg,
+                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 if (isProcessing) {
@@ -385,7 +393,6 @@ fun Img2VidScreen(navController: NavController) {
                     }
                 }
             }
-
         }
     }
 }

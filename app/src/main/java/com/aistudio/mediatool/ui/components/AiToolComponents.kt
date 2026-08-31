@@ -225,15 +225,29 @@ fun UnifiedAudioPlayer(
                 }
             }
         }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            OutlinedButton(
+                onClick = {
+                    player.seekTo((player.currentPosition - AUDIO_SEEK_STEP_MS).coerceAtLeast(0L))
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { contentDescription = "Tua lùi 5 giây ${selected.label.lowercase()}" },
+            ) {
+                Text("-5 giây")
+            }
+
             IconButton(
                 onClick = {
+                    if (player.playbackState == Player.STATE_ENDED) player.seekTo(0L)
                     if (player.isPlaying) player.pause() else player.play()
                 },
+                modifier = Modifier.weight(1f),
             ) {
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -244,21 +258,35 @@ fun UnifiedAudioPlayer(
                     },
                 )
             }
-            Slider(
-                value = positionMs.coerceAtMost(durationMs).toFloat(),
-                onValueChange = { value ->
-                    positionMs = value.toLong()
-                    player.seekTo(positionMs)
+
+            OutlinedButton(
+                onClick = {
+                    val upperBound = durationMs.takeIf { it > 1L } ?: Long.MAX_VALUE
+                    player.seekTo((player.currentPosition + AUDIO_SEEK_STEP_MS).coerceAtMost(upperBound))
                 },
-                valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
                 modifier = Modifier
                     .weight(1f)
-                    .semantics {
-                        contentDescription = "Vị trí nghe ${selected.label.lowercase()}"
-                        stateDescription = "${formatDuration(positionMs)} trên ${formatDuration(durationMs)}"
-                    },
-            )
+                    .semantics { contentDescription = "Tua tới 5 giây ${selected.label.lowercase()}" },
+            ) {
+                Text("+5 giây")
+            }
         }
+
+        Slider(
+            value = positionMs.coerceAtMost(durationMs).toFloat(),
+            onValueChange = { value ->
+                positionMs = value.toLong()
+                player.seekTo(positionMs)
+            },
+            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = "Vị trí nghe ${selected.label.lowercase()}"
+                    stateDescription = "${formatDuration(positionMs)} trên ${formatDuration(durationMs)}"
+                },
+        )
+
         Text(
             text = "${formatDuration(positionMs)} / ${formatDuration(durationMs)}",
             modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
@@ -422,6 +450,8 @@ fun CompactDropdown(
         }
     }
 }
+
+private const val AUDIO_SEEK_STEP_MS = 5_000L
 
 fun formatDuration(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000L

@@ -9,6 +9,8 @@ object SettingsManager {
     private const val KEY_AUD_B_INDEX = "aud_b_index"
     private const val KEY_AUD_FMT_INDEX = "aud_fmt_index"
     private const val KEY_FADE_DURATION = "fade_duration_sec"
+    private const val KEY_FADE_ENABLED = "fade_enabled_explicit"
+    private const val KEY_DEFAULT_SAVE_TREE_URI = "default_save_tree_uri"
     private const val KEY_HW_ACCEL_INDEX = "hw_accel_index"
     private const val KEY_NUM_THREADS_INDEX = "num_threads_index"
     private const val KEY_STEM_MODE_INDEX = "stem_mode_index"
@@ -50,8 +52,31 @@ object SettingsManager {
     fun setStemMdxDenoiseEnabled(context: Context, enabled: Boolean) =
         prefs(context).edit().putBoolean(KEY_STEM_MDX_DENOISE, enabled).apply()
 
-    fun getFadeDurationSec(context: Context): Int = prefs(context).getInt(KEY_FADE_DURATION, 3).coerceIn(0, 10)
-    fun setFadeDurationSec(context: Context, value: Int) = prefs(context).edit().putInt(KEY_FADE_DURATION, value.coerceIn(0, 10)).apply()
+    /** Fade is opt-in. Old stored duration values never implicitly enable it after an upgrade. */
+    fun isFadeEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_FADE_ENABLED, false)
+    fun setFadeEnabled(context: Context, enabled: Boolean) =
+        prefs(context).edit().putBoolean(KEY_FADE_ENABLED, enabled).apply()
+
+    fun getConfiguredFadeDurationSec(context: Context): Int =
+        prefs(context).getInt(KEY_FADE_DURATION, 3).coerceIn(1, 10)
+
+    /** Existing processors call this method, so returning zero here enforces opt-in app-wide. */
+    fun getFadeDurationSec(context: Context): Int =
+        if (isFadeEnabled(context)) getConfiguredFadeDurationSec(context) else 0
+
+    fun setFadeDurationSec(context: Context, value: Int) =
+        prefs(context).edit().putInt(KEY_FADE_DURATION, value.coerceIn(1, 10)).apply()
+
+    fun getEffectiveFadeDurationSec(context: Context): Int = getFadeDurationSec(context)
+
+    fun getDefaultSaveTreeUri(context: Context): String? =
+        prefs(context).getString(KEY_DEFAULT_SAVE_TREE_URI, null)?.takeIf { it.isNotBlank() }
+
+    fun setDefaultSaveTreeUri(context: Context, uri: String?) {
+        val editor = prefs(context).edit()
+        if (uri.isNullOrBlank()) editor.remove(KEY_DEFAULT_SAVE_TREE_URI) else editor.putString(KEY_DEFAULT_SAVE_TREE_URI, uri)
+        editor.apply()
+    }
 
     fun getVidQualityIndex(context: Context): Int = prefs(context).getInt(KEY_VID_Q_INDEX, 1).coerceIn(0, 4)
     fun setVidQualityIndex(context: Context, value: Int) = prefs(context).edit().putInt(KEY_VID_Q_INDEX, value.coerceIn(0, 4)).apply()

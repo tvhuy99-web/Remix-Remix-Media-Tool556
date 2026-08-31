@@ -16,29 +16,30 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
-import com.aistudio.mediatool.core.GetMultipleContentsWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
-import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.FileExportManager
+import com.aistudio.mediatool.core.GetMultipleContentsWithMimeTypes
 import com.aistudio.mediatool.core.SettingsManager
-import com.aistudio.mediatool.core.media.MediaEngine
+import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.AudioMath
+import com.aistudio.mediatool.core.media.MediaEngine
+import com.aistudio.mediatool.ui.components.AudioPreviewSource
+import com.aistudio.mediatool.ui.components.PendingUriResultActions
+import com.aistudio.mediatool.ui.components.ResultFileActions
+import com.aistudio.mediatool.ui.components.ToolScaffold
+import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import com.aistudio.mediatool.ui.components.ToolScaffold
-import com.aistudio.mediatool.ui.components.ResultFileActions
-
 
 private val UriStateListSaver = Saver<androidx.compose.runtime.snapshots.SnapshotStateList<Uri>, ArrayList<String>>(
     save = { values -> ArrayList(values.map(Uri::toString)) },
@@ -51,23 +52,34 @@ fun JoinScreen(navController: NavController) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val mediaEngine = remember { MediaEngine(context) }
-    
+
     val selectedUris = rememberSaveable(saver = UriStateListSaver) { mutableStateListOf<Uri>() }
-    
+
     var isProcessing by remember { mutableStateOf(false) }
     var progressMsg by remember { mutableStateOf("") }
     var hasOutput by rememberSaveable { mutableStateOf(false) }
     var outputPath by rememberSaveable { mutableStateOf("") }
+    var outputUriText by rememberSaveable { mutableStateOf<String?>(null) }
+    var outputDisplayName by rememberSaveable { mutableStateOf("") }
+    var outputMimeType by rememberSaveable { mutableStateOf("") }
+    var outputIsPending by rememberSaveable { mutableStateOf(false) }
+
+    fun clearResultState() {
+        hasOutput = false
+        outputPath = ""
+        outputUriText = null
+        outputDisplayName = ""
+        outputMimeType = ""
+        outputIsPending = false
+    }
 
     val launcher = rememberLauncherForActivityResult(GetMultipleContentsWithMimeTypes()) { uris ->
         uris.forEach { uri ->
             DocumentUtils.persistReadPermission(context, uri)
             if (uri !in selectedUris) selectedUris.add(uri)
         }
-        hasOutput = false
-        outputPath = ""
+        clearResultState()
     }
-
 
     fun startJoinAudio() {
         try {
@@ -78,11 +90,12 @@ fun JoinScreen(navController: NavController) {
 
             isProcessing = true
             progressMsg = "Đang chuẩn bị nối..."
-            hasOutput = false
+            clearResultState()
             val inputUris = selectedUris.toList()
 
             coroutineScope.launch(Dispatchers.IO) {
                 var pendingOutput: File? = null
+                var pendingDirectUri: Uri? = null
                 try {
                     val safPaths = inputUris.mapNotNull { mediaEngine.getSafParameter(it) }
                     if (safPaths.size != inputUris.size) {
@@ -94,8 +107,21 @@ fun JoinScreen(navController: NavController) {
                     }
 
                     val ext = SettingsManager.getAudioFormatExt(context)
-                    val outputFile = FileExportManager.resultFile(context, "joined_audio", ext)
-                    pendingOutput = outputFile
+                    val directOutput = if (FileExportManager.hasDefaultSaveLocation(context)) {
+                        FileExportManager.createPendingDefaultOutput(context, "joined_audio", ext)
+                    } else {
+                        null
+                    }
+                    pendingDirectUri = directOutput?.uri
+                    val outputFile = if (directOutput == null) {
+                        FileExportManager.resultFile(context, "joined_audio", ext).also { pendingOutput = it }
+                    } else {
+                        null
+                    }
+                    val outputTarget = directOutput?.let {
+                        mediaEngine.getSafParameter(it.uri, "w")
+                            ?: error("Không thể mở tệp đầu ra trong thư mục mặc định")
+                    } ?: requireNotNull(outputFile).absolutePath
 
                     val durationsMs = inputUris.map { uri ->
                         runCatching {
@@ -125,7 +151,7 @@ fun JoinScreen(navController: NavController) {
                         filter.append("[a$i]")
                     }
                     filter.append("concat=n=${safPaths.size}:v=0:a=1[out_concat];")
-                    
+
                     val applyGlobalFade = AudioMath.canApplyGlobalFade(globalFadeSec, durationsMs)
                     if (applyGlobalFade) {
                         val fade = AudioMath.clampedFadeDuration(globalFadeSec, totalDurationSec)
@@ -134,11 +160,15 @@ fun JoinScreen(navController: NavController) {
                     } else {
                         filter.append("[out_concat]anull[outa]")
                     }
-        
-                    val encodingArgs = SettingsManager.getAudioEncodingArgs(context)
-                    val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $encodingArgs \"${outputFile.absolutePath}\""
 
-                    mediaEngine.executeFFmpegCommand(command, diagnosticPhase = "join_audio").collect { state ->
+                    val encodingArgs = SettingsManager.getAudioEncodingArgs(context)
+                    val formatArg = if (directOutput != null) " -f ${joinAudioMuxer(ext)}" else ""
+                    val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $encodingArgs$formatArg \"$outputTarget\""
+
+                    mediaEngine.executeFFmpegCommand(
+                        command,
+                        diagnosticPhase = if (directOutput != null) "join_audio_direct_saf" else "join_audio",
+                    ).collect { state ->
                         withContext(Dispatchers.Main) {
                             when (state) {
                                 is MediaEngine.ExecutionState.Connecting -> {
@@ -149,20 +179,44 @@ fun JoinScreen(navController: NavController) {
                                     progressMsg = if (totalDurationMs > 0L) "Đang xử lý: $percent%" else "Đang xử lý…"
                                 }
                                 is MediaEngine.ExecutionState.Success -> {
-                                    require(outputFile.isFile && outputFile.length() > 0L) { "Không tạo được tệp kết quả" }
-                                    progressMsg = if (globalFadeSec > 0.0 && !allDurationsKnown) {
-                                        "Nối thành công; đã bỏ qua fade vì không đọc đủ thời lượng nguồn"
+                                    if (directOutput != null) {
+                                        require(FileExportManager.contentLength(context, directOutput.uri) > 0L) {
+                                            "Không tạo được tệp kết quả"
+                                        }
+                                        progressMsg = if (globalFadeSec > 0.0 && !allDurationsKnown) {
+                                            "Nối thành công; đã bỏ qua fade vì không đọc đủ thời lượng nguồn"
+                                        } else {
+                                            "Nối thành công – bấm Lưu để giữ kết quả"
+                                        }
+                                        hasOutput = true
+                                        outputPath = ""
+                                        outputUriText = directOutput.uri.toString()
+                                        outputDisplayName = directOutput.displayName
+                                        outputMimeType = directOutput.mimeType
+                                        outputIsPending = true
+                                        pendingDirectUri = null
                                     } else {
-                                        "Nối thành công!"
+                                        val localOutput = requireNotNull(outputFile)
+                                        require(localOutput.isFile && localOutput.length() > 0L) {
+                                            "Không tạo được tệp kết quả"
+                                        }
+                                        progressMsg = if (globalFadeSec > 0.0 && !allDurationsKnown) {
+                                            "Nối thành công; đã bỏ qua fade vì không đọc đủ thời lượng nguồn"
+                                        } else {
+                                            "Nối thành công!"
+                                        }
+                                        hasOutput = true
+                                        outputPath = localOutput.absolutePath
+                                        outputUriText = null
+                                        pendingOutput = null
                                     }
                                     isProcessing = false
-                                    hasOutput = true
-                                    outputPath = outputFile.absolutePath
-                                    pendingOutput = null
                                     Toast.makeText(context, "Nối file thành công!", Toast.LENGTH_SHORT).show()
                                 }
                                 is MediaEngine.ExecutionState.Error -> {
                                     pendingOutput?.delete()
+                                    pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
+                                    pendingDirectUri = null
                                     progressMsg = "Không thể nối các tệp đã chọn"
                                     isProcessing = false
                                     Toast.makeText(context, "FFmpeg không thể nối một hoặc nhiều tệp", Toast.LENGTH_LONG).show()
@@ -172,9 +226,11 @@ fun JoinScreen(navController: NavController) {
                     }
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     pendingOutput?.delete()
+                    pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
                     throw cancelled
-                } catch(e: Exception) {
+                } catch (e: Exception) {
                     pendingOutput?.delete()
+                    pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
                     DiagnosticLogger.error(
                         component = "JoinScreen",
                         event = "join_pipeline_failed",
@@ -188,7 +244,7 @@ fun JoinScreen(navController: NavController) {
                     }
                 }
             }
-        } catch(e: Exception) {
+        } catch (e: Exception) {
             DiagnosticLogger.error(
                 component = "JoinScreen",
                 event = "join_start_failed",
@@ -210,7 +266,7 @@ fun JoinScreen(navController: NavController) {
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             val currentFormatStr = if (SettingsManager.isAudioLossless(context)) {
                 "Gốc/High"
@@ -231,33 +287,62 @@ fun JoinScreen(navController: NavController) {
                 )
             }
 
-            Button(onClick = { launcher.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = { launcher.launch(arrayOf("audio/*")) },
+                enabled = !isProcessing,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Chọn Thêm File Audio (Chọn nhiều được)")
             }
 
-            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(text = "Danh sách file (${selectedUris.size}):", fontWeight = FontWeight.Bold)
                     if (selectedUris.isEmpty()) {
                         Text("Chưa chọn file nào.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         selectedUris.forEachIndexed { index, uri ->
+                            val name = DocumentUtils.displayName(context, uri)
                             Row(
-                                modifier = Modifier.fillMaxWidth(), 
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
-                                val name = DocumentUtils.displayName(context, uri)
                                 Text(
                                     text = "${index + 1}. $name",
                                     style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
                                 )
-                                IconButton(
-                                    onClick = { selectedUris.removeAt(index) },
-                                    modifier = Modifier.semantics { contentDescription = "Xóa file $name khỏi danh sách" }
+                                TextButton(
+                                    onClick = {
+                                        selectedUris.add(index + 1, uri)
+                                        clearResultState()
+                                    },
+                                    enabled = !isProcessing,
+                                    modifier = Modifier.semantics {
+                                        contentDescription = "Lặp lại file $name một lần ngay sau vị trí ${index + 1}"
+                                    },
                                 ) {
-                                    Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                    Text("Lặp lại")
+                                }
+                                IconButton(
+                                    onClick = {
+                                        selectedUris.removeAt(index)
+                                        clearResultState()
+                                    },
+                                    enabled = !isProcessing,
+                                    modifier = Modifier.semantics {
+                                        contentDescription = "Xóa file $name khỏi danh sách"
+                                    },
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                    )
                                 }
                             }
                         }
@@ -265,13 +350,24 @@ fun JoinScreen(navController: NavController) {
                 }
             }
 
+            UnifiedAudioPlayer(
+                sources = selectedUris.mapIndexed { index, uri ->
+                    AudioPreviewSource(
+                        id = "$index:${uri}",
+                        label = "${index + 1}. ${DocumentUtils.displayName(context, uri)}",
+                        uri = uri,
+                    )
+                },
+                title = "Nghe thử file đã chọn",
+            )
+
             if (isProcessing || progressMsg.isNotEmpty()) {
                 Text(
-                    text = progressMsg, 
-                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, 
-                    textAlign = TextAlign.Center, 
-                    fontWeight = FontWeight.Bold, 
-                    color = MaterialTheme.colorScheme.primary
+                    text = progressMsg,
+                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
                 )
                 if (isProcessing) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -284,8 +380,8 @@ fun JoinScreen(navController: NavController) {
                 modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                )
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ),
             ) {
                 Text("BẮT ĐẦU NỐI FILE", color = Color(0xFFFF0000), fontWeight = FontWeight.Bold)
             }
@@ -293,23 +389,78 @@ fun JoinScreen(navController: NavController) {
             if (hasOutput) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Nối xong! File tạm:\n$outputPath", style = MaterialTheme.typography.bodySmall)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        ResultFileActions(file = File(outputPath))
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("▶ Nghe file kết quả:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                        com.aistudio.mediatool.ui.components.VideoPlayer(uri = Uri.fromFile(File(outputPath)))
+                        val directUri = outputUriText?.let(Uri::parse)
+                        if (directUri != null) {
+                            Text(
+                                if (outputIsPending) {
+                                    "Nối xong và đã ghi trực tiếp vào thư mục mặc định. " +
+                                        "Bấm Lưu để giữ file; rời màn trước khi lưu sẽ tự xóa."
+                                } else {
+                                    "Đã lưu kết quả: $outputDisplayName"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            PendingUriResultActions(
+                                uri = directUri,
+                                displayName = outputDisplayName,
+                                mimeType = outputMimeType,
+                                onCommitted = { outputIsPending = false },
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            UnifiedAudioPlayer(
+                                sources = listOf(
+                                    AudioPreviewSource(
+                                        id = "joined-output-direct",
+                                        label = "Kết quả nối",
+                                        uri = directUri,
+                                    ),
+                                ),
+                                title = "Nghe file kết quả",
+                            )
+                        } else if (outputPath.isNotBlank()) {
+                            Text("Nối xong! File tạm:\n$outputPath", style = MaterialTheme.typography.bodySmall)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            ResultFileActions(file = File(outputPath))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            UnifiedAudioPlayer(
+                                sources = listOf(
+                                    AudioPreviewSource(
+                                        id = "joined-output",
+                                        label = "Kết quả nối",
+                                        uri = Uri.fromFile(File(outputPath)),
+                                    ),
+                                ),
+                                title = "Nghe file kết quả",
+                            )
+                        }
                     }
                 }
             }
 
-            OutlinedButton(onClick = { selectedUris.clear(); hasOutput = false; outputPath = "" }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = {
+                    selectedUris.clear()
+                    clearResultState()
+                },
+                enabled = !isProcessing,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Xóa danh sách hiện tại")
             }
-
         }
     }
+}
+
+private fun joinAudioMuxer(extension: String): String = when (extension.lowercase()) {
+    "m4a", "aac" -> "mp4"
+    "mp3" -> "mp3"
+    "wav" -> "wav"
+    "flac" -> "flac"
+    "ogg" -> "ogg"
+    "opus" -> "opus"
+    else -> "mp4"
 }

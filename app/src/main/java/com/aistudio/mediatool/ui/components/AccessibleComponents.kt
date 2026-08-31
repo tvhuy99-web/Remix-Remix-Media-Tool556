@@ -63,14 +63,19 @@ fun AccessibleSliderColumn(
     modifier: Modifier = Modifier,
     contentDesc: String? = null
 ) {
+    val effectiveLabel = if (label.startsWith("Chất lượng nén:")) {
+        label.replaceFirst("Chất lượng nén:", "Dung lượng mục tiêu:") + " so với bản gốc"
+    } else {
+        label
+    }
     Column(modifier = modifier.fillMaxWidth()) {
-        Text(label, modifier = Modifier.clearAndSetSemantics {})
+        Text(effectiveLabel, modifier = Modifier.clearAndSetSemantics {})
         Slider(
             value = value,
             onValueChange = onValueChange,
             valueRange = valueRange,
             modifier = Modifier.fillMaxWidth().semantics {
-                contentDescription = contentDesc ?: label
+                contentDescription = contentDesc ?: effectiveLabel
             }
         )
     }

@@ -1,5 +1,9 @@
 package com.aistudio.mediatool.ui.components
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,11 +18,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.core.FileExportManager
+import com.aistudio.mediatool.core.PendingExportStore
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -31,25 +39,63 @@ fun ResultFileActions(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val saving = remember(file.absolutePath) { mutableStateOf(false) }
+    val committed = remember(file.absolutePath) { mutableStateOf(false) }
+
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(FileExportManager.mimeTypeFor(file)),
     ) { destination ->
         destination ?: return@rememberLauncherForActivityResult
         scope.launch {
+            saving.value = true
             runCatching { FileExportManager.copyToUri(context, file, destination) }
-                .onSuccess { Toast.makeText(context, "Đã lưu ${file.name}", Toast.LENGTH_SHORT).show() }
+                .onSuccess {
+                    committed.value = true
+                    Toast.makeText(context, "Đã lưu ${file.name}", Toast.LENGTH_SHORT).show()
+                }
                 .onFailure { Toast.makeText(context, "Không thể lưu: ${it.message}", Toast.LENGTH_LONG).show() }
+            saving.value = false
         }
     }
 
+    fun saveResult() {
+        if (FileExportManager.hasDefaultSaveLocation(context)) {
+            scope.launch {
+                saving.value = true
+                runCatching { FileExportManager.saveToDefaultLocation(context, file) }
+                    .onSuccess {
+                        committed.value = true
+                        Toast.makeText(
+                            context,
+                            "Đã lưu ${file.name} vào thư mục mặc định",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    .onFailure {
+                        Toast.makeText(context, "Không thể lưu: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+                saving.value = false
+            }
+        } else {
+            saveLauncher.launch(file.name)
+        }
+    }
+
+    val valid = file.isFile && file.length() > 0L
     Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Button(
-            onClick = { saveLauncher.launch(file.name) },
+            onClick = ::saveResult,
             modifier = Modifier.weight(1f),
-            enabled = file.isFile && file.length() > 0L,
+            enabled = valid && !saving.value && !committed.value,
         ) {
             Icon(Icons.Default.Save, contentDescription = null)
-            Text(saveLabel)
+            Text(
+                when {
+                    committed.value -> "Đã lưu"
+                    saving.value -> "Đang lưu…"
+                    else -> saveLabel
+                },
+            )
         }
         OutlinedButton(
             onClick = {
@@ -57,10 +103,82 @@ fun ResultFileActions(
                     .onFailure { Toast.makeText(context, "Không thể chia sẻ: ${it.message}", Toast.LENGTH_LONG).show() }
             },
             modifier = Modifier.weight(1f),
-            enabled = file.isFile && file.length() > 0L,
+            enabled = valid && !saving.value,
         ) {
             Icon(Icons.Default.Share, contentDescription = null)
             Text(shareLabel)
         }
     }
+}
+
+/**
+ * Actions for a result that has already been written directly into the configured SAF folder.
+ * "Lưu" is a cheap commit operation: no second copy is performed. Until committed, the result is
+ * deleted when its result UI is abandoned, with a persisted startup cleanup as backup.
+ */
+@Composable
+fun PendingUriResultActions(
+    uri: Uri,
+    displayName: String,
+    mimeType: String,
+    modifier: Modifier = Modifier,
+    saveLabel: String = "Lưu",
+    shareLabel: String = "Chia sẻ",
+    onCommitted: () -> Unit = {},
+) {
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+    val initiallyPending = remember(uri) { PendingExportStore.isPending(context, uri) }
+    val committed = remember(uri) { mutableStateOf(!initiallyPending) }
+    val valid = remember(uri) { FileExportManager.contentLength(context, uri) > 0L }
+
+    DisposableEffect(uri) {
+        onDispose {
+            if (!committed.value && activity?.isChangingConfigurations != true) {
+                FileExportManager.discardPendingDefaultOutput(context, uri)
+            }
+        }
+    }
+
+    Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Button(
+            onClick = {
+                runCatching { FileExportManager.commitPendingDefaultOutput(context, uri) }
+                    .onSuccess {
+                        committed.value = true
+                        onCommitted()
+                        Toast.makeText(
+                            context,
+                            "Đã giữ lại $displayName trong thư mục mặc định",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    .onFailure {
+                        Toast.makeText(context, "Không thể xác nhận lưu: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+            },
+            modifier = Modifier.weight(1f),
+            enabled = valid && !committed.value,
+        ) {
+            Icon(Icons.Default.Save, contentDescription = null)
+            Text(if (committed.value) "Đã lưu" else saveLabel)
+        }
+        OutlinedButton(
+            onClick = {
+                runCatching { FileExportManager.shareUri(context, uri, mimeType) }
+                    .onFailure { Toast.makeText(context, "Không thể chia sẻ: ${it.message}", Toast.LENGTH_LONG).show() }
+            },
+            modifier = Modifier.weight(1f),
+            enabled = valid,
+        ) {
+            Icon(Icons.Default.Share, contentDescription = null)
+            Text(shareLabel)
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

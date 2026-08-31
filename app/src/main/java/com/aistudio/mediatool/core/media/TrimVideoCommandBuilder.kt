@@ -29,18 +29,28 @@ object TrimVideoCommandBuilder {
         require(expectedDurationSec > 0.0) { "Tổng thời lượng các đoạn cần cắt bằng 0" }
 
         val filters = mutableListOf<String>()
+        val multiple = segments.size > 1
+        if (multiple) {
+            filters += "[0:v]split=${segments.size}${segments.indices.joinToString("") { "[vsrc$it]" }}"
+            if (sourceHasAudio) {
+                filters += "[0:a]asplit=${segments.size}${segments.indices.joinToString("") { "[asrc$it]" }}"
+            }
+        }
+
         segments.forEachIndexed { index, segment ->
             val start = formatSeconds(segment.startMs / 1_000.0)
             val end = segment.endMs?.let { ":end=${formatSeconds(it / 1_000.0)}" }.orEmpty()
-            filters += "[0:v]trim=start=$start$end,setpts=PTS-STARTPTS[v$index]"
+            val videoInput = if (multiple) "vsrc$index" else "0:v"
+            filters += "[$videoInput]trim=start=$start$end,setpts=PTS-STARTPTS[v$index]"
             if (sourceHasAudio) {
-                filters += "[0:a]atrim=start=$start$end,asetpts=PTS-STARTPTS[a$index]"
+                val audioInput = if (multiple) "asrc$index" else "0:a"
+                filters += "[$audioInput]atrim=start=$start$end,asetpts=PTS-STARTPTS[a$index]"
             }
         }
 
         var videoLabel: String
         var audioLabel: String? = null
-        if (segments.size == 1) {
+        if (!multiple) {
             videoLabel = "v0"
             if (sourceHasAudio) audioLabel = "a0"
         } else if (sourceHasAudio) {

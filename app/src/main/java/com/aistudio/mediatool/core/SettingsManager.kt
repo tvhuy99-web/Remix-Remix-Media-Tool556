@@ -57,10 +57,17 @@ object SettingsManager {
     fun setFadeEnabled(context: Context, enabled: Boolean) =
         prefs(context).edit().putBoolean(KEY_FADE_ENABLED, enabled).apply()
 
-    fun getFadeDurationSec(context: Context): Int = prefs(context).getInt(KEY_FADE_DURATION, 3).coerceIn(1, 10)
-    fun setFadeDurationSec(context: Context, value: Int) = prefs(context).edit().putInt(KEY_FADE_DURATION, value.coerceIn(1, 10)).apply()
-    fun getEffectiveFadeDurationSec(context: Context): Int =
-        if (isFadeEnabled(context)) getFadeDurationSec(context) else 0
+    fun getConfiguredFadeDurationSec(context: Context): Int =
+        prefs(context).getInt(KEY_FADE_DURATION, 3).coerceIn(1, 10)
+
+    /** Existing processors call this method, so returning zero here enforces opt-in app-wide. */
+    fun getFadeDurationSec(context: Context): Int =
+        if (isFadeEnabled(context)) getConfiguredFadeDurationSec(context) else 0
+
+    fun setFadeDurationSec(context: Context, value: Int) =
+        prefs(context).edit().putInt(KEY_FADE_DURATION, value.coerceIn(1, 10)).apply()
+
+    fun getEffectiveFadeDurationSec(context: Context): Int = getFadeDurationSec(context)
 
     fun getDefaultSaveTreeUri(context: Context): String? =
         prefs(context).getString(KEY_DEFAULT_SAVE_TREE_URI, null)?.takeIf { it.isNotBlank() }

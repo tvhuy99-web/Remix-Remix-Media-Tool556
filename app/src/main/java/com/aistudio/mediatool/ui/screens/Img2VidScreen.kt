@@ -6,8 +6,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
@@ -16,33 +14,35 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.aistudio.mediatool.core.DocumentUtils
+import com.aistudio.mediatool.core.FileExportManager
 import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.GetMultipleContentsWithMimeTypes
-import com.aistudio.mediatool.core.DocumentUtils
-import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
+import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.SlideshowTiming
-import com.aistudio.mediatool.core.media.MediaEngine
+import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.AudioMath
+import com.aistudio.mediatool.core.media.MediaEngine
 import com.aistudio.mediatool.ui.components.AudioPreviewSource
+import com.aistudio.mediatool.ui.components.PendingUriResultActions
+import com.aistudio.mediatool.ui.components.ResultFileActions
+import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
 import com.aistudio.mediatool.ui.components.VideoPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import com.aistudio.mediatool.ui.components.ToolScaffold
-import com.aistudio.mediatool.ui.components.ResultFileActions
 
 data class ImageItem(
     val uri: Uri,
@@ -81,13 +81,25 @@ fun Img2VidScreen(navController: NavController) {
     var progressMsg by remember { mutableStateOf("") }
     var outputUriText by rememberSaveable { mutableStateOf<String?>(null) }
     val outputUri = outputUriText?.let(Uri::parse)
+    var outputPath by rememberSaveable { mutableStateOf("") }
+    var outputDisplayName by rememberSaveable { mutableStateOf("") }
+    var outputMimeType by rememberSaveable { mutableStateOf("") }
+    var outputIsPending by rememberSaveable { mutableStateOf(false) }
+
+    fun clearResultState() {
+        outputUriText = null
+        outputPath = ""
+        outputDisplayName = ""
+        outputMimeType = ""
+        outputIsPending = false
+    }
 
     val audioLauncher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri: Uri? ->
         if (uri != null) {
             DocumentUtils.persistReadPermission(context, uri)
             audioUriText = uri.toString()
             audioName = DocumentUtils.displayName(context, uri)
-            outputUriText = null
+            clearResultState()
         }
     }
 
@@ -95,7 +107,7 @@ fun Img2VidScreen(navController: NavController) {
         uris.forEach { DocumentUtils.persistReadPermission(context, it) }
         val existing = selectedImageItems.map { it.uri }.toSet()
         selectedImageItems = selectedImageItems + uris.filterNot { it in existing }.map { ImageItem(it) }
-        outputUriText = null
+        clearResultState()
     }
 
     fun startCreateVideo() {
@@ -113,11 +125,12 @@ fun Img2VidScreen(navController: NavController) {
 
         isProcessing = true
         progressMsg = "Đang chuẩn bị dữ liệu..."
-        outputUriText = null
+        clearResultState()
 
         coroutineScope.launch(Dispatchers.IO) {
             val temporaryFiles = mutableListOf<File>()
             var pendingOutput: File? = null
+            var pendingDirectUri: Uri? = null
             try {
                 val audioFile = mediaEngine.copyUriToCache(sourceAudio, "img2vid-audio")
                 temporaryFiles += audioFile
@@ -128,8 +141,22 @@ fun Img2VidScreen(navController: NavController) {
                     item to imageFile
                 }
 
-                val outputFile = com.aistudio.mediatool.core.FileExportManager.resultFile(context, "video-tu-anh", "mp4")
-                pendingOutput = outputFile
+                val directOutput = if (FileExportManager.hasDefaultSaveLocation(context)) {
+                    FileExportManager.createPendingDefaultOutput(context, "video-tu-anh", "mp4")
+                } else {
+                    null
+                }
+                pendingDirectUri = directOutput?.uri
+                val outputFile = if (directOutput == null) {
+                    FileExportManager.resultFile(context, "video-tu-anh", "mp4").also { pendingOutput = it }
+                } else {
+                    null
+                }
+                val outputTarget = directOutput?.let {
+                    mediaEngine.getSafParameter(it.uri, "w")
+                        ?: error("Không thể mở video đầu ra trong thư mục mặc định")
+                } ?: requireNotNull(outputFile).absolutePath
+
                 val audioDurationMs = runCatching {
                     android.media.MediaMetadataRetriever().let { retriever ->
                         try {
@@ -159,8 +186,8 @@ fun Img2VidScreen(navController: NavController) {
                     1 -> "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:-1:-1:color=black,fps=30"
                     else -> "scale=720:720:force_original_aspect_ratio=decrease,pad=720:720:-1:-1:color=black,fps=30"
                 }
-                val videoBitrate = com.aistudio.mediatool.core.SettingsManager.getVideoBitrateArg(context)
-                val audioBitrate = com.aistudio.mediatool.core.SettingsManager
+                val videoBitrate = SettingsManager.getVideoBitrateArg(context)
+                val audioBitrate = SettingsManager
                     .getAudioBitrateInt(context)
                     .coerceAtMost(320_000) / 1_000
                 fun seconds(milliseconds: Long): String =
@@ -195,10 +222,14 @@ fun Img2VidScreen(navController: NavController) {
                     append("-map \"[outv]\" -map $audioInputIndex:a:0 ")
                     append("-t ${seconds(audioDurationMs)} -c:v mpeg4 $videoBitrate ")
                     append("-c:a aac -b:a ${audioBitrate}k -pix_fmt yuv420p -movflags +faststart -shortest ")
-                    append("\"${outputFile.absolutePath}\"")
+                    if (directOutput != null) append("-f mp4 ")
+                    append("\"$outputTarget\"")
                 }
 
-                mediaEngine.executeFFmpegCommand(command, diagnosticPhase = "slideshow_render").collect { state ->
+                mediaEngine.executeFFmpegCommand(
+                    command,
+                    diagnosticPhase = if (directOutput != null) "slideshow_render_direct_saf" else "slideshow_render",
+                ).collect { state ->
                     withContext(Dispatchers.Main) {
                         when (state) {
                             is MediaEngine.ExecutionState.Connecting -> progressMsg = "Đang khởi tạo FFmpeg..."
@@ -207,14 +238,33 @@ fun Img2VidScreen(navController: NavController) {
                                 progressMsg = if (audioDurationMs > 0L) "Đang dựng video: $percent%" else "Đang dựng video…"
                             }
                             is MediaEngine.ExecutionState.Success -> {
-                                require(outputFile.isFile && outputFile.length() > 0L) { "FFmpeg không tạo tệp đầu ra" }
-                                progressMsg = "Hoàn thành"
+                                if (directOutput != null) {
+                                    require(FileExportManager.contentLength(context, directOutput.uri) > 0L) {
+                                        "FFmpeg không tạo tệp đầu ra"
+                                    }
+                                    outputUriText = directOutput.uri.toString()
+                                    outputPath = ""
+                                    outputDisplayName = directOutput.displayName
+                                    outputMimeType = directOutput.mimeType
+                                    outputIsPending = true
+                                    pendingDirectUri = null
+                                    progressMsg = "Hoàn thành – bấm Lưu để giữ video"
+                                } else {
+                                    val localOutput = requireNotNull(outputFile)
+                                    require(localOutput.isFile && localOutput.length() > 0L) {
+                                        "FFmpeg không tạo tệp đầu ra"
+                                    }
+                                    outputUriText = Uri.fromFile(localOutput).toString()
+                                    outputPath = localOutput.absolutePath
+                                    pendingOutput = null
+                                    progressMsg = "Hoàn thành"
+                                }
                                 isProcessing = false
-                                outputUriText = Uri.fromFile(outputFile).toString()
-                                pendingOutput = null
                                 Toast.makeText(context, "Tạo video thành công", Toast.LENGTH_SHORT).show()
                             }
                             is MediaEngine.ExecutionState.Error -> {
+                                pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
+                                pendingDirectUri = null
                                 val details = state.logs?.takeLast(1_500)
                                     ?: state.failStackTrace?.takeLast(1_500)
                                     ?: "Lỗi không xác định"
@@ -225,8 +275,10 @@ fun Img2VidScreen(navController: NavController) {
                     }
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
                 throw cancelled
             } catch (error: Exception) {
+                pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
                 DiagnosticLogger.error(
                     component = "Img2VidScreen",
                     event = "slideshow_pipeline_failed",
@@ -257,7 +309,11 @@ fun Img2VidScreen(navController: NavController) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Button(onClick = { audioLauncher.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { audioLauncher.launch(arrayOf("audio/*")) },
+                    enabled = !isProcessing,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text("Chọn Âm thanh")
                 }
                 Text("File đã chọn: $audioName", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -271,7 +327,11 @@ fun Img2VidScreen(navController: NavController) {
             )
 
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Button(onClick = { imagesLauncher.launch(arrayOf("image/*")) }, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { imagesLauncher.launch(arrayOf("image/*")) },
+                    enabled = !isProcessing,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text("Thêm Ảnh (Nhiều file)")
                 }
                 Text("Đã chọn ${selectedImageItems.size} ảnh.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
@@ -296,7 +356,9 @@ fun Img2VidScreen(navController: NavController) {
                                         IconButton(
                                             onClick = {
                                                 selectedImageItems = selectedImageItems.toMutableList().apply { removeAt(index) }
+                                                clearResultState()
                                             },
+                                            enabled = !isProcessing,
                                             modifier = Modifier.semantics { contentDescription = "Xóa ảnh thứ ${index + 1} khỏi danh sách" }
                                         ) {
                                             Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
@@ -309,7 +371,9 @@ fun Img2VidScreen(navController: NavController) {
                                                 val newList = selectedImageItems.toMutableList()
                                                 newList[index] = item.copy(startMs = it)
                                                 selectedImageItems = newList
+                                                clearResultState()
                                             },
+                                            enabled = !isProcessing,
                                             label = { Text("B.Đầu (ms)") },
                                             modifier = Modifier.weight(1f)
                                         )
@@ -319,7 +383,9 @@ fun Img2VidScreen(navController: NavController) {
                                                 val newList = selectedImageItems.toMutableList()
                                                 newList[index] = item.copy(endMs = it)
                                                 selectedImageItems = newList
+                                                clearResultState()
                                             },
+                                            enabled = !isProcessing,
                                             label = { Text("K.Thúc (ms)") },
                                             modifier = Modifier.weight(1f)
                                         )
@@ -335,13 +401,14 @@ fun Img2VidScreen(navController: NavController) {
 
             ExposedDropdownMenuBox(
                 expanded = expanded,
-                onExpandedChange = { expanded = it },
+                onExpandedChange = { if (!isProcessing) expanded = it },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 OutlinedTextField(
                     value = ratios[ratioIndex],
                     onValueChange = {},
                     readOnly = true,
+                    enabled = !isProcessing,
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                     modifier = Modifier.menuAnchor().fillMaxWidth(),
                     label = { Text("Tỉ lệ khung hình") }
@@ -353,6 +420,7 @@ fun Img2VidScreen(navController: NavController) {
                             onClick = {
                                 ratioIndex = index
                                 expanded = false
+                                clearResultState()
                             }
                         )
                     }
@@ -385,11 +453,27 @@ fun Img2VidScreen(navController: NavController) {
             }
 
             if (outputUri != null) {
-                outputUri?.path?.let { ResultFileActions(file = File(it)) }
+                if (outputIsPending) {
+                    Text(
+                        "Video đã được ghi trực tiếp vào thư mục mặc định nhưng chưa được giữ. " +
+                            "Bấm Lưu để giữ; rời màn trước khi lưu sẽ tự xóa.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    PendingUriResultActions(
+                        uri = outputUri,
+                        displayName = outputDisplayName,
+                        mimeType = outputMimeType,
+                        onCommitted = { outputIsPending = false },
+                    )
+                } else if (outputPath.isNotBlank()) {
+                    ResultFileActions(file = File(outputPath))
+                } else {
+                    Text("Đã lưu video: $outputDisplayName", style = MaterialTheme.typography.bodySmall)
+                }
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("Trình phát:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                        VideoPlayer(uri = outputUri!!)
+                        VideoPlayer(uri = outputUri)
                     }
                 }
             }

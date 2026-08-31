@@ -4,43 +4,70 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Card
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.navigation.NavController
 import androidx.media3.exoplayer.ExoPlayer
-import com.aistudio.mediatool.core.GetContentWithMimeTypes
+import androidx.navigation.NavController
 import com.aistudio.mediatool.core.DocumentUtils
-import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.FileExportManager
+import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.SettingsManager
-import com.aistudio.mediatool.core.media.MediaEngine
+import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.AudioMath
+import com.aistudio.mediatool.core.media.MediaEngine
 import com.aistudio.mediatool.core.media.TimelineSegments
+import com.aistudio.mediatool.core.media.TrimVideoCommandBuilder
+import com.aistudio.mediatool.ui.components.ResultFileActions
+import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.VideoPlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import com.aistudio.mediatool.ui.components.ToolScaffold
-import com.aistudio.mediatool.ui.components.ResultFileActions
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,20 +75,28 @@ fun TrimScreen(navController: NavController) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val mediaEngine = remember { MediaEngine(context) }
-    
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
     var selectedUriText by rememberSaveable { mutableStateOf<String?>(null) }
     val selectedUri = selectedUriText?.let(Uri::parse)
     var fileName by rememberSaveable { mutableStateOf("Chưa chọn") }
     var exoPlayer by remember { mutableStateOf<ExoPlayer?>(null) }
-    
+
     var startMs by rememberSaveable { mutableStateOf("") }
     var endMs by rememberSaveable { mutableStateOf("") }
-    
+    var startFieldFocused by remember { mutableStateOf(false) }
+    var endFieldFocused by remember { mutableStateOf(false) }
+
     var isProcessing by remember { mutableStateOf(false) }
     var progressMsg by remember { mutableStateOf("") }
     var hasOutput by rememberSaveable { mutableStateOf(false) }
     var outputPath by rememberSaveable { mutableStateOf("") }
-    
+
+    fun dismissKeyboard() {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
 
     val launcher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri: Uri? ->
         uri?.let {
@@ -75,8 +110,9 @@ fun TrimScreen(navController: NavController) {
             progressMsg = ""
         }
     }
-    
+
     fun startTrim() {
+        dismissKeyboard()
         val inputUri = selectedUri
         if (inputUri == null) {
             Toast.makeText(context, "Vui lòng chọn file", Toast.LENGTH_SHORT).show()
@@ -88,9 +124,6 @@ fun TrimScreen(navController: NavController) {
         if (parsedSegments == null || parsedTimeline.error != null) {
             Toast.makeText(context, parsedTimeline.error ?: "Mốc thời gian không hợp lệ", Toast.LENGTH_LONG).show()
             return
-        }
-        val segments = parsedSegments.map { segment ->
-            segment.startMs / 1000.0 to (segment.endMs?.div(1000.0) ?: 0.0)
         }
 
         isProcessing = true
@@ -111,7 +144,8 @@ fun TrimScreen(navController: NavController) {
 
                 var sourceDurationSec = 0.0
                 var sourceHasAudio = isAudio
-                runCatching {
+                var sourceHasVideo = false
+                val metadataRead = runCatching {
                     val retriever = MediaMetadataRetriever()
                     try {
                         retriever.setDataSource(context, inputUri)
@@ -122,26 +156,37 @@ fun TrimScreen(navController: NavController) {
                         sourceHasAudio = isAudio || retriever
                             .extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
                             .equals("yes", ignoreCase = true)
+                        sourceHasVideo = retriever
+                            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)
+                            .equals("yes", ignoreCase = true)
                     } finally {
                         retriever.release()
                     }
                 }
+                if (!isAudio) {
+                    require(metadataRead.isSuccess && sourceHasVideo) { "Tệp đã chọn không có luồng video hợp lệ" }
+                    require(sourceDurationSec > 0.0) { "Không đọc được thời lượng video nguồn" }
+                }
 
-                segments.forEachIndexed { index, (startSec, endSec) ->
+                parsedSegments.forEachIndexed { index, segment ->
+                    val startSec = segment.startMs / 1000.0
+                    val endSec = segment.endMs?.div(1000.0)
                     require(startSec >= 0.0) { "Mốc bắt đầu đoạn ${index + 1} không hợp lệ" }
                     if (sourceDurationSec > 0.0) {
                         require(startSec < sourceDurationSec) {
                             "Mốc bắt đầu đoạn ${index + 1} nằm ngoài thời lượng tệp"
                         }
-                        require(endSec <= 0.0 || endSec <= sourceDurationSec + 0.05) {
+                        require(endSec == null || endSec <= sourceDurationSec + 0.05) {
                             "Mốc kết thúc đoạn ${index + 1} nằm ngoài thời lượng tệp"
                         }
                     }
                 }
 
-                val totalDurationSec = segments.sumOf { (startSec, endSec) ->
+                val totalDurationSec = parsedSegments.sumOf { segment ->
+                    val startSec = segment.startMs / 1000.0
+                    val endSec = segment.endMs?.div(1000.0)
                     when {
-                        endSec > startSec -> endSec - startSec
+                        endSec != null && endSec > startSec -> endSec - startSec
                         sourceDurationSec > startSec -> sourceDurationSec - startSec
                         else -> 0.0
                     }
@@ -150,107 +195,128 @@ fun TrimScreen(navController: NavController) {
                 val outputExtension = if (isAudio) SettingsManager.getAudioFormatExt(context) else "mp4"
                 val outputFile = FileExportManager.resultFile(context, "trimmed", outputExtension)
                 pendingOutput = outputFile
-                val audioEncodingArgs = SettingsManager.getAudioEncodingArgs(context)
-                val videoEncodingArgs = buildString {
-                    append("-map 0:v:0 -map 0:a:0? -c:v mpeg4 -q:v 3 -pix_fmt yuv420p")
-                    if (sourceHasAudio) append(" -c:a aac -b:a 256k")
-                    append(" -movflags +faststart")
-                }
-
                 workDir = File(context.cacheDir, "trim_work_${System.currentTimeMillis()}").apply { mkdirs() }
-                val parts = mutableListOf<File>()
 
-                for ((index, segment) in segments.withIndex()) {
-                    val (startSec, endSec) = segment
-                    val durationSec = if (endSec > startSec) endSec - startSec else 0.0
-                    val durationArgument = if (durationSec > 0.0) "-t $durationSec" else ""
-                    val part = File(workDir, "part_${index.toString().padStart(3, '0')}.$outputExtension")
-                    val encodingArguments = if (isAudio) "-vn $audioEncodingArgs" else videoEncodingArgs
-                    val command = "-y -ss $startSec -i \"$safPath\" $durationArgument $encodingArguments \"${part.absolutePath}\""
-
+                if (!isAudio) {
+                    val requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble()
+                    val built = TrimVideoCommandBuilder.build(
+                        inputPath = safPath,
+                        outputPath = outputFile.absolutePath,
+                        segments = parsedSegments,
+                        sourceDurationSec = sourceDurationSec,
+                        sourceHasAudio = sourceHasAudio,
+                        requestedFadeSec = requestedFadeSec,
+                    )
                     var succeeded = false
-                    mediaEngine.executeFFmpegCommand(command, diagnosticPhase = "trim_segment").collect { state ->
+                    mediaEngine.executeFFmpegCommand(
+                        built.command,
+                        diagnosticPhase = "trim_video_single_pass",
+                    ).collect { state ->
                         when (state) {
                             is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
-                                progressMsg = "Đang cắt đoạn ${index + 1}/${segments.size}..."
+                                progressMsg = "Đang cắt video..."
                             }
                             is MediaEngine.ExecutionState.Success -> succeeded = true
                             is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
-                                progressMsg = "Không thể xử lý đoạn ${index + 1} (mã ${state.returnCode})"
+                                progressMsg = "Không thể cắt video (mã ${state.returnCode})"
                             }
                             else -> Unit
                         }
                     }
-                    require(succeeded && part.isFile && part.length() > 0L) {
-                        "Không tạo được đoạn ${index + 1}"
+                    require(succeeded && outputFile.isFile && outputFile.length() > 0L) {
+                        "FFmpeg không tạo được video kết quả"
                     }
-                    parts += part
-                }
-
-                val combinedFile = if (parts.size == 1) {
-                    parts.first()
+                    validateVideoOutput(outputFile, built.expectedDurationSec)
                 } else {
-                    withContext(Dispatchers.Main) { progressMsg = "Đang nối ${parts.size} đoạn..." }
-                    val listFile = File(workDir, "concat.txt").apply {
-                        writeText(parts.joinToString("\n") { "file '${it.absolutePath.replace("'", "'\\''")}'" })
-                    }
-                    val joinedFile = File(workDir, "joined.$outputExtension")
-                    var joined = false
-                    mediaEngine.executeFFmpegCommand(
-                        "-y -f concat -safe 0 -i \"${listFile.absolutePath}\" -c copy \"${joinedFile.absolutePath}\"",
-                        diagnosticPhase = "concat_trim_segments",
-                    ).collect { state ->
-                        when (state) {
-                            is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
-                                progressMsg = "Đang nối các đoạn..."
+                    val audioEncodingArgs = SettingsManager.getAudioEncodingArgs(context)
+                    val parts = mutableListOf<File>()
+
+                    for ((index, segment) in parsedSegments.withIndex()) {
+                        val startSec = segment.startMs / 1000.0
+                        val endSec = segment.endMs?.div(1000.0)
+                        val durationSec = endSec?.minus(startSec)?.takeIf { it > 0.0 }
+                        val durationArgument = durationSec?.let { "-t $it" }.orEmpty()
+                        val part = File(workDir, "part_${index.toString().padStart(3, '0')}.$outputExtension")
+                        val command = "-y -ss $startSec -i \"$safPath\" $durationArgument -vn $audioEncodingArgs \"${part.absolutePath}\""
+
+                        var succeeded = false
+                        mediaEngine.executeFFmpegCommand(command, diagnosticPhase = "trim_audio_segment").collect { state ->
+                            when (state) {
+                                is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
+                                    progressMsg = "Đang cắt đoạn ${index + 1}/${parsedSegments.size}..."
+                                }
+                                is MediaEngine.ExecutionState.Success -> succeeded = true
+                                is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
+                                    progressMsg = "Không thể xử lý đoạn ${index + 1} (mã ${state.returnCode})"
+                                }
+                                else -> Unit
                             }
-                            is MediaEngine.ExecutionState.Success -> joined = true
-                            is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
-                                progressMsg = "Không thể nối các đoạn (mã ${state.returnCode})"
-                            }
-                            else -> Unit
                         }
+                        require(succeeded && part.isFile && part.length() > 0L) {
+                            "Không tạo được đoạn ${index + 1}"
+                        }
+                        parts += part
                     }
-                    require(joined && joinedFile.isFile && joinedFile.length() > 0L) {
-                        "Không tạo được tệp sau khi nối"
-                    }
-                    joinedFile
-                }
 
-                val requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble()
-                val fadeSec = AudioMath.clampedFadeDuration(requestedFadeSec, totalDurationSec)
-
-                if (fadeSec > 0.0 && sourceHasAudio) {
-                    withContext(Dispatchers.Main) { progressMsg = "Đang áp dụng fade..." }
-                    val fadeOutStart = (totalDurationSec - fadeSec).coerceAtLeast(0.0)
-                    val fadeFilter = "afade=t=in:st=0:d=$fadeSec,afade=t=out:st=$fadeOutStart:d=$fadeSec"
-                    val finalEncoding = if (isAudio) {
-                        "-vn $audioEncodingArgs"
+                    val combinedFile = if (parts.size == 1) {
+                        parts.first()
                     } else {
-                        "-map 0:v:0 -map 0:a:0? -c:v copy -c:a aac -b:a 256k -movflags +faststart"
-                    }
-                    var faded = false
-                    mediaEngine.executeFFmpegCommand(
-                        "-y -i \"${combinedFile.absolutePath}\" -af \"$fadeFilter\" $finalEncoding \"${outputFile.absolutePath}\"",
-                        diagnosticPhase = "apply_trim_fade",
-                    ).collect { state ->
-                        when (state) {
-                            is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
-                                progressMsg = "Đang hoàn thiện tệp..."
-                            }
-                            is MediaEngine.ExecutionState.Success -> faded = true
-                            is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
-                                progressMsg = "Không thể áp dụng fade (mã ${state.returnCode})"
-                            }
-                            else -> Unit
+                        withContext(Dispatchers.Main) { progressMsg = "Đang nối ${parts.size} đoạn..." }
+                        val listFile = File(workDir, "concat.txt").apply {
+                            writeText(parts.joinToString("\n") { "file '${it.absolutePath.replace("'", "'\\''")}'" })
                         }
+                        val joinedFile = File(workDir, "joined.$outputExtension")
+                        var joined = false
+                        mediaEngine.executeFFmpegCommand(
+                            "-y -f concat -safe 0 -i \"${listFile.absolutePath}\" -c copy \"${joinedFile.absolutePath}\"",
+                            diagnosticPhase = "concat_trim_audio_segments",
+                        ).collect { state ->
+                            when (state) {
+                                is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
+                                    progressMsg = "Đang nối các đoạn..."
+                                }
+                                is MediaEngine.ExecutionState.Success -> joined = true
+                                is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
+                                    progressMsg = "Không thể nối các đoạn (mã ${state.returnCode})"
+                                }
+                                else -> Unit
+                            }
+                        }
+                        require(joined && joinedFile.isFile && joinedFile.length() > 0L) {
+                            "Không tạo được tệp sau khi nối"
+                        }
+                        joinedFile
                     }
-                    require(faded) { "Không thể áp dụng hiệu ứng fade" }
-                } else if (!combinedFile.renameTo(outputFile)) {
-                    combinedFile.copyTo(outputFile, overwrite = true)
+
+                    val requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble()
+                    val fadeSec = AudioMath.clampedFadeDuration(requestedFadeSec, totalDurationSec)
+                    if (fadeSec > 0.0) {
+                        withContext(Dispatchers.Main) { progressMsg = "Đang áp dụng fade..." }
+                        val fadeOutStart = (totalDurationSec - fadeSec).coerceAtLeast(0.0)
+                        val fadeFilter = "afade=t=in:st=0:d=$fadeSec,afade=t=out:st=$fadeOutStart:d=$fadeSec"
+                        var faded = false
+                        mediaEngine.executeFFmpegCommand(
+                            "-y -i \"${combinedFile.absolutePath}\" -af \"$fadeFilter\" -vn $audioEncodingArgs \"${outputFile.absolutePath}\"",
+                            diagnosticPhase = "apply_trim_audio_fade",
+                        ).collect { state ->
+                            when (state) {
+                                is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
+                                    progressMsg = "Đang hoàn thiện tệp..."
+                                }
+                                is MediaEngine.ExecutionState.Success -> faded = true
+                                is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
+                                    progressMsg = "Không thể áp dụng fade (mã ${state.returnCode})"
+                                }
+                                else -> Unit
+                            }
+                        }
+                        require(faded) { "Không thể áp dụng hiệu ứng fade" }
+                    } else if (!combinedFile.renameTo(outputFile)) {
+                        combinedFile.copyTo(outputFile, overwrite = true)
+                    }
+                    require(outputFile.isFile && outputFile.length() > 0L) { "Không tạo được tệp kết quả" }
                 }
 
-                require(outputFile.isFile && outputFile.length() > 0L) { "Không tạo được tệp kết quả" }
                 withContext(Dispatchers.Main) {
                     progressMsg = "Xử lý thành công"
                     isProcessing = false
@@ -289,61 +355,117 @@ fun TrimScreen(navController: NavController) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Button(onClick = { launcher.launch(arrayOf("audio/*", "video/*")) }, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = {
+                    dismissKeyboard()
+                    launcher.launch(arrayOf("audio/*", "video/*"))
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Chọn file cần cắt")
             }
 
-            Text(text = "File: $fileName", modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                text = "File: $fileName",
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             if (selectedUri != null) {
                 VideoPlayer(
-                    uri = selectedUri!!,
-                    onPlayerReady = { player -> exoPlayer = player }
+                    uri = selectedUri,
+                    onPlayerReady = { player -> exoPlayer = player },
                 )
             }
 
-            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         OutlinedTextField(
                             value = startMs,
                             onValueChange = { startMs = it.filter { char -> char.isDigit() || char == ',' || char == ' ' } },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { state ->
+                                    if (startFieldFocused && !state.isFocused && !endFieldFocused) {
+                                        keyboardController?.hide()
+                                    }
+                                    startFieldFocused = state.isFocused
+                                },
                             label = { Text("Bắt đầu (ms, VD: 0, 5000)") },
                             placeholder = { Text("0, 5000") },
                             singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Next)
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Text,
+                                imeAction = ImeAction.Next,
+                            ),
+                            keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Next) }),
                         )
-                        Button(onClick = { 
-                            exoPlayer?.let { player -> 
-                                val curr = player.currentPosition.toString()
-                                startMs = if (startMs.isBlank()) curr else "$startMs, $curr"
-                            }
-                        }, modifier = Modifier.semantics { contentDescription = "Lấy mốc thời gian bắt đầu đang phát trên trình phát video" }) {
+                        Button(
+                            onClick = {
+                                dismissKeyboard()
+                                exoPlayer?.let { player ->
+                                    val curr = player.currentPosition.toString()
+                                    startMs = if (startMs.isBlank()) curr else "$startMs, $curr"
+                                }
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "Lấy mốc thời gian bắt đầu đang phát trên trình phát"
+                            },
+                        ) {
                             Text("Lấy mốc hiện tại")
                         }
                     }
 
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         OutlinedTextField(
                             value = endMs,
                             onValueChange = { endMs = it.filter { char -> char.isDigit() || char == ',' || char == ' ' } },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { state ->
+                                    if (endFieldFocused && !state.isFocused && !startFieldFocused) {
+                                        keyboardController?.hide()
+                                    }
+                                    endFieldFocused = state.isFocused
+                                },
                             label = { Text("Kết thúc (VD: 3000, 0)") },
                             placeholder = { Text("3000, 0") },
                             singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Done)
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Text,
+                                imeAction = ImeAction.Done,
+                            ),
+                            keyboardActions = KeyboardActions(onDone = { dismissKeyboard() }),
                         )
-                        Button(onClick = {
-                            exoPlayer?.let { player -> 
-                                val curr = player.currentPosition.toString()
-                                endMs = if (endMs.isBlank()) curr else "$endMs, $curr"
-                            }
-                        }, modifier = Modifier.semantics { contentDescription = "Lấy mốc thời gian kết thúc đang phát trên trình phát video" }) {
+                        Button(
+                            onClick = {
+                                dismissKeyboard()
+                                exoPlayer?.let { player ->
+                                    val curr = player.currentPosition.toString()
+                                    endMs = if (endMs.isBlank()) curr else "$endMs, $curr"
+                                }
+                            },
+                            modifier = Modifier.semantics {
+                                contentDescription = "Lấy mốc thời gian kết thúc đang phát trên trình phát"
+                            },
+                        ) {
                             Text("Lấy mốc hiện tại")
                         }
                     }
@@ -354,15 +476,13 @@ fun TrimScreen(navController: NavController) {
 
             if (isProcessing || progressMsg.isNotEmpty()) {
                 Text(
-                    text = progressMsg, 
-                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, 
-                    textAlign = TextAlign.Center, 
-                    fontWeight = FontWeight.Bold, 
-                    color = MaterialTheme.colorScheme.primary
+                    text = progressMsg,
+                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
                 )
-                if (isProcessing) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
+                if (isProcessing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
 
             Button(
@@ -376,19 +496,55 @@ fun TrimScreen(navController: NavController) {
             if (hasOutput) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("Đã cắt xong! File lưu tạm tại:\n$outputPath", style = MaterialTheme.typography.bodySmall)
                         Spacer(modifier = Modifier.height(8.dp))
                         ResultFileActions(file = File(outputPath))
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text("▶ Xem/Nghe file kết quả:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                        com.aistudio.mediatool.ui.components.VideoPlayer(uri = Uri.fromFile(File(outputPath)))
+                        Text(
+                            "▶ Xem/Nghe file kết quả:",
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                        VideoPlayer(uri = Uri.fromFile(File(outputPath)))
                     }
                 }
             }
-
         }
+    }
+}
+
+private fun validateVideoOutput(file: File, expectedDurationSec: Double) {
+    require(file.isFile && file.length() > 0L) { "Video kết quả không tồn tại hoặc đang rỗng" }
+    val retriever = MediaMetadataRetriever()
+    try {
+        retriever.setDataSource(file.absolutePath)
+        val hasVideo = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)
+            .equals("yes", ignoreCase = true)
+        val durationMs = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            ?.toLongOrNull() ?: 0L
+        val width = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+            ?.toIntOrNull() ?: 0
+        val height = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+            ?.toIntOrNull() ?: 0
+
+        require(hasVideo && width > 0 && height > 0) { "Video kết quả không có luồng hình hợp lệ" }
+        require(durationMs > 0L) { "Video kết quả không có thời lượng hợp lệ" }
+        if (expectedDurationSec > 0.0) {
+            val actualSec = durationMs / 1000.0
+            val toleranceSec = maxOf(1.0, expectedDurationSec * 0.08)
+            require(abs(actualSec - expectedDurationSec) <= toleranceSec) {
+                "Thời lượng video kết quả sai: mong đợi khoảng %.2f giây, nhận %.2f giây"
+                    .format(expectedDurationSec, actualSec)
+            }
+        }
+    } finally {
+        retriever.release()
     }
 }

@@ -2,6 +2,7 @@ package com.aistudio.mediatool.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -120,27 +121,41 @@ fun SettingsScreen(navController: NavController) {
                     Text(
                         defaultSaveTreeUri?.let { value ->
                             val uri = Uri.parse(value)
-                            "Đã chọn: ${DocumentUtils.displayName(context, uri)}"
-                        } ?: "Chưa chọn. Khi chưa có thư mục mặc định, nút Lưu vẫn mở hộp chọn tệp.",
+                            "Đang dùng thư mục riêng: ${DocumentUtils.displayName(context, uri)}"
+                        } ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            "Mặc định: thư mục Download của hệ thống. Nút Lưu sẽ không hỏi lại vị trí."
+                        } else {
+                            "Android 9 trở xuống cần chọn một thư mục để ứng dụng có quyền ghi."
+                        },
                     )
                     Button(
                         onClick = { folderPicker.launch(defaultSaveTreeUri?.let(Uri::parse)) },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(if (defaultSaveTreeUri == null) "Chọn thư mục lưu mặc định" else "Đổi thư mục lưu mặc định")
+                        Text(if (defaultSaveTreeUri == null) "Chọn thư mục khác" else "Đổi thư mục lưu")
                     }
                     if (defaultSaveTreeUri != null) {
                         OutlinedButton(
                             onClick = { defaultSaveTreeUri = null },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text("Bỏ thư mục lưu mặc định")
+                            Text(
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    "Dùng lại thư mục Download"
+                                } else {
+                                    "Bỏ thư mục lưu mặc định"
+                                },
+                            )
                         }
-                        Text(
-                            "Sau khi lưu cài đặt, nút Lưu ở các công cụ sẽ ghi thẳng vào thư mục này và không hỏi tên/vị trí nữa. " +
-                                "Các công cụ còn tạo kết quả tạm vẫn cần sao chép dữ liệu khi bạn bấm Lưu.",
-                        )
                     }
+                    Text(
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            "Khi không chọn thư mục riêng, tất cả kết quả sẽ lưu vào Download. " +
+                                "Các pipeline hỗ trợ xuất trực tiếp sẽ ghi thẳng vào đó; kết quả chưa bấm Lưu vẫn có thể tự xóa khi bị bỏ."
+                        } else {
+                            "Trên Android 7–9, hãy chọn thư mục một lần để cấp quyền lưu lâu dài."
+                        },
+                    )
                 }
 
                 SimpleDropdown(

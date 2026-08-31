@@ -1,5 +1,6 @@
 package com.aistudio.mediatool.ui.screens
 
+import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.widget.Toast
@@ -61,7 +62,10 @@ import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.AudioMath
 import com.aistudio.mediatool.core.media.MediaEngine
 import com.aistudio.mediatool.core.media.TimelineSegments
+import com.aistudio.mediatool.core.media.TrimAudioCommandBuilder
+import com.aistudio.mediatool.core.media.TrimVideoCommandBuilder
 import com.aistudio.mediatool.core.media.VideoTrimCoordinator
+import com.aistudio.mediatool.ui.components.PendingUriResultActions
 import com.aistudio.mediatool.ui.components.ResultFileActions
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.VideoPlayer
@@ -73,6 +77,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,7 +101,12 @@ fun TrimScreen(navController: NavController) {
     var progressMsg by remember { mutableStateOf("") }
     var hasOutput by rememberSaveable { mutableStateOf(false) }
     var outputPath by rememberSaveable { mutableStateOf("") }
+    var outputUriText by rememberSaveable { mutableStateOf<String?>(null) }
+    var outputDisplayName by rememberSaveable { mutableStateOf("") }
+    var outputMimeType by rememberSaveable { mutableStateOf("") }
+    var outputIsPending by rememberSaveable { mutableStateOf(false) }
     var selectedPreviewJob by remember { mutableStateOf<Job?>(null) }
+    var processingJob by remember { mutableStateOf<Job?>(null) }
     var isPreviewingSelection by remember { mutableStateOf(false) }
 
     fun dismissKeyboard() {
@@ -109,6 +119,22 @@ fun TrimScreen(navController: NavController) {
         selectedPreviewJob = null
         exoPlayer?.pause()
         isPreviewingSelection = false
+    }
+
+    fun discardPendingResult() {
+        val uri = outputUriText?.let(Uri::parse)
+        if (outputIsPending && uri != null) {
+            FileExportManager.discardPendingDefaultOutput(context, uri)
+        }
+        outputUriText = null
+        outputDisplayName = ""
+        outputMimeType = ""
+        outputIsPending = false
+        if (outputPath.isNotBlank()) {
+            runCatching { File(outputPath).delete() }
+        }
+        outputPath = ""
+        hasOutput = false
     }
 
     fun previewSelectedSegments() {
@@ -164,13 +190,12 @@ fun TrimScreen(navController: NavController) {
     val launcher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri: Uri? ->
         uri?.let {
             stopSelectedPreview()
+            discardPendingResult()
             DocumentUtils.persistReadPermission(context, it)
             selectedUriText = it.toString()
             fileName = DocumentUtils.displayName(context, it)
             startMs = ""
             endMs = ""
-            hasOutput = false
-            outputPath = ""
             progressMsg = ""
         }
     }
@@ -189,14 +214,14 @@ fun TrimScreen(navController: NavController) {
             return
         }
 
+        discardPendingResult()
         isProcessing = true
         progressMsg = "Đang đọc thông tin tệp..."
-        hasOutput = false
-        outputPath = ""
 
-        coroutineScope.launch(Dispatchers.IO) {
+        processingJob = coroutineScope.launch(Dispatchers.IO) {
             var workDir: File? = null
             var pendingOutput: File? = null
+            var pendingDirectUri: Uri? = null
             try {
                 val mimeType = context.contentResolver.getType(inputUri).orEmpty()
                 val audioExtensions = listOf(".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".opus")
@@ -258,149 +283,240 @@ fun TrimScreen(navController: NavController) {
                     }
                 }
                 val outputExtension = if (isAudio) SettingsManager.getAudioFormatExt(context) else "mp4"
-                val outputFile = FileExportManager.resultFile(context, "trimmed", outputExtension)
-                pendingOutput = outputFile
-
-                if (!isAudio) {
-                    videoTrimCoordinator.trim(
-                        inputUri = inputUri,
-                        outputFile = outputFile,
-                        segments = parsedSegments,
-                        sourceDurationSec = sourceDurationSec,
-                        sourceHasAudio = sourceHasAudio,
-                        requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble(),
-                    ) { message ->
-                        withContext(Dispatchers.Main) {
-                            progressMsg = message
-                        }
-                    }
+                val directOutput = if (FileExportManager.hasDefaultSaveLocation(context)) {
+                    FileExportManager.createPendingDefaultOutput(context, "trimmed", outputExtension)
                 } else {
-                    val safPath = mediaEngine.getSafParameter(inputUri)
-                        ?: error("Không thể mở tệp đã chọn")
-                    val audioEncodingArgs = SettingsManager.getAudioEncodingArgs(context)
-                    workDir = File(context.cacheDir, "trim_work_${System.currentTimeMillis()}").apply { mkdirs() }
-                    val parts = mutableListOf<File>()
+                    null
+                }
+                pendingDirectUri = directOutput?.uri
+                val outputFile = directOutput?.let { null }
+                    ?: FileExportManager.resultFile(context, "trimmed", outputExtension).also { pendingOutput = it }
 
-                    for ((index, segment) in parsedSegments.withIndex()) {
-                        val startSec = segment.startMs / 1000.0
-                        val endSec = segment.endMs?.div(1000.0)
-                        val durationArgument = endSec
-                            ?.minus(startSec)
-                            ?.takeIf { it > 0.0 }
-                            ?.let { "-t $it" }
-                            .orEmpty()
-                        val part = File(
-                            workDir,
-                            "part_${index.toString().padStart(3, '0')}.$outputExtension",
+                if (directOutput != null) {
+                    val outputSafPath = mediaEngine.getSafParameter(directOutput.uri, "w")
+                        ?: error("Không thể mở tệp đầu ra trong thư mục mặc định")
+                    val inputSafPath = mediaEngine.getSafParameter(inputUri)
+                        ?: error("Không thể mở tệp đã chọn")
+                    if (isAudio) {
+                        val built = TrimAudioCommandBuilder.build(
+                            inputPath = inputSafPath,
+                            outputPath = outputSafPath,
+                            segments = parsedSegments,
+                            sourceDurationSec = sourceDurationSec,
+                            audioEncodingArgs = SettingsManager.getAudioEncodingArgs(context),
+                            requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble(),
+                            outputFormat = ffmpegAudioMuxer(outputExtension),
                         )
-                        val command = "-y -ss $startSec -i \"$safPath\" $durationArgument -vn $audioEncodingArgs \"${part.absolutePath}\""
                         var succeeded = false
                         mediaEngine.executeFFmpegCommand(
-                            command,
-                            diagnosticPhase = "trim_audio_segment",
+                            built.command,
+                            diagnosticPhase = "trim_audio_direct_saf",
                         ).collect { state ->
                             when (state) {
                                 is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
-                                    progressMsg = "Đang cắt đoạn ${index + 1}/${parsedSegments.size}..."
+                                    progressMsg = "Đang cắt trực tiếp vào thư mục lưu..."
                                 }
                                 is MediaEngine.ExecutionState.Success -> succeeded = true
-                                is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
-                                    progressMsg = "Không thể xử lý đoạn ${index + 1} (mã ${state.returnCode})"
-                                }
+                                is MediaEngine.ExecutionState.Error -> Unit
                                 else -> Unit
                             }
                         }
-                        require(succeeded && part.isFile && part.length() > 0L) {
-                            "Không tạo được đoạn ${index + 1}"
+                        require(succeeded && FileExportManager.contentLength(context, directOutput.uri) > 0L) {
+                            "Không tạo được tệp âm thanh kết quả"
                         }
-                        parts += part
-                    }
-
-                    val combinedFile = if (parts.size == 1) {
-                        parts.first()
+                        validateAudioOutputUri(context, directOutput.uri, built.expectedDurationSec)
                     } else {
-                        withContext(Dispatchers.Main) {
-                            progressMsg = "Đang nối ${parts.size} đoạn..."
+                        val built = TrimVideoCommandBuilder.build(
+                            inputPath = inputSafPath,
+                            outputPath = outputSafPath,
+                            segments = parsedSegments,
+                            sourceDurationSec = sourceDurationSec,
+                            sourceHasAudio = sourceHasAudio,
+                            requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble(),
+                            outputFormat = "mp4",
+                        )
+                        var succeeded = false
+                        mediaEngine.executeFFmpegCommand(
+                            built.command,
+                            diagnosticPhase = "trim_video_direct_saf",
+                        ).collect { state ->
+                            when (state) {
+                                is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
+                                    progressMsg = "Đang cắt trực tiếp vào thư mục lưu..."
+                                }
+                                is MediaEngine.ExecutionState.Success -> succeeded = true
+                                is MediaEngine.ExecutionState.Error -> Unit
+                                else -> Unit
+                            }
                         }
-                        val listFile = File(workDir, "concat.txt").apply {
-                            writeText(
-                                parts.joinToString("\n") {
-                                    "file '${it.absolutePath.replace("'", "'\\''")}'"
-                                },
+                        require(succeeded && FileExportManager.contentLength(context, directOutput.uri) > 0L) {
+                            "Không tạo được video kết quả"
+                        }
+                        validateVideoOutputUri(context, directOutput.uri, built.expectedDurationSec)
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        progressMsg = "Xử lý thành công – bấm Lưu để giữ kết quả"
+                        isProcessing = false
+                        hasOutput = true
+                        outputPath = ""
+                        outputUriText = directOutput.uri.toString()
+                        outputDisplayName = directOutput.displayName
+                        outputMimeType = directOutput.mimeType
+                        outputIsPending = true
+                        processingJob = null
+                    }
+                    pendingDirectUri = null
+                } else {
+                    val localOutput = requireNotNull(outputFile)
+                    if (!isAudio) {
+                        videoTrimCoordinator.trim(
+                            inputUri = inputUri,
+                            outputFile = localOutput,
+                            segments = parsedSegments,
+                            sourceDurationSec = sourceDurationSec,
+                            sourceHasAudio = sourceHasAudio,
+                            requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble(),
+                        ) { message ->
+                            withContext(Dispatchers.Main) {
+                                progressMsg = message
+                            }
+                        }
+                    } else {
+                        val safPath = mediaEngine.getSafParameter(inputUri)
+                            ?: error("Không thể mở tệp đã chọn")
+                        val audioEncodingArgs = SettingsManager.getAudioEncodingArgs(context)
+                        workDir = File(context.cacheDir, "trim_work_${System.currentTimeMillis()}").apply { mkdirs() }
+                        val parts = mutableListOf<File>()
+
+                        for ((index, segment) in parsedSegments.withIndex()) {
+                            val startSec = segment.startMs / 1000.0
+                            val endSec = segment.endMs?.div(1000.0)
+                            val durationArgument = endSec
+                                ?.minus(startSec)
+                                ?.takeIf { it > 0.0 }
+                                ?.let { "-t $it" }
+                                .orEmpty()
+                            val part = File(
+                                workDir,
+                                "part_${index.toString().padStart(3, '0')}.$outputExtension",
                             )
-                        }
-                        val joinedFile = File(workDir, "joined.$outputExtension")
-                        var joined = false
-                        mediaEngine.executeFFmpegCommand(
-                            "-y -f concat -safe 0 -i \"${listFile.absolutePath}\" -c copy \"${joinedFile.absolutePath}\"",
-                            diagnosticPhase = "concat_trim_audio_segments",
-                        ).collect { state ->
-                            when (state) {
-                                is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
-                                    progressMsg = "Đang nối các đoạn..."
+                            val command = "-y -ss $startSec -i \"$safPath\" $durationArgument -vn $audioEncodingArgs \"${part.absolutePath}\""
+                            var succeeded = false
+                            mediaEngine.executeFFmpegCommand(
+                                command,
+                                diagnosticPhase = "trim_audio_segment",
+                            ).collect { state ->
+                                when (state) {
+                                    is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
+                                        progressMsg = "Đang cắt đoạn ${index + 1}/${parsedSegments.size}..."
+                                    }
+                                    is MediaEngine.ExecutionState.Success -> succeeded = true
+                                    is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
+                                        progressMsg = "Không thể xử lý đoạn ${index + 1} (mã ${state.returnCode})"
+                                    }
+                                    else -> Unit
                                 }
-                                is MediaEngine.ExecutionState.Success -> joined = true
-                                is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
-                                    progressMsg = "Không thể nối các đoạn (mã ${state.returnCode})"
-                                }
-                                else -> Unit
                             }
+                            require(succeeded && part.isFile && part.length() > 0L) {
+                                "Không tạo được đoạn ${index + 1}"
+                            }
+                            parts += part
                         }
-                        require(joined && joinedFile.isFile && joinedFile.length() > 0L) {
-                            "Không tạo được tệp sau khi nối"
+
+                        val combinedFile = if (parts.size == 1) {
+                            parts.first()
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                progressMsg = "Đang nối ${parts.size} đoạn..."
+                            }
+                            val listFile = File(workDir, "concat.txt").apply {
+                                writeText(
+                                    parts.joinToString("\n") {
+                                        "file '${it.absolutePath.replace("'", "'\\''")}'"
+                                    },
+                                )
+                            }
+                            val joinedFile = File(workDir, "joined.$outputExtension")
+                            var joined = false
+                            mediaEngine.executeFFmpegCommand(
+                                "-y -f concat -safe 0 -i \"${listFile.absolutePath}\" -c copy \"${joinedFile.absolutePath}\"",
+                                diagnosticPhase = "concat_trim_audio_segments",
+                            ).collect { state ->
+                                when (state) {
+                                    is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
+                                        progressMsg = "Đang nối các đoạn..."
+                                    }
+                                    is MediaEngine.ExecutionState.Success -> joined = true
+                                    is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
+                                        progressMsg = "Không thể nối các đoạn (mã ${state.returnCode})"
+                                    }
+                                    else -> Unit
+                                }
+                            }
+                            require(joined && joinedFile.isFile && joinedFile.length() > 0L) {
+                                "Không tạo được tệp sau khi nối"
+                            }
+                            joinedFile
                         }
-                        joinedFile
+
+                        val fadeSec = AudioMath.clampedFadeDuration(
+                            SettingsManager.getFadeDurationSec(context).toDouble(),
+                            totalDurationSec,
+                        )
+                        if (fadeSec > 0.0) {
+                            withContext(Dispatchers.Main) {
+                                progressMsg = "Đang áp dụng fade..."
+                            }
+                            val fadeOutStart = (totalDurationSec - fadeSec).coerceAtLeast(0.0)
+                            val fadeFilter = "afade=t=in:st=0:d=$fadeSec,afade=t=out:st=$fadeOutStart:d=$fadeSec"
+                            var faded = false
+                            mediaEngine.executeFFmpegCommand(
+                                "-y -i \"${combinedFile.absolutePath}\" -af \"$fadeFilter\" -vn $audioEncodingArgs \"${localOutput.absolutePath}\"",
+                                diagnosticPhase = "apply_trim_audio_fade",
+                            ).collect { state ->
+                                when (state) {
+                                    is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
+                                        progressMsg = "Đang hoàn thiện tệp..."
+                                    }
+                                    is MediaEngine.ExecutionState.Success -> faded = true
+                                    is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
+                                        progressMsg = "Không thể áp dụng fade (mã ${state.returnCode})"
+                                    }
+                                    else -> Unit
+                                }
+                            }
+                            require(faded) {
+                                "Không thể áp dụng hiệu ứng fade"
+                            }
+                        } else if (!combinedFile.renameTo(localOutput)) {
+                            combinedFile.copyTo(localOutput, overwrite = true)
+                        }
+                        require(localOutput.isFile && localOutput.length() > 0L) {
+                            "Không tạo được tệp kết quả"
+                        }
                     }
 
-                    val fadeSec = AudioMath.clampedFadeDuration(
-                        SettingsManager.getFadeDurationSec(context).toDouble(),
-                        totalDurationSec,
-                    )
-                    if (fadeSec > 0.0) {
-                        withContext(Dispatchers.Main) {
-                            progressMsg = "Đang áp dụng fade..."
-                        }
-                        val fadeOutStart = (totalDurationSec - fadeSec).coerceAtLeast(0.0)
-                        val fadeFilter = "afade=t=in:st=0:d=$fadeSec,afade=t=out:st=$fadeOutStart:d=$fadeSec"
-                        var faded = false
-                        mediaEngine.executeFFmpegCommand(
-                            "-y -i \"${combinedFile.absolutePath}\" -af \"$fadeFilter\" -vn $audioEncodingArgs \"${outputFile.absolutePath}\"",
-                            diagnosticPhase = "apply_trim_audio_fade",
-                        ).collect { state ->
-                            when (state) {
-                                is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
-                                    progressMsg = "Đang hoàn thiện tệp..."
-                                }
-                                is MediaEngine.ExecutionState.Success -> faded = true
-                                is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
-                                    progressMsg = "Không thể áp dụng fade (mã ${state.returnCode})"
-                                }
-                                else -> Unit
-                            }
-                        }
-                        require(faded) {
-                            "Không thể áp dụng hiệu ứng fade"
-                        }
-                    } else if (!combinedFile.renameTo(outputFile)) {
-                        combinedFile.copyTo(outputFile, overwrite = true)
+                    withContext(Dispatchers.Main) {
+                        progressMsg = "Xử lý thành công"
+                        isProcessing = false
+                        hasOutput = true
+                        outputPath = localOutput.absolutePath
+                        outputUriText = null
+                        outputDisplayName = ""
+                        outputMimeType = ""
+                        outputIsPending = false
+                        processingJob = null
                     }
-                    require(outputFile.isFile && outputFile.length() > 0L) {
-                        "Không tạo được tệp kết quả"
-                    }
-                }
-
-                withContext(Dispatchers.Main) {
-                    progressMsg = "Xử lý thành công"
-                    isProcessing = false
-                    hasOutput = true
-                    outputPath = outputFile.absolutePath
                     pendingOutput = null
                 }
             } catch (cancelled: CancellationException) {
                 pendingOutput?.delete()
+                pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
                 throw cancelled
             } catch (error: Exception) {
                 pendingOutput?.delete()
+                pendingDirectUri?.let { FileExportManager.discardPendingDefaultOutput(context, it) }
                 val message = error.message ?: "Không thể cắt tệp"
                 DiagnosticLogger.error(
                     component = "TrimScreen",
@@ -411,6 +527,7 @@ fun TrimScreen(navController: NavController) {
                 withContext(Dispatchers.Main) {
                     progressMsg = "Lỗi: $message"
                     isProcessing = false
+                    processingJob = null
                     Toast.makeText(context, progressMsg, Toast.LENGTH_LONG).show()
                 }
             } finally {
@@ -423,6 +540,8 @@ fun TrimScreen(navController: NavController) {
         title = "Cắt audio / video",
         onNavigateBack = {
             stopSelectedPreview()
+            processingJob?.cancel()
+            discardPendingResult()
             navController.popBackStack()
         },
     ) { innerPadding ->
@@ -440,6 +559,7 @@ fun TrimScreen(navController: NavController) {
                     dismissKeyboard()
                     launcher.launch(arrayOf("audio/*", "video/*"))
                 },
+                enabled = !isProcessing,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Chọn file cần cắt")
@@ -613,22 +733,107 @@ fun TrimScreen(navController: NavController) {
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            "Đã cắt xong! File lưu tạm tại:\n$outputPath",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        ResultFileActions(file = File(outputPath))
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            "▶ Xem/Nghe file kết quả:",
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 8.dp),
-                        )
-                        VideoPlayer(uri = Uri.fromFile(File(outputPath)))
+                        val directUri = outputUriText?.let(Uri::parse)
+                        if (directUri != null) {
+                            Text(
+                                if (outputIsPending) {
+                                    "Đã xử lý xong và ghi trực tiếp vào thư mục mặc định. " +
+                                        "Bấm Lưu để giữ file; nếu quay lại trước khi lưu, file sẽ tự xóa."
+                                } else {
+                                    "Đã lưu kết quả: $outputDisplayName"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            PendingUriResultActions(
+                                uri = directUri,
+                                displayName = outputDisplayName,
+                                mimeType = outputMimeType,
+                                onCommitted = { outputIsPending = false },
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                "▶ Xem/Nghe file kết quả:",
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 8.dp),
+                            )
+                            VideoPlayer(uri = directUri)
+                        } else if (outputPath.isNotBlank()) {
+                            Text(
+                                "Đã cắt xong! File lưu tạm tại:\n$outputPath",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            ResultFileActions(file = File(outputPath))
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                "▶ Xem/Nghe file kết quả:",
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 8.dp),
+                            )
+                            VideoPlayer(uri = Uri.fromFile(File(outputPath)))
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+private fun ffmpegAudioMuxer(extension: String): String = when (extension.lowercase()) {
+    "m4a", "aac" -> "mp4"
+    "mp3" -> "mp3"
+    "wav" -> "wav"
+    "flac" -> "flac"
+    "ogg" -> "ogg"
+    "opus" -> "opus"
+    else -> "mp4"
+}
+
+private fun validateAudioOutputUri(context: Context, uri: Uri, expectedDurationSec: Double) {
+    require(FileExportManager.contentLength(context, uri) > 0L) { "Âm thanh kết quả đang rỗng" }
+    val retriever = MediaMetadataRetriever()
+    try {
+        retriever.setDataSource(context, uri)
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            ?.toLongOrNull() ?: 0L
+        require(durationMs > 0L) { "Âm thanh kết quả không có thời lượng hợp lệ" }
+        if (expectedDurationSec > 0.0) {
+            val actualSec = durationMs / 1000.0
+            val toleranceSec = maxOf(1.0, expectedDurationSec * 0.08)
+            require(abs(actualSec - expectedDurationSec) <= toleranceSec) {
+                "Thời lượng âm thanh kết quả sai: mong đợi khoảng %.2f giây, nhận %.2f giây"
+                    .format(expectedDurationSec, actualSec)
+            }
+        }
+    } finally {
+        retriever.release()
+    }
+}
+
+private fun validateVideoOutputUri(context: Context, uri: Uri, expectedDurationSec: Double) {
+    require(FileExportManager.contentLength(context, uri) > 0L) { "Video kết quả đang rỗng" }
+    val retriever = MediaMetadataRetriever()
+    try {
+        retriever.setDataSource(context, uri)
+        val hasVideo = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO).equals("yes", true)
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            ?.toLongOrNull() ?: 0L
+        val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+            ?.toIntOrNull() ?: 0
+        val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+            ?.toIntOrNull() ?: 0
+        require(hasVideo && width > 0 && height > 0) { "Video kết quả không có luồng hình hợp lệ" }
+        require(durationMs > 0L) { "Video kết quả không có thời lượng hợp lệ" }
+        if (expectedDurationSec > 0.0) {
+            val actualSec = durationMs / 1000.0
+            val toleranceSec = maxOf(1.0, expectedDurationSec * 0.08)
+            require(abs(actualSec - expectedDurationSec) <= toleranceSec) {
+                "Thời lượng video kết quả sai: mong đợi khoảng %.2f giây, nhận %.2f giây"
+                    .format(expectedDurationSec, actualSec)
+            }
+        }
+    } finally {
+        retriever.release()
     }
 }

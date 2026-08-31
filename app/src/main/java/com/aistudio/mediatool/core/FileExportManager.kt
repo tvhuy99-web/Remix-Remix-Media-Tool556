@@ -1,10 +1,14 @@
 package com.aistudio.mediatool.core
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.provider.OpenableColumns
+import android.os.Build
+import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.MediaStore
+import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
@@ -55,27 +59,34 @@ object FileExportManager {
         }
     }
 
+    /**
+     * Android 10+ always has a usable app-controlled default: the public Download collection.
+     * A user-selected SAF tree overrides it. Android 7-9 still need an explicitly granted tree.
+     */
     fun hasDefaultSaveLocation(context: Context): Boolean =
-        SettingsManager.getDefaultSaveTreeUri(context) != null
+        SettingsManager.getDefaultSaveTreeUri(context) != null || Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
     /**
-     * Creates a child document in the persisted default tree. This removes the repeated
-     * CreateDocument picker. Existing processors may still need to copy their private-cache
-     * result into this URI; processors that can write SAF directly can use [createPendingDefaultOutput]
-     * before processing and avoid that second copy entirely.
+     * Creates a normal child document. If the user has not selected a custom folder, Android 10+
+     * writes to the system Download directory through MediaStore.
      */
     fun createDefaultSaveDocument(
         context: Context,
         displayName: String,
         mimeType: String,
     ): Uri {
-        val treeUri = SettingsManager.getDefaultSaveTreeUri(context)
-            ?.let(Uri::parse)
-            ?: error("Chưa chọn thư mục lưu mặc định trong Cài đặt")
+        val customTree = SettingsManager.getDefaultSaveTreeUri(context)?.let(Uri::parse)
+        if (customTree == null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                return createSystemDownloadDocument(context, displayName, mimeType, pending = false)
+            }
+            error("Android 9 trở xuống cần chọn thư mục lưu trong Cài đặt")
+        }
+
         val safeName = DocumentUtils.sanitizeFileName(displayName).ifBlank { "result" }
         try {
-            val treeDocumentId = DocumentsContract.getTreeDocumentId(treeUri)
-            val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocumentId)
+            val treeDocumentId = DocumentsContract.getTreeDocumentId(customTree)
+            val parentUri = DocumentsContract.buildDocumentUriUsingTree(customTree, treeDocumentId)
             return DocumentsContract.createDocument(
                 context.contentResolver,
                 parentUri,
@@ -88,7 +99,7 @@ object FileExportManager {
                 event = "default_save_create_failed",
                 message = error.message,
                 fields = mapOf(
-                    "tree_id" to DiagnosticRedactor.stableId(treeUri.toString()),
+                    "tree_id" to DiagnosticRedactor.stableId(customTree.toString()),
                     "extension" to safeName.substringAfterLast('.', ""),
                 ),
                 error = error,
@@ -107,7 +118,14 @@ object FileExportManager {
     ): PendingDefaultOutput {
         val displayName = resultDisplayName(baseName, extension)
         val mimeType = mimeTypeForName(displayName)
-        val uri = createDefaultSaveDocument(context, displayName, mimeType)
+        val uri = if (
+            SettingsManager.getDefaultSaveTreeUri(context) == null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        ) {
+            createSystemDownloadDocument(context, displayName, mimeType, pending = true)
+        } else {
+            createDefaultSaveDocument(context, displayName, mimeType)
+        }
         try {
             PendingExportStore.register(context, uri)
         } catch (error: Throwable) {
@@ -118,6 +136,7 @@ object FileExportManager {
     }
 
     fun commitPendingDefaultOutput(context: Context, uri: Uri) {
+        finalizeSystemDownloadDocument(context, uri)
         PendingExportStore.commit(context, uri)
     }
 
@@ -125,9 +144,16 @@ object FileExportManager {
         PendingExportStore.discard(context, uri)
 
     suspend fun saveToDefaultLocation(context: Context, source: File): Uri = withContext(Dispatchers.IO) {
-        val destination = createDefaultSaveDocument(context, source.name, mimeTypeFor(source))
+        val useSystemDownloads =
+            SettingsManager.getDefaultSaveTreeUri(context) == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        val destination = if (useSystemDownloads) {
+            createSystemDownloadDocument(context, source.name, mimeTypeFor(source), pending = true)
+        } else {
+            createDefaultSaveDocument(context, source.name, mimeTypeFor(source))
+        }
         try {
             copyToUri(context, source, destination)
+            if (useSystemDownloads) finalizeSystemDownloadDocument(context, destination)
             DiagnosticLogger.info(
                 component = "FileExportManager",
                 event = "default_save_success",
@@ -135,13 +161,43 @@ object FileExportManager {
                     "destination_id" to DiagnosticRedactor.stableId(destination.toString()),
                     "extension" to source.extension,
                     "bytes" to source.length(),
+                    "system_downloads" to useSystemDownloads,
                 ),
             )
             destination
         } catch (error: Throwable) {
-            runCatching { DocumentsContract.deleteDocument(context.contentResolver, destination) }
+            runCatching { context.contentResolver.delete(destination, null, null) }
             throw error
         }
+    }
+
+    private fun createSystemDownloadDocument(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        pending: Boolean,
+    ): Uri {
+        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "MediaStore Download yêu cầu Android 10 trở lên"
+        }
+        val safeName = DocumentUtils.sanitizeFileName(displayName).ifBlank { "result" }
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.MediaColumns.IS_PENDING, if (pending) 1 else 0)
+        }
+        return context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("Không thể tạo tệp trong thư mục Download")
+    }
+
+    private fun finalizeSystemDownloadDocument(context: Context, uri: Uri) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || uri.authority != MediaStore.AUTHORITY) return
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.IS_PENDING, 0)
+        }
+        val updated = context.contentResolver.update(uri, values, null, null)
+        require(updated > 0) { "Không thể hoàn tất tệp trong thư mục Download" }
     }
 
     fun contentLength(context: Context, uri: Uri): Long {

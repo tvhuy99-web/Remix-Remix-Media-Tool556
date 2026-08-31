@@ -33,7 +33,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
-import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.ml.OnnxAcceleration
 import com.aistudio.mediatool.ui.components.AccessibleSwitchRow
@@ -108,9 +107,6 @@ fun SettingsScreen(navController: NavController) {
                         selectedIndex = (fadeDuration - 1).coerceIn(0, 9),
                         onSelected = { fadeDuration = it + 1 },
                     )
-                    Text("Fade chỉ được áp dụng khi công tắc trên đang bật.")
-                } else {
-                    Text("Fade đang tắt. Xử lý media sẽ không tự thêm chuyển âm.")
                 }
 
                 Column(
@@ -118,16 +114,6 @@ fun SettingsScreen(navController: NavController) {
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text("Thư mục lưu mặc định")
-                    Text(
-                        defaultSaveTreeUri?.let { value ->
-                            val uri = Uri.parse(value)
-                            "Đang dùng thư mục riêng: ${DocumentUtils.displayName(context, uri)}"
-                        } ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            "Mặc định: thư mục Download của hệ thống. Nút Lưu sẽ không hỏi lại vị trí."
-                        } else {
-                            "Android 9 trở xuống cần chọn một thư mục để ứng dụng có quyền ghi."
-                        },
-                    )
                     Button(
                         onClick = { folderPicker.launch(defaultSaveTreeUri?.let(Uri::parse)) },
                         modifier = Modifier.fillMaxWidth(),
@@ -148,14 +134,6 @@ fun SettingsScreen(navController: NavController) {
                             )
                         }
                     }
-                    Text(
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            "Khi không chọn thư mục riêng, tất cả kết quả sẽ lưu vào Download. " +
-                                "Các pipeline hỗ trợ xuất trực tiếp sẽ ghi thẳng vào đó; kết quả chưa bấm Lưu vẫn có thể tự xóa khi bị bỏ."
-                        } else {
-                            "Trên Android 7–9, hãy chọn thư mục một lần để cấp quyền lưu lâu dài."
-                        },
-                    )
                 }
 
                 SimpleDropdown(

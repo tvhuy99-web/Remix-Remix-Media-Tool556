@@ -100,11 +100,15 @@ object PendingExportStore {
         }
     }
 
-    private fun deleteDocument(context: Context, uri: Uri): Boolean = runCatching {
-        DocumentsContract.deleteDocument(context.contentResolver, uri)
-    }.recoverCatching {
-        context.contentResolver.delete(uri, null, null) > 0
-    }.getOrDefault(false)
+    private fun deleteDocument(context: Context, uri: Uri): Boolean {
+        val deletedByDocumentsContract = runCatching {
+            DocumentsContract.deleteDocument(context.contentResolver, uri)
+        }.getOrDefault(false)
+        if (deletedByDocumentsContract) return true
+        return runCatching {
+            context.contentResolver.delete(uri, null, null) > 0
+        }.getOrDefault(false)
+    }
 
     private fun documentExists(context: Context, uri: Uri): Boolean = runCatching {
         context.contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false

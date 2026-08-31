@@ -1,6 +1,7 @@
 package com.aistudio.mediatool
 
 import android.app.Application
+import com.aistudio.mediatool.core.PendingExportStore
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.ProcessExitDiagnostics
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,5 +21,10 @@ class MediaToolApplication : Application() {
         DiagnosticLogger.initialize(this)
         // Khôi phục nguyên nhân native crash hoặc low-memory kill ở lần mở kế tiếp.
         ProcessExitDiagnostics.recoverPreviousExit(this)
+        // Kết quả ghi thẳng vào SAF nhưng chưa được người dùng bấm Lưu sẽ được dọn ở lần mở sau.
+        Thread(
+            { PendingExportStore.cleanupAbandoned(this) },
+            "pending-export-cleanup",
+        ).apply { isDaemon = true }.start()
     }
 }

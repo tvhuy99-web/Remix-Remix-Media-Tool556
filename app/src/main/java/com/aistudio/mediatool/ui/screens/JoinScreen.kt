@@ -31,8 +31,10 @@ import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.AudioMath
 import com.aistudio.mediatool.core.media.MediaEngine
+import com.aistudio.mediatool.ui.components.AudioPreviewSource
 import com.aistudio.mediatool.ui.components.ResultFileActions
 import com.aistudio.mediatool.ui.components.ToolScaffold
+import com.aistudio.mediatool.ui.components.UnifiedAudioPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -293,6 +295,17 @@ fun JoinScreen(navController: NavController) {
                 }
             }
 
+            UnifiedAudioPlayer(
+                sources = selectedUris.mapIndexed { index, uri ->
+                    AudioPreviewSource(
+                        id = "$index:${uri}",
+                        label = "${index + 1}. ${DocumentUtils.displayName(context, uri)}",
+                        uri = uri,
+                    )
+                },
+                title = "Nghe thử file đã chọn",
+            )
+
             if (isProcessing || progressMsg.isNotEmpty()) {
                 Text(
                     text = progressMsg,
@@ -328,12 +341,16 @@ fun JoinScreen(navController: NavController) {
                         Spacer(modifier = Modifier.height(8.dp))
                         ResultFileActions(file = File(outputPath))
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            "▶ Nghe file kết quả:",
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 8.dp),
+                        UnifiedAudioPlayer(
+                            sources = listOf(
+                                AudioPreviewSource(
+                                    id = "joined-output",
+                                    label = "Kết quả nối",
+                                    uri = Uri.fromFile(File(outputPath)),
+                                ),
+                            ),
+                            title = "Nghe file kết quả",
                         )
-                        com.aistudio.mediatool.ui.components.VideoPlayer(uri = Uri.fromFile(File(outputPath)))
                     }
                 }
             }

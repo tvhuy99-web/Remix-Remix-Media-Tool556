@@ -1,5 +1,6 @@
 package com.aistudio.mediatool.ui.components
 
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aistudio.mediatool.core.FileExportManager
+import com.aistudio.mediatool.core.PendingExportStore
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -86,6 +88,63 @@ fun ResultFileActions(
             },
             modifier = Modifier.weight(1f),
             enabled = valid && !saving.value,
+        ) {
+            Icon(Icons.Default.Share, contentDescription = null)
+            Text(shareLabel)
+        }
+    }
+}
+
+/**
+ * Actions for a result that has already been written directly into the configured SAF folder.
+ * "Lưu" is therefore a cheap commit operation: no second copy is performed. Until committed, the
+ * owner screen may discard the URI when the user navigates away.
+ */
+@Composable
+fun PendingUriResultActions(
+    uri: Uri,
+    displayName: String,
+    mimeType: String,
+    modifier: Modifier = Modifier,
+    saveLabel: String = "Lưu",
+    shareLabel: String = "Chia sẻ",
+    onCommitted: () -> Unit = {},
+) {
+    val context = LocalContext.current
+    val initiallyPending = remember(uri) { PendingExportStore.isPending(context, uri) }
+    val committed = remember(uri) { mutableStateOf(!initiallyPending) }
+    val valid = remember(uri) { FileExportManager.contentLength(context, uri) > 0L }
+
+    Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Button(
+            onClick = {
+                runCatching { FileExportManager.commitPendingDefaultOutput(context, uri) }
+                    .onSuccess {
+                        committed.value = true
+                        onCommitted()
+                        Toast.makeText(
+                            context,
+                            "Đã giữ lại $displayName trong thư mục mặc định",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    .onFailure {
+                        Toast.makeText(context, "Không thể xác nhận lưu: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+            },
+            modifier = Modifier.weight(1f),
+            enabled = valid && !committed.value,
+        ) {
+            Icon(Icons.Default.Save, contentDescription = null)
+            Text(if (committed.value) "Đã lưu" else saveLabel)
+        }
+        OutlinedButton(
+            onClick = {
+                runCatching { FileExportManager.shareUri(context, uri, mimeType) }
+                    .onFailure { Toast.makeText(context, "Không thể chia sẻ: ${it.message}", Toast.LENGTH_LONG).show() }
+            },
+            modifier = Modifier.weight(1f),
+            enabled = valid,
         ) {
             Icon(Icons.Default.Share, contentDescription = null)
             Text(shareLabel)

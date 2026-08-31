@@ -88,8 +88,10 @@ object TrimVideoCommandBuilder {
                 append(it)
                 append("]\"")
             }
-            append(" -c:v mpeg4 -q:v 2 -pix_fmt yuv420p")
-            if (audioLabel != null) append(" -c:a aac -b:a 192k -shortest")
+            // q=2 created unnecessarily huge files on phones. q=5 is still visually high quality
+            // for an MPEG-4 fallback while reducing muxing pressure and output size substantially.
+            append(" -c:v mpeg4 -q:v 5 -pix_fmt yuv420p")
+            if (audioLabel != null) append(" -c:a aac -b:a 160k -shortest")
             append(" -max_muxing_queue_size 1024 -movflags +faststart \"")
             append(escapeQuoted(outputPath))
             append("\"")

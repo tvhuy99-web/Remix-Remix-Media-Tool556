@@ -17,19 +17,32 @@ class VideoCompressionPolicyTest {
     }
 
     @Test
-    fun `same-resolution target stays below source bitrate`() {
-        val source = 10_000_000
-        val target = VideoCompressionPolicy.targetVideoBitrate(
-            sourceBitrate = source,
+    fun `70 percent means about 70 percent total bitrate`() {
+        val sourceTotal = 7_000_000
+        val targetVideo = VideoCompressionPolicy.targetVideoBitrate(
+            sourceBitrate = sourceTotal,
+            sourceHeight = 1080,
+            outputHeight = null,
+            qualityPercent = 70,
+        )
+        val targetTotal = targetVideo + VideoCompressionPolicy.TARGET_AUDIO_BITRATE
+        assertEquals(4_900_000, targetTotal)
+    }
+
+    @Test
+    fun `100 percent targets original total bitrate`() {
+        val sourceTotal = 10_000_000
+        val targetVideo = VideoCompressionPolicy.targetVideoBitrate(
+            sourceBitrate = sourceTotal,
             sourceHeight = 1080,
             outputHeight = null,
             qualityPercent = 100,
         )
-        assertTrue(target <= (source * 0.95).toInt())
+        assertEquals(sourceTotal, targetVideo + VideoCompressionPolicy.TARGET_AUDIO_BITRATE)
     }
 
     @Test
-    fun `lower quality produces lower bitrate`() {
+    fun `lower target size produces lower bitrate`() {
         val low = VideoCompressionPolicy.targetVideoBitrate(
             sourceBitrate = 20_000_000,
             sourceHeight = 1080,
@@ -46,14 +59,7 @@ class VideoCompressionPolicyTest {
     }
 
     @Test
-    fun `downscale target is substantially below high bitrate source`() {
-        val source = 24_000_000
-        val target = VideoCompressionPolicy.targetVideoBitrate(
-            sourceBitrate = source,
-            sourceHeight = 2160,
-            outputHeight = 720,
-            qualityPercent = 80,
-        )
-        assertTrue(target < source / 2)
+    fun `target total bitrate helper follows requested ratio`() {
+        assertEquals(3_500_000, VideoCompressionPolicy.targetTotalBitrate(5_000_000, 70))
     }
 }

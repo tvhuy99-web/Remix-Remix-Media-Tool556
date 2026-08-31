@@ -1,5 +1,9 @@
 package com.aistudio.mediatool.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,8 +32,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.aistudio.mediatool.core.DocumentUtils
 import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.ml.OnnxAcceleration
+import com.aistudio.mediatool.ui.components.AccessibleSwitchRow
 import com.aistudio.mediatool.ui.components.DiagnosticReportCard
 import com.aistudio.mediatool.ui.components.ToolScaffold
 
@@ -40,13 +46,25 @@ fun SettingsScreen(navController: NavController) {
     var vidIndex by rememberSaveable { mutableStateOf(SettingsManager.getVidQualityIndex(context)) }
     var audIndex by rememberSaveable { mutableStateOf(SettingsManager.getAudBitrateIndex(context)) }
     var fmtIndex by rememberSaveable { mutableStateOf(SettingsManager.getAudFormatIndex(context)) }
+    var fadeEnabled by rememberSaveable { mutableStateOf(SettingsManager.isFadeEnabled(context)) }
     var fadeDuration by rememberSaveable { mutableStateOf(SettingsManager.getFadeDurationSec(context)) }
     var numThreadsIndex by rememberSaveable { mutableStateOf(SettingsManager.getNumThreadsIndex(context)) }
+    var defaultSaveTreeUri by rememberSaveable { mutableStateOf(SettingsManager.getDefaultSaveTreeUri(context)) }
     var showNotices by rememberSaveable { mutableStateOf(false) }
     val thirdPartyNotices = remember(context) {
         runCatching {
             context.assets.open("third_party_notices.txt").bufferedReader().use { it.readText() }
         }.getOrElse { "Không đọc được giấy phép." }
+    }
+
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(uri, flags)
+        }.onSuccess {
+            defaultSaveTreeUri = uri.toString()
+        }
     }
 
     if (showNotices) {
@@ -77,12 +95,54 @@ fun SettingsScreen(navController: NavController) {
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                SimpleDropdown(
-                    label = "Chuyển âm",
-                    values = (0..10).map { if (it == 0) "Tắt" else "$it giây" },
-                    selectedIndex = fadeDuration,
-                    onSelected = { fadeDuration = it },
+                AccessibleSwitchRow(
+                    label = "Bật chuyển âm (fade)",
+                    checked = fadeEnabled,
+                    onCheckedChange = { fadeEnabled = it },
                 )
+                if (fadeEnabled) {
+                    SimpleDropdown(
+                        label = "Thời lượng fade",
+                        values = (1..10).map { "$it giây" },
+                        selectedIndex = (fadeDuration - 1).coerceIn(0, 9),
+                        onSelected = { fadeDuration = it + 1 },
+                    )
+                    Text("Fade chỉ được áp dụng khi công tắc trên đang bật.")
+                } else {
+                    Text("Fade đang tắt. Xử lý media sẽ không tự thêm chuyển âm.")
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Thư mục lưu mặc định")
+                    Text(
+                        defaultSaveTreeUri?.let { value ->
+                            val uri = Uri.parse(value)
+                            "Đã chọn: ${DocumentUtils.displayName(context, uri)}"
+                        } ?: "Chưa chọn. Khi chưa có thư mục mặc định, nút Lưu vẫn mở hộp chọn tệp.",
+                    )
+                    Button(
+                        onClick = { folderPicker.launch(defaultSaveTreeUri?.let(Uri::parse)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (defaultSaveTreeUri == null) "Chọn thư mục lưu mặc định" else "Đổi thư mục lưu mặc định")
+                    }
+                    if (defaultSaveTreeUri != null) {
+                        OutlinedButton(
+                            onClick = { defaultSaveTreeUri = null },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Bỏ thư mục lưu mặc định")
+                        }
+                        Text(
+                            "Sau khi lưu cài đặt, nút Lưu ở các công cụ sẽ ghi thẳng vào thư mục này và không hỏi tên/vị trí nữa. " +
+                                "Các công cụ còn tạo kết quả tạm vẫn cần sao chép dữ liệu khi bạn bấm Lưu.",
+                        )
+                    }
+                }
+
                 SimpleDropdown(
                     label = "Chất lượng video",
                     values = listOf("2 Mbps", "5 Mbps", "10 Mbps", "20 Mbps", "50 Mbps"),
@@ -127,7 +187,9 @@ fun SettingsScreen(navController: NavController) {
                         SettingsManager.setVidQualityIndex(context, vidIndex)
                         SettingsManager.setAudBitrateIndex(context, audIndex)
                         SettingsManager.setAudFormatIndex(context, fmtIndex)
+                        SettingsManager.setFadeEnabled(context, fadeEnabled)
                         SettingsManager.setFadeDurationSec(context, fadeDuration)
+                        SettingsManager.setDefaultSaveTreeUri(context, defaultSaveTreeUri)
                         SettingsManager.setNumThreadsIndex(context, numThreadsIndex)
                         SettingsManager.setHardwareAccelIndex(context, OnnxAcceleration.XNNPACK.settingsIndex)
                         navController.popBackStack()

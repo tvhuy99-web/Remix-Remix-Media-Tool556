@@ -108,7 +108,13 @@ object FileExportManager {
         val displayName = resultDisplayName(baseName, extension)
         val mimeType = mimeTypeForName(displayName)
         val uri = createDefaultSaveDocument(context, displayName, mimeType)
-        PendingExportStore.register(context, uri)
+        try {
+            PendingExportStore.register(context, uri)
+        } catch (error: Throwable) {
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+                .recoverCatching { context.contentResolver.delete(uri, null, null) > 0 }
+            throw error
+        }
         return PendingDefaultOutput(uri = uri, displayName = displayName, mimeType = mimeType)
     }
 

@@ -11,6 +11,7 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -48,54 +49,54 @@ class Media3VideoTrimmer(context: Context) {
         val completion = CompletableDeferred<Result>()
         var transformer: Transformer? = null
 
-        withContext(Dispatchers.Main.immediate) {
-            val clipping = MediaItem.ClippingConfiguration.Builder()
-                .setStartPositionMs(segment.startMs)
-                .apply {
-                    segment.endMs?.let { setEndPositionMs(it) }
-                }
-                .build()
+        return try {
+            withContext(Dispatchers.Main.immediate) {
+                val clipping = MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(segment.startMs)
+                    .apply {
+                        segment.endMs?.let { setEndPositionMs(it) }
+                    }
+                    .build()
 
-            val mediaItem = MediaItem.Builder()
-                .setUri(inputUri)
-                .setClippingConfiguration(clipping)
-                .build()
-            val editedMediaItem = EditedMediaItem.Builder(mediaItem).build()
+                val mediaItem = MediaItem.Builder()
+                    .setUri(inputUri)
+                    .setClippingConfiguration(clipping)
+                    .build()
+                val editedMediaItem = EditedMediaItem.Builder(mediaItem).build()
 
-            val listener = object : Transformer.Listener {
-                override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                    if (!completion.isCompleted) {
-                        completion.complete(
-                            Result(
-                                fileSizeBytes = exportResult.fileSizeBytes,
-                                videoBitrate = exportResult.averageVideoBitrate,
-                                audioBitrate = exportResult.averageAudioBitrate,
-                                optimizationResult = exportResult.optimizationResult,
-                            ),
-                        )
+                val listener = object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        if (!completion.isCompleted) {
+                            completion.complete(
+                                Result(
+                                    fileSizeBytes = exportResult.fileSizeBytes,
+                                    videoBitrate = exportResult.averageVideoBitrate,
+                                    audioBitrate = exportResult.averageAudioBitrate,
+                                    optimizationResult = exportResult.optimizationResult,
+                                ),
+                            )
+                        }
+                    }
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exportException: ExportException,
+                    ) {
+                        if (!completion.isCompleted) completion.completeExceptionally(exportException)
                     }
                 }
 
-                override fun onError(
-                    composition: Composition,
-                    exportResult: ExportResult,
-                    exportException: ExportException,
-                ) {
-                    if (!completion.isCompleted) completion.completeExceptionally(exportException)
-                }
+                transformer = Transformer.Builder(appContext)
+                    .experimentalSetTrimOptimizationEnabled(true)
+                    .addListener(listener)
+                    .build()
+                transformer?.start(editedMediaItem, outputFile.absolutePath)
             }
 
-            transformer = Transformer.Builder(appContext)
-                .experimentalSetTrimOptimizationEnabled(true)
-                .addListener(listener)
-                .build()
-            transformer?.start(editedMediaItem, outputFile.absolutePath)
-        }
-
-        return try {
             completion.await()
         } catch (error: Throwable) {
-            withContext(Dispatchers.Main.immediate) {
+            withContext(NonCancellable + Dispatchers.Main.immediate) {
                 transformer?.cancel()
             }
             outputFile.delete()

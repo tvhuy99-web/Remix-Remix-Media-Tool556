@@ -56,10 +56,9 @@ import com.aistudio.mediatool.core.GetContentWithMimeTypes
 import com.aistudio.mediatool.core.SettingsManager
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.AudioMath
-import com.aistudio.mediatool.core.media.Media3VideoTrimmer
 import com.aistudio.mediatool.core.media.MediaEngine
 import com.aistudio.mediatool.core.media.TimelineSegments
-import com.aistudio.mediatool.core.media.TrimVideoCommandBuilder
+import com.aistudio.mediatool.core.media.VideoTrimCoordinator
 import com.aistudio.mediatool.ui.components.ResultFileActions
 import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.VideoPlayer
@@ -68,7 +67,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,7 +74,7 @@ fun TrimScreen(navController: NavController) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val mediaEngine = remember { MediaEngine(context) }
-    val media3VideoTrimmer = remember { Media3VideoTrimmer(context) }
+    val videoTrimCoordinator = remember { VideoTrimCoordinator(context, mediaEngine) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -159,14 +157,20 @@ fun TrimScreen(navController: NavController) {
                     }
                 }
                 if (!isAudio) {
-                    require(metadataRead.isSuccess && sourceHasVideo) { "Tệp đã chọn không có luồng video hợp lệ" }
-                    require(sourceDurationSec > 0.0) { "Không đọc được thời lượng video nguồn" }
+                    require(metadataRead.isSuccess && sourceHasVideo) {
+                        "Tệp đã chọn không có luồng video hợp lệ"
+                    }
+                    require(sourceDurationSec > 0.0) {
+                        "Không đọc được thời lượng video nguồn"
+                    }
                 }
 
                 parsedSegments.forEachIndexed { index, segment ->
                     val startSec = segment.startMs / 1000.0
                     val endSec = segment.endMs?.div(1000.0)
-                    require(startSec >= 0.0) { "Mốc bắt đầu đoạn ${index + 1} không hợp lệ" }
+                    require(startSec >= 0.0) {
+                        "Mốc bắt đầu đoạn ${index + 1} không hợp lệ"
+                    }
                     if (sourceDurationSec > 0.0) {
                         require(startSec < sourceDurationSec) {
                             "Mốc bắt đầu đoạn ${index + 1} nằm ngoài thời lượng tệp"
@@ -191,94 +195,17 @@ fun TrimScreen(navController: NavController) {
                 pendingOutput = outputFile
 
                 if (!isAudio) {
-                    val requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble()
-                    val canUseOptimizedTrim = parsedSegments.size == 1 && (!sourceHasAudio || requestedFadeSec <= 0.0)
-                    var videoCompleted = false
-
-                    if (canUseOptimizedTrim) {
+                    videoTrimCoordinator.trim(
+                        inputUri = inputUri,
+                        outputFile = outputFile,
+                        segments = parsedSegments,
+                        sourceDurationSec = sourceDurationSec,
+                        sourceHasAudio = sourceHasAudio,
+                        requestedFadeSec = SettingsManager.getFadeDurationSec(context).toDouble(),
+                    ) { message ->
                         withContext(Dispatchers.Main) {
-                            progressMsg = "Đang cắt video nhanh..."
+                            progressMsg = message
                         }
-                        try {
-                            val result = media3VideoTrimmer.trim(
-                                inputUri = inputUri,
-                                outputFile = outputFile,
-                                segment = parsedSegments.single(),
-                            )
-                            validateVideoOutput(outputFile, totalDurationSec)
-                            videoCompleted = true
-                            DiagnosticLogger.info(
-                                component = "TrimScreen",
-                                event = "video_trim_media3_success",
-                                fields = mapOf(
-                                    "output_bytes" to outputFile.length(),
-                                    "reported_bytes" to result.fileSizeBytes,
-                                    "video_bitrate" to result.videoBitrate,
-                                    "audio_bitrate" to result.audioBitrate,
-                                    "optimization_result" to result.optimizationResult,
-                                    "expected_duration_ms" to (totalDurationSec * 1000.0).toLong(),
-                                ),
-                            )
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Exception) {
-                            outputFile.delete()
-                            DiagnosticLogger.warn(
-                                component = "TrimScreen",
-                                event = "video_trim_media3_fallback",
-                                message = "Media3 trim không hoàn tất; chuyển sang FFmpeg tương thích",
-                                fields = mapOf(
-                                    "segments" to parsedSegments.size,
-                                    "expected_duration_ms" to (totalDurationSec * 1000.0).toLong(),
-                                ),
-                                error = error,
-                            )
-                            withContext(Dispatchers.Main) {
-                                progressMsg = "Đang chuyển sang cắt video tương thích..."
-                            }
-                        }
-                    }
-
-                    if (!videoCompleted) {
-                        val safPath = mediaEngine.getSafParameter(inputUri)
-                            ?: error("Không thể mở tệp đã chọn")
-                        val built = TrimVideoCommandBuilder.build(
-                            inputPath = safPath,
-                            outputPath = outputFile.absolutePath,
-                            segments = parsedSegments,
-                            sourceDurationSec = sourceDurationSec,
-                            sourceHasAudio = sourceHasAudio,
-                            requestedFadeSec = requestedFadeSec,
-                        )
-                        var succeeded = false
-                        mediaEngine.executeFFmpegCommand(
-                            built.command,
-                            diagnosticPhase = "trim_video_ffmpeg_fallback",
-                        ).collect { state ->
-                            when (state) {
-                                is MediaEngine.ExecutionState.Progress -> withContext(Dispatchers.Main) {
-                                    progressMsg = "Đang cắt video tương thích..."
-                                }
-                                is MediaEngine.ExecutionState.Success -> succeeded = true
-                                is MediaEngine.ExecutionState.Error -> withContext(Dispatchers.Main) {
-                                    progressMsg = "Không thể cắt video (mã ${state.returnCode})"
-                                }
-                                else -> Unit
-                            }
-                        }
-                        require(succeeded && outputFile.isFile && outputFile.length() > 0L) {
-                            "FFmpeg không tạo được video kết quả"
-                        }
-                        validateVideoOutput(outputFile, built.expectedDurationSec)
-                        DiagnosticLogger.info(
-                            component = "TrimScreen",
-                            event = "video_trim_ffmpeg_success",
-                            fields = mapOf(
-                                "output_bytes" to outputFile.length(),
-                                "segments" to parsedSegments.size,
-                                "expected_duration_ms" to (built.expectedDurationSec * 1000.0).toLong(),
-                            ),
-                        )
                     }
                 } else {
                     val safPath = mediaEngine.getSafParameter(inputUri)
@@ -286,6 +213,7 @@ fun TrimScreen(navController: NavController) {
                     val audioEncodingArgs = SettingsManager.getAudioEncodingArgs(context)
                     workDir = File(context.cacheDir, "trim_work_${System.currentTimeMillis()}").apply { mkdirs() }
                     val parts = mutableListOf<File>()
+
                     for ((index, segment) in parsedSegments.withIndex()) {
                         val startSec = segment.startMs / 1000.0
                         val endSec = segment.endMs?.div(1000.0)
@@ -383,7 +311,9 @@ fun TrimScreen(navController: NavController) {
                                 else -> Unit
                             }
                         }
-                        require(faded) { "Không thể áp dụng hiệu ứng fade" }
+                        require(faded) {
+                            "Không thể áp dụng hiệu ứng fade"
+                        }
                     } else if (!combinedFile.renameTo(outputFile)) {
                         combinedFile.copyTo(outputFile, overwrite = true)
                     }
@@ -444,6 +374,7 @@ fun TrimScreen(navController: NavController) {
             ) {
                 Text("Chọn file cần cắt")
             }
+
             Text(
                 text = "File: $fileName",
                 modifier = Modifier.fillMaxWidth(),
@@ -558,6 +489,7 @@ fun TrimScreen(navController: NavController) {
             }
 
             Divider(modifier = Modifier.padding(vertical = 8.dp))
+
             if (isProcessing || progressMsg.isNotEmpty()) {
                 Text(
                     text = progressMsg,
@@ -572,6 +504,7 @@ fun TrimScreen(navController: NavController) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
             }
+
             Button(
                 onClick = { startTrim() },
                 enabled = !isProcessing && selectedUri != null,
@@ -605,43 +538,5 @@ fun TrimScreen(navController: NavController) {
                 }
             }
         }
-    }
-}
-
-private fun validateVideoOutput(file: File, expectedDurationSec: Double) {
-    require(file.isFile && file.length() > 0L) {
-        "Video kết quả không tồn tại hoặc đang rỗng"
-    }
-    val retriever = MediaMetadataRetriever()
-    try {
-        retriever.setDataSource(file.absolutePath)
-        val hasVideo = retriever
-            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)
-            .equals("yes", true)
-        val durationMs = retriever
-            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-            ?.toLongOrNull() ?: 0L
-        val width = retriever
-            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-            ?.toIntOrNull() ?: 0
-        val height = retriever
-            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-            ?.toIntOrNull() ?: 0
-        require(hasVideo && width > 0 && height > 0) {
-            "Video kết quả không có luồng hình hợp lệ"
-        }
-        require(durationMs > 0L) {
-            "Video kết quả không có thời lượng hợp lệ"
-        }
-        if (expectedDurationSec > 0.0) {
-            val actualSec = durationMs / 1000.0
-            val toleranceSec = maxOf(1.0, expectedDurationSec * 0.08)
-            require(abs(actualSec - expectedDurationSec) <= toleranceSec) {
-                "Thời lượng video kết quả sai: mong đợi khoảng %.2f giây, nhận %.2f giây"
-                    .format(expectedDurationSec, actualSec)
-            }
-        }
-    } finally {
-        retriever.release()
     }
 }

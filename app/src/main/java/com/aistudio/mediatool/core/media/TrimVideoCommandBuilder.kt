@@ -15,6 +15,7 @@ object TrimVideoCommandBuilder {
         sourceDurationSec: Double,
         sourceHasAudio: Boolean,
         requestedFadeSec: Double,
+        outputFormat: String? = null,
     ): Result {
         require(segments.isNotEmpty()) { "Cần ít nhất một đoạn video" }
         require(sourceDurationSec.isFinite() && sourceDurationSec > 0.0) {
@@ -92,7 +93,12 @@ object TrimVideoCommandBuilder {
             // for an MPEG-4 fallback while reducing muxing pressure and output size substantially.
             append(" -c:v mpeg4 -q:v 5 -pix_fmt yuv420p")
             if (audioLabel != null) append(" -c:a aac -b:a 160k -shortest")
-            append(" -max_muxing_queue_size 1024 -movflags +faststart \"")
+            append(" -max_muxing_queue_size 1024 -movflags +faststart")
+            outputFormat?.trim()?.takeIf { it.isNotEmpty() }?.let { format ->
+                append(" -f ")
+                append(format)
+            }
+            append(" \"")
             append(escapeQuoted(outputPath))
             append("\"")
         }

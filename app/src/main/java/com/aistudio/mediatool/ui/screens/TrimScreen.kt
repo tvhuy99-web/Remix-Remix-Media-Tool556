@@ -24,6 +24,7 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +49,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.media3.common.C
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.navigation.NavController
 import com.aistudio.mediatool.core.DocumentUtils
@@ -64,6 +67,9 @@ import com.aistudio.mediatool.ui.components.ToolScaffold
 import com.aistudio.mediatool.ui.components.VideoPlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -90,14 +96,74 @@ fun TrimScreen(navController: NavController) {
     var progressMsg by remember { mutableStateOf("") }
     var hasOutput by rememberSaveable { mutableStateOf(false) }
     var outputPath by rememberSaveable { mutableStateOf("") }
+    var selectedPreviewJob by remember { mutableStateOf<Job?>(null) }
+    var isPreviewingSelection by remember { mutableStateOf(false) }
 
     fun dismissKeyboard() {
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
     }
 
+    fun stopSelectedPreview() {
+        selectedPreviewJob?.cancel()
+        selectedPreviewJob = null
+        exoPlayer?.pause()
+        isPreviewingSelection = false
+    }
+
+    fun previewSelectedSegments() {
+        dismissKeyboard()
+        if (isPreviewingSelection) {
+            stopSelectedPreview()
+            return
+        }
+        val player = exoPlayer ?: run {
+            Toast.makeText(context, "Trình phát chưa sẵn sàng", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val parsedTimeline = TimelineSegments.parse(startMs, endMs)
+        val segments = parsedTimeline.segments
+        if (segments == null || parsedTimeline.error != null || segments.isEmpty()) {
+            Toast.makeText(
+                context,
+                parsedTimeline.error ?: "Hãy chọn ít nhất một đoạn hợp lệ để nghe thử",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+
+        selectedPreviewJob = coroutineScope.launch {
+            isPreviewingSelection = true
+            try {
+                player.pause()
+                for (segment in segments) {
+                    if (!isActive) break
+                    val start = segment.startMs.coerceAtLeast(0L)
+                    val explicitEnd = segment.endMs?.takeIf { it > start }
+                    player.seekTo(start)
+                    player.play()
+
+                    while (isActive) {
+                        val knownDuration = player.duration
+                            .takeIf { it != C.TIME_UNSET && it > 0L }
+                        val end = explicitEnd ?: knownDuration
+                        if (end != null && player.currentPosition >= end - 40L) break
+                        if (player.playbackState == Player.STATE_ENDED) break
+                        delay(40L)
+                    }
+                    player.pause()
+                }
+            } finally {
+                runCatching { player.pause() }
+                isPreviewingSelection = false
+                selectedPreviewJob = null
+            }
+        }
+    }
+
     val launcher = rememberLauncherForActivityResult(GetContentWithMimeTypes()) { uri: Uri? ->
         uri?.let {
+            stopSelectedPreview()
             DocumentUtils.persistReadPermission(context, it)
             selectedUriText = it.toString()
             fileName = DocumentUtils.displayName(context, it)
@@ -110,6 +176,7 @@ fun TrimScreen(navController: NavController) {
     }
 
     fun startTrim() {
+        stopSelectedPreview()
         dismissKeyboard()
         val inputUri = selectedUri ?: run {
             Toast.makeText(context, "Vui lòng chọn file", Toast.LENGTH_SHORT).show()
@@ -354,7 +421,10 @@ fun TrimScreen(navController: NavController) {
 
     ToolScaffold(
         title = "Cắt audio / video",
-        onNavigateBack = { navController.popBackStack() },
+        onNavigateBack = {
+            stopSelectedPreview()
+            navController.popBackStack()
+        },
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -484,6 +554,28 @@ fun TrimScreen(navController: NavController) {
                         ) {
                             Text("Lấy mốc hiện tại")
                         }
+                    }
+
+                    OutlinedButton(
+                        onClick = ::previewSelectedSegments,
+                        enabled = selectedUri != null && !isProcessing,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics {
+                                contentDescription = if (isPreviewingSelection) {
+                                    "Dừng nghe thử các đoạn đang chọn"
+                                } else {
+                                    "Nghe thử đúng các đoạn đang chọn trước khi cắt"
+                                }
+                            },
+                    ) {
+                        Text(
+                            if (isPreviewingSelection) {
+                                "Dừng nghe thử đoạn đã chọn"
+                            } else {
+                                "Nghe thử đoạn đã chọn"
+                            },
+                        )
                     }
                 }
             }

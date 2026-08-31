@@ -8,7 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -213,11 +215,12 @@ class MediaProcessingForegroundService : Service() {
         private const val TAG = "MediaProcessingForegroundService"
         private const val CHANNEL_ID = "media_processing_background"
         private const val NOTIFICATION_ID = 2406
+        private val mainHandler = Handler(Looper.getMainLooper())
         @Volatile private var instance: MediaProcessingForegroundService? = null
 
         fun requestRefresh() {
             val service = instance ?: return
-            service.mainExecutor.execute { service.renderNotification() }
+            mainHandler.post { if (instance === service) service.renderNotification() }
         }
     }
 }

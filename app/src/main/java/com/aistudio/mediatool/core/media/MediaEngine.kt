@@ -13,7 +13,10 @@ import com.arthenica.ffmpegkit.FFmpegKitConfig
 import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.ReturnCode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -303,6 +306,11 @@ class MediaEngine(private val context: Context) {
      * OtherScreen mode 4 used a full software MPEG-4 encode. For a full-file compression request,
      * transparently replace that route with Media3/MediaCodec while preserving OtherScreen's
      * existing progress/result contract. Short 10-second previews intentionally stay on FFmpeg.
+     *
+     * The hardware export itself deliberately runs in an application-owned scope. Closing the UI
+     * observer (for example when the Activity is stopped/recreated after Home) must not cancel an
+     * hours-long export. The foreground service and wake lock are released only by the export's own
+     * terminal path, not by callbackFlow.awaitClose.
      */
     private fun executeHardwareVideoCompression(
         originalCommand: String,
@@ -322,7 +330,7 @@ class MediaEngine(private val context: Context) {
                 sessionId = taskId,
                 message = "Không xác định được URI nguồn hoặc đường dẫn đầu ra; dùng FFmpeg dự phòng",
             )
-            val fallback = launch {
+            val fallback = hardwareCompressionScope.launch {
                 executeNativeFFmpegCommand(
                     originalCommand,
                     "${diagnosticPhase}_software_fallback",
@@ -330,7 +338,14 @@ class MediaEngine(private val context: Context) {
                 ).collect { state -> trySend(state) }
                 close()
             }
-            awaitClose { fallback.cancel() }
+            awaitClose {
+                DiagnosticLogger.info(
+                    component = TAG,
+                    event = "hardware_compression_observer_detached",
+                    sessionId = taskId,
+                    fields = mapOf("fallback_active" to fallback.isActive),
+                )
+            }
             return@callbackFlow
         }
 
@@ -345,7 +360,7 @@ class MediaEngine(private val context: Context) {
         keepAliveHeld.set(true)
         trySend(ExecutionState.Connecting)
 
-        val job = launch {
+        val job = hardwareCompressionScope.launch {
             try {
                 val metadata = readVideoCompressionMetadata(inputUri)
                 val requestedHeight = TARGET_HEIGHT_REGEX.find(originalCommand)
@@ -463,8 +478,18 @@ class MediaEngine(private val context: Context) {
         }
 
         awaitClose {
-            if (job.isActive) job.cancel()
-            releaseKeepAlive("hardware_compression_collector_closed")
+            // Deliberately do not cancel [job] here. The UI is only an observer of this export.
+            // The application-owned scope + foreground service keep the actual compression alive.
+            DiagnosticLogger.info(
+                component = TAG,
+                event = "hardware_compression_observer_detached",
+                sessionId = taskId,
+                fields = mapOf(
+                    "elapsed_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                    "job_active" to job.isActive,
+                    "output_bytes" to outputFile.length().coerceAtLeast(0L),
+                ),
+            )
         }
     }
 
@@ -584,6 +609,7 @@ class MediaEngine(private val context: Context) {
         private const val TAG = "MediaEngine"
         private const val MAX_REGISTERED_READ_URIS = 32
         private const val VIDEO_COMPRESSION_PHASE = "other_video_mode_4"
+        private val hardwareCompressionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val INPUT_PATH_REGEX = Regex("-i\\s+\\\"([^\\\"]+)\\\"")
         private val OUTPUT_PATH_REGEX = Regex("\\\"([^\\\"]+)\\\"\\s*$")
         private val TARGET_HEIGHT_REGEX = Regex("scale=-2:(720|480)")

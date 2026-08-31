@@ -1,6 +1,7 @@
 package com.aistudio.mediatool.core.media
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
@@ -51,14 +52,24 @@ class Media3VideoCompressor(context: Context) {
         outputFile.parentFile?.mkdirs()
         outputFile.delete()
 
+        // An explicit Presentation effect forces video frames through the hardware encoder even
+        // when the requested resolution equals the source. Without it, an already-H.264 source may
+        // be transmuxed and ignore the requested compression bitrate.
+        val presentationHeight = targetHeight ?: readSourceHeight(inputUri)
+        require(presentationHeight > 0) { "Không đọc được độ phân giải video nguồn" }
+
         val completion = CompletableDeferred<Result>()
         var transformer: Transformer? = null
 
         return try {
             withContext(Dispatchers.Main.immediate) {
-                val videoEffects = targetHeight?.let { listOf(Presentation.createForHeight(it)) }.orEmpty()
                 val editedMediaItem = EditedMediaItem.Builder(MediaItem.fromUri(inputUri))
-                    .setEffects(Effects(emptyList(), videoEffects))
+                    .setEffects(
+                        Effects(
+                            emptyList(),
+                            listOf(Presentation.createForHeight(presentationHeight)),
+                        ),
+                    )
                     .build()
 
                 val encoderFactory = DefaultEncoderFactory.Builder(appContext)
@@ -127,6 +138,17 @@ class Media3VideoCompressor(context: Context) {
             }
             outputFile.delete()
             throw error
+        }
+    }
+
+    private fun readSourceHeight(uri: Uri): Int {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(appContext, uri)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull() ?: 0
+        } finally {
+            retriever.release()
         }
     }
 

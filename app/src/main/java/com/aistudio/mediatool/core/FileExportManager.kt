@@ -3,6 +3,7 @@ package com.aistudio.mediatool.core
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.core.content.FileProvider
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
@@ -43,6 +44,71 @@ object FileExportManager {
                 ),
                 error = error,
             )
+            throw error
+        }
+    }
+
+    fun hasDefaultSaveLocation(context: Context): Boolean =
+        SettingsManager.getDefaultSaveTreeUri(context) != null
+
+    /**
+     * Creates a child document in the persisted default tree. This removes the repeated
+     * CreateDocument picker. Existing processors may still need to copy their private-cache
+     * result into this URI; processors that can write SAF directly can use [createDefaultSaveDocument]
+     * before processing and avoid that second copy entirely.
+     */
+    fun createDefaultSaveDocument(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+    ): Uri {
+        val treeUri = SettingsManager.getDefaultSaveTreeUri(context)
+            ?.let(Uri::parse)
+            ?: error("Chưa chọn thư mục lưu mặc định trong Cài đặt")
+        val safeName = DocumentUtils.sanitizeFileName(displayName).ifBlank { "result" }
+        try {
+            val treeDocumentId = DocumentsContract.getTreeDocumentId(treeUri)
+            val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocumentId)
+            return DocumentsContract.createDocument(
+                context.contentResolver,
+                parentUri,
+                mimeType,
+                safeName,
+            ) ?: error("Không thể tạo tệp trong thư mục lưu mặc định")
+        } catch (error: Exception) {
+            DiagnosticLogger.error(
+                component = "FileExportManager",
+                event = "default_save_create_failed",
+                message = error.message,
+                fields = mapOf(
+                    "tree_id" to DiagnosticRedactor.stableId(treeUri.toString()),
+                    "extension" to safeName.substringAfterLast('.', ""),
+                ),
+                error = error,
+            )
+            throw IllegalStateException(
+                "Không thể dùng thư mục lưu mặc định. Hãy chọn lại thư mục trong Cài đặt.",
+                error,
+            )
+        }
+    }
+
+    suspend fun saveToDefaultLocation(context: Context, source: File): Uri = withContext(Dispatchers.IO) {
+        val destination = createDefaultSaveDocument(context, source.name, mimeTypeFor(source))
+        try {
+            copyToUri(context, source, destination)
+            DiagnosticLogger.info(
+                component = "FileExportManager",
+                event = "default_save_success",
+                fields = mapOf(
+                    "destination_id" to DiagnosticRedactor.stableId(destination.toString()),
+                    "extension" to source.extension,
+                    "bytes" to source.length(),
+                ),
+            )
+            destination
+        } catch (error: Throwable) {
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, destination) }
             throw error
         }
     }

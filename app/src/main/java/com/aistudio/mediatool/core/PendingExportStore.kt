@@ -21,7 +21,9 @@ object PendingExportStore {
             val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val next = prefs.getStringSet(KEY_URIS, emptySet()).orEmpty().toMutableSet()
             next += uri.toString()
-            prefs.edit().putStringSet(KEY_URIS, next).apply()
+            check(prefs.edit().putStringSet(KEY_URIS, next).commit()) {
+                "Không thể ghi trạng thái tệp chờ lưu"
+            }
         }
         DiagnosticLogger.info(
             component = "PendingExportStore",
@@ -91,7 +93,9 @@ object PendingExportStore {
             val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val next = prefs.getStringSet(KEY_URIS, emptySet()).orEmpty().toMutableSet()
             if (next.remove(uri.toString())) {
-                prefs.edit().putStringSet(KEY_URIS, next).apply()
+                check(prefs.edit().putStringSet(KEY_URIS, next).commit()) {
+                    "Không thể cập nhật trạng thái tệp chờ lưu"
+                }
             }
         }
     }

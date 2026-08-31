@@ -8,6 +8,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Presentation
+import androidx.media3.transformer.AudioEncoderSettings
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
@@ -26,8 +27,8 @@ import java.io.File
 
 /**
  * Hardware-first video compressor backed by Android MediaCodec through Media3 Transformer.
- * The requested bitrate is explicit so the compression slider controls output size instead of
- * mapping to the very slow software MPEG-4 qscale path previously used by OtherScreen.
+ * Video and audio bitrates are requested explicitly so the percentage shown in the UI maps to
+ * an understandable target output-size ratio instead of an opaque quality score.
  */
 @OptIn(UnstableApi::class)
 class Media3VideoCompressor(context: Context) {
@@ -77,6 +78,11 @@ class Media3VideoCompressor(context: Context) {
                     .setRequestedVideoEncoderSettings(
                         VideoEncoderSettings.Builder()
                             .setBitrate(targetVideoBitrate)
+                            .build(),
+                    )
+                    .setRequestedAudioEncoderSettings(
+                        AudioEncoderSettings.Builder()
+                            .setBitrate(VideoCompressionPolicy.TARGET_AUDIO_BITRATE)
                             .build(),
                     )
                     .build()

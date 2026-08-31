@@ -1,5 +1,8 @@
 package com.aistudio.mediatool.ui.components
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -15,6 +18,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -34,8 +38,21 @@ fun ResultFileActions(
     shareLabel: String = "Chia sẻ",
 ) {
     val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
     val scope = rememberCoroutineScope()
-    val saving = remember { mutableStateOf(false) }
+    val saving = remember(file.absolutePath) { mutableStateOf(false) }
+    val committed = remember(file.absolutePath) { mutableStateOf(false) }
+
+    DisposableEffect(file.absolutePath) {
+        onDispose {
+            // Navigation away means the result was abandoned. Configuration recreation is not a
+            // user discard, so keep the file across rotation and let the restored UI own it.
+            if (!committed.value && activity?.isChangingConfigurations != true) {
+                runCatching { file.delete() }
+            }
+        }
+    }
+
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(FileExportManager.mimeTypeFor(file)),
     ) { destination ->
@@ -43,7 +60,10 @@ fun ResultFileActions(
         scope.launch {
             saving.value = true
             runCatching { FileExportManager.copyToUri(context, file, destination) }
-                .onSuccess { Toast.makeText(context, "Đã lưu ${file.name}", Toast.LENGTH_SHORT).show() }
+                .onSuccess {
+                    committed.value = true
+                    Toast.makeText(context, "Đã lưu ${file.name}", Toast.LENGTH_SHORT).show()
+                }
                 .onFailure { Toast.makeText(context, "Không thể lưu: ${it.message}", Toast.LENGTH_LONG).show() }
             saving.value = false
         }
@@ -55,6 +75,7 @@ fun ResultFileActions(
                 saving.value = true
                 runCatching { FileExportManager.saveToDefaultLocation(context, file) }
                     .onSuccess {
+                        committed.value = true
                         Toast.makeText(
                             context,
                             "Đã lưu ${file.name} vào thư mục mặc định",
@@ -76,10 +97,16 @@ fun ResultFileActions(
         Button(
             onClick = ::saveResult,
             modifier = Modifier.weight(1f),
-            enabled = valid && !saving.value,
+            enabled = valid && !saving.value && !committed.value,
         ) {
             Icon(Icons.Default.Save, contentDescription = null)
-            Text(if (saving.value) "Đang lưu…" else saveLabel)
+            Text(
+                when {
+                    committed.value -> "Đã lưu"
+                    saving.value -> "Đang lưu…"
+                    else -> saveLabel
+                },
+            )
         }
         OutlinedButton(
             onClick = {
@@ -98,7 +125,7 @@ fun ResultFileActions(
 /**
  * Actions for a result that has already been written directly into the configured SAF folder.
  * "Lưu" is therefore a cheap commit operation: no second copy is performed. Until committed, the
- * owner screen may discard the URI when the user navigates away.
+ * result is deleted when its result UI is abandoned, with a persisted startup cleanup as backup.
  */
 @Composable
 fun PendingUriResultActions(
@@ -111,9 +138,18 @@ fun PendingUriResultActions(
     onCommitted: () -> Unit = {},
 ) {
     val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
     val initiallyPending = remember(uri) { PendingExportStore.isPending(context, uri) }
     val committed = remember(uri) { mutableStateOf(!initiallyPending) }
     val valid = remember(uri) { FileExportManager.contentLength(context, uri) > 0L }
+
+    DisposableEffect(uri) {
+        onDispose {
+            if (!committed.value && activity?.isChangingConfigurations != true) {
+                FileExportManager.discardPendingDefaultOutput(context, uri)
+            }
+        }
+    }
 
     Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Button(
@@ -150,4 +186,10 @@ fun PendingUriResultActions(
             Text(shareLabel)
         }
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

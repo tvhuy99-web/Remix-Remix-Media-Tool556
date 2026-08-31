@@ -47,7 +47,7 @@ fun SettingsScreen(navController: NavController) {
     var audIndex by rememberSaveable { mutableStateOf(SettingsManager.getAudBitrateIndex(context)) }
     var fmtIndex by rememberSaveable { mutableStateOf(SettingsManager.getAudFormatIndex(context)) }
     var fadeEnabled by rememberSaveable { mutableStateOf(SettingsManager.isFadeEnabled(context)) }
-    var fadeDuration by rememberSaveable { mutableStateOf(SettingsManager.getFadeDurationSec(context)) }
+    var fadeDuration by rememberSaveable { mutableStateOf(SettingsManager.getConfiguredFadeDurationSec(context)) }
     var numThreadsIndex by rememberSaveable { mutableStateOf(SettingsManager.getNumThreadsIndex(context)) }
     var defaultSaveTreeUri by rememberSaveable { mutableStateOf(SettingsManager.getDefaultSaveTreeUri(context)) }
     var showNotices by rememberSaveable { mutableStateOf(false) }

@@ -38,20 +38,9 @@ fun ResultFileActions(
     shareLabel: String = "Chia sẻ",
 ) {
     val context = LocalContext.current
-    val activity = remember(context) { context.findActivity() }
     val scope = rememberCoroutineScope()
     val saving = remember(file.absolutePath) { mutableStateOf(false) }
     val committed = remember(file.absolutePath) { mutableStateOf(false) }
-
-    DisposableEffect(file.absolutePath) {
-        onDispose {
-            // Navigation away means the result was abandoned. Configuration recreation is not a
-            // user discard, so keep the file across rotation and let the restored UI own it.
-            if (!committed.value && activity?.isChangingConfigurations != true) {
-                runCatching { file.delete() }
-            }
-        }
-    }
 
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(FileExportManager.mimeTypeFor(file)),
@@ -124,8 +113,8 @@ fun ResultFileActions(
 
 /**
  * Actions for a result that has already been written directly into the configured SAF folder.
- * "Lưu" is therefore a cheap commit operation: no second copy is performed. Until committed, the
- * result is deleted when its result UI is abandoned, with a persisted startup cleanup as backup.
+ * "Lưu" is a cheap commit operation: no second copy is performed. Until committed, the result is
+ * deleted when its result UI is abandoned, with a persisted startup cleanup as backup.
  */
 @Composable
 fun PendingUriResultActions(

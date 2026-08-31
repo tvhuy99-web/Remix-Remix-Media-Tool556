@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -23,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
@@ -39,6 +41,12 @@ fun VideoPlayer(
     onPlayerReady: (ExoPlayer) -> Unit = {},
 ) {
     val context = LocalContext.current
+    val isAudioOnly = remember(uri) {
+        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull().orEmpty()
+        val value = uri.toString().lowercase()
+        mime.startsWith("audio/") || listOf(".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".opus")
+            .any { value.substringBefore('?').endsWith(it) }
+    }
     val exoPlayer = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(uri))
@@ -69,23 +77,32 @@ fun VideoPlayer(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        AndroidView(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(250.dp),
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false
-                    isFocusable = false
-                    importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                }
-            },
-            update = { playerView ->
-                playerView.player = exoPlayer
-                playerView.useController = false
-            },
-        )
+        if (isAudioOnly) {
+            Text(
+                text = "Nghe thử tệp âm thanh đã chọn",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(250.dp),
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exoPlayer
+                        useController = false
+                        isFocusable = false
+                        importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }
+                },
+                update = { playerView ->
+                    playerView.player = exoPlayer
+                    playerView.useController = false
+                },
+            )
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -111,10 +128,16 @@ fun VideoPlayer(
                 modifier = Modifier
                     .weight(1f)
                     .semantics {
-                        contentDescription = if (isPlaying) "Tạm dừng" else "Phát"
+                        contentDescription = if (isPlaying) {
+                            if (isAudioOnly) "Tạm dừng nghe thử" else "Tạm dừng"
+                        } else {
+                            if (isAudioOnly) "Nghe thử" else "Phát"
+                        }
                     },
             ) {
-                Text(if (isPlaying) "Tạm dừng" else "Phát")
+                Text(
+                    if (isPlaying) "Tạm dừng" else if (isAudioOnly) "Nghe thử" else "Phát",
+                )
             }
 
             OutlinedButton(
@@ -141,7 +164,7 @@ fun VideoPlayer(
             modifier = Modifier
                 .fillMaxWidth()
                 .semantics {
-                    contentDescription = "Vị trí phát"
+                    contentDescription = if (isAudioOnly) "Vị trí nghe thử" else "Vị trí phát"
                     stateDescription = "${formatPlayerDuration(positionMs)} trên ${formatPlayerDuration(durationMs)}"
                 },
         )

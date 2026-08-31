@@ -9,6 +9,7 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
 import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.diagnostics.DiagnosticRedactor
@@ -171,15 +172,13 @@ object FileExportManager {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.Q)
     private fun createSystemDownloadDocument(
         context: Context,
         displayName: String,
         mimeType: String,
         pending: Boolean,
     ): Uri {
-        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            "MediaStore Download yêu cầu Android 10 trở lên"
-        }
         val safeName = DocumentUtils.sanitizeFileName(displayName).ifBlank { "result" }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)

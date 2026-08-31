@@ -111,8 +111,7 @@ object FileExportManager {
         try {
             PendingExportStore.register(context, uri)
         } catch (error: Throwable) {
-            runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
-                .recoverCatching { context.contentResolver.delete(uri, null, null) > 0 }
+            PendingExportStore.discard(context, uri)
             throw error
         }
         return PendingDefaultOutput(uri = uri, displayName = displayName, mimeType = mimeType)

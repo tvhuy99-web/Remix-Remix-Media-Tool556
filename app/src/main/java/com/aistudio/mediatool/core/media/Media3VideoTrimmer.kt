@@ -68,8 +68,8 @@ class Media3VideoTrimmer(context: Context) {
                         completion.complete(
                             Result(
                                 fileSizeBytes = exportResult.fileSizeBytes,
-                                videoBitrate = exportResult.videoBitrate,
-                                audioBitrate = exportResult.audioBitrate,
+                                videoBitrate = exportResult.averageVideoBitrate,
+                                audioBitrate = exportResult.averageAudioBitrate,
                                 optimizationResult = exportResult.optimizationResult,
                             ),
                         )

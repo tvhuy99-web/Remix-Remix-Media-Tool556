@@ -19,12 +19,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.platform.LocalContext
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -142,12 +142,12 @@ fun VideoPlayer(
                 .fillMaxWidth()
                 .semantics {
                     contentDescription = "Vị trí phát"
-                    stateDescription = "${formatDuration(positionMs)} trên ${formatDuration(durationMs)}"
+                    stateDescription = "${formatPlayerDuration(positionMs)} trên ${formatPlayerDuration(durationMs)}"
                 },
         )
 
         Text(
-            text = "${formatDuration(positionMs)} / ${formatDuration(durationMs)}",
+            text = "${formatPlayerDuration(positionMs)} / ${formatPlayerDuration(durationMs)}",
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -155,8 +155,8 @@ fun VideoPlayer(
 
 private const val SEEK_STEP_MS = 5_000L
 
-private fun formatDuration(durationMs: Long): String {
-    val totalSeconds = (durationMs.coerceAtLeast(0L) / 1_000L)
+private fun formatPlayerDuration(durationMs: Long): String {
+    val totalSeconds = durationMs.coerceAtLeast(0L) / 1_000L
     val hours = totalSeconds / 3_600L
     val minutes = (totalSeconds % 3_600L) / 60L
     val seconds = totalSeconds % 60L

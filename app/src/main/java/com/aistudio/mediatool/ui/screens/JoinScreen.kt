@@ -16,29 +16,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
-import com.aistudio.mediatool.core.GetMultipleContentsWithMimeTypes
 import com.aistudio.mediatool.core.DocumentUtils
-import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.FileExportManager
+import com.aistudio.mediatool.core.GetMultipleContentsWithMimeTypes
 import com.aistudio.mediatool.core.SettingsManager
-import com.aistudio.mediatool.core.media.MediaEngine
+import com.aistudio.mediatool.core.diagnostics.DiagnosticLogger
 import com.aistudio.mediatool.core.media.AudioMath
+import com.aistudio.mediatool.core.media.MediaEngine
+import com.aistudio.mediatool.ui.components.ResultFileActions
+import com.aistudio.mediatool.ui.components.ToolScaffold
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import com.aistudio.mediatool.ui.components.ToolScaffold
-import com.aistudio.mediatool.ui.components.ResultFileActions
-
 
 private val UriStateListSaver = Saver<androidx.compose.runtime.snapshots.SnapshotStateList<Uri>, ArrayList<String>>(
     save = { values -> ArrayList(values.map(Uri::toString)) },
@@ -51,9 +49,9 @@ fun JoinScreen(navController: NavController) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val mediaEngine = remember { MediaEngine(context) }
-    
+
     val selectedUris = rememberSaveable(saver = UriStateListSaver) { mutableStateListOf<Uri>() }
-    
+
     var isProcessing by remember { mutableStateOf(false) }
     var progressMsg by remember { mutableStateOf("") }
     var hasOutput by rememberSaveable { mutableStateOf(false) }
@@ -67,7 +65,6 @@ fun JoinScreen(navController: NavController) {
         hasOutput = false
         outputPath = ""
     }
-
 
     fun startJoinAudio() {
         try {
@@ -125,7 +122,7 @@ fun JoinScreen(navController: NavController) {
                         filter.append("[a$i]")
                     }
                     filter.append("concat=n=${safPaths.size}:v=0:a=1[out_concat];")
-                    
+
                     val applyGlobalFade = AudioMath.canApplyGlobalFade(globalFadeSec, durationsMs)
                     if (applyGlobalFade) {
                         val fade = AudioMath.clampedFadeDuration(globalFadeSec, totalDurationSec)
@@ -134,7 +131,7 @@ fun JoinScreen(navController: NavController) {
                     } else {
                         filter.append("[out_concat]anull[outa]")
                     }
-        
+
                     val encodingArgs = SettingsManager.getAudioEncodingArgs(context)
                     val command = "-y $inputs -filter_complex \"$filter\" -map \"[outa]\" $encodingArgs \"${outputFile.absolutePath}\""
 
@@ -173,7 +170,7 @@ fun JoinScreen(navController: NavController) {
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     pendingOutput?.delete()
                     throw cancelled
-                } catch(e: Exception) {
+                } catch (e: Exception) {
                     pendingOutput?.delete()
                     DiagnosticLogger.error(
                         component = "JoinScreen",
@@ -188,7 +185,7 @@ fun JoinScreen(navController: NavController) {
                     }
                 }
             }
-        } catch(e: Exception) {
+        } catch (e: Exception) {
             DiagnosticLogger.error(
                 component = "JoinScreen",
                 event = "join_start_failed",
@@ -210,7 +207,7 @@ fun JoinScreen(navController: NavController) {
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             val currentFormatStr = if (SettingsManager.isAudioLossless(context)) {
                 "Gốc/High"
@@ -231,33 +228,64 @@ fun JoinScreen(navController: NavController) {
                 )
             }
 
-            Button(onClick = { launcher.launch(arrayOf("audio/*")) }, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = { launcher.launch(arrayOf("audio/*")) },
+                enabled = !isProcessing,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Chọn Thêm File Audio (Chọn nhiều được)")
             }
 
-            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(text = "Danh sách file (${selectedUris.size}):", fontWeight = FontWeight.Bold)
                     if (selectedUris.isEmpty()) {
                         Text("Chưa chọn file nào.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         selectedUris.forEachIndexed { index, uri ->
+                            val name = DocumentUtils.displayName(context, uri)
                             Row(
-                                modifier = Modifier.fillMaxWidth(), 
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
-                                val name = DocumentUtils.displayName(context, uri)
                                 Text(
                                     text = "${index + 1}. $name",
                                     style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
                                 )
-                                IconButton(
-                                    onClick = { selectedUris.removeAt(index) },
-                                    modifier = Modifier.semantics { contentDescription = "Xóa file $name khỏi danh sách" }
+                                TextButton(
+                                    onClick = {
+                                        selectedUris.add(index + 1, uri)
+                                        hasOutput = false
+                                        outputPath = ""
+                                    },
+                                    enabled = !isProcessing,
+                                    modifier = Modifier.semantics {
+                                        contentDescription = "Lặp lại file $name một lần ngay sau vị trí ${index + 1}"
+                                    },
                                 ) {
-                                    Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                    Text("Lặp lại")
+                                }
+                                IconButton(
+                                    onClick = {
+                                        selectedUris.removeAt(index)
+                                        hasOutput = false
+                                        outputPath = ""
+                                    },
+                                    enabled = !isProcessing,
+                                    modifier = Modifier.semantics {
+                                        contentDescription = "Xóa file $name khỏi danh sách"
+                                    },
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                    )
                                 }
                             }
                         }
@@ -267,11 +295,11 @@ fun JoinScreen(navController: NavController) {
 
             if (isProcessing || progressMsg.isNotEmpty()) {
                 Text(
-                    text = progressMsg, 
-                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }, 
-                    textAlign = TextAlign.Center, 
-                    fontWeight = FontWeight.Bold, 
-                    color = MaterialTheme.colorScheme.primary
+                    text = progressMsg,
+                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
                 )
                 if (isProcessing) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -284,8 +312,8 @@ fun JoinScreen(navController: NavController) {
                 modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                )
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ),
             ) {
                 Text("BẮT ĐẦU NỐI FILE", color = Color(0xFFFF0000), fontWeight = FontWeight.Bold)
             }
@@ -293,23 +321,34 @@ fun JoinScreen(navController: NavController) {
             if (hasOutput) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("Nối xong! File tạm:\n$outputPath", style = MaterialTheme.typography.bodySmall)
                         Spacer(modifier = Modifier.height(8.dp))
                         ResultFileActions(file = File(outputPath))
                         Spacer(modifier = Modifier.height(16.dp))
-                        Text("▶ Nghe file kết quả:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                        Text(
+                            "▶ Nghe file kết quả:",
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
                         com.aistudio.mediatool.ui.components.VideoPlayer(uri = Uri.fromFile(File(outputPath)))
                     }
                 }
             }
 
-            OutlinedButton(onClick = { selectedUris.clear(); hasOutput = false; outputPath = "" }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = {
+                    selectedUris.clear()
+                    hasOutput = false
+                    outputPath = ""
+                },
+                enabled = !isProcessing,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Xóa danh sách hiện tại")
             }
-
         }
     }
 }
